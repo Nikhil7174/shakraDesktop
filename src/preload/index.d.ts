@@ -1,5 +1,5 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
-import { SecurityAgentAPI, ProcessStatsData, ProcessInfo } from './index'
+import { SecurityAgentAPI } from '../shared/types'
 
 declare global {
   interface Window {

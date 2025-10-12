@@ -133,10 +133,20 @@ export class WebSocketServer {
       }
     })
 
-    // Also notify renderer window
+    // Also notify renderer window with correct event type
     const windows = BrowserWindow.getAllWindows()
     windows.forEach(win => {
-      win.webContents.send('status-update', payload.data)
+      // Map WebSocket types to IPC event names
+      let ipcEventName = 'status-update' // default
+      // if (payload.type === 'ai-connections') {
+      //   ipcEventName = 'ai-connection-stats-update'
+      // } else if (payload.type === 'dns-status') {
+      //   ipcEventName = 'dns-stats-update'
+      // } else if (payload.type === 'status') {
+      //   ipcEventName = 'status-update'
+      // }
+      
+      win.webContents.send(ipcEventName, payload.data)
     })
   }
 

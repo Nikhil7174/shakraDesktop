@@ -1,8 +1,9 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, globalShortcut } from 'electron'
 import { join } from 'path'
 import { WebSocketServer } from './websocket-server'
-import { ProcessMonitor, ProcessStatsData } from './process-monitor'
+import { ProcessMonitor } from './process-monitor'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { ProcessStatsData } from '../shared/types'
 
 let tray: Tray | null = null
 let mainWindow: BrowserWindow | null = null
@@ -23,6 +24,11 @@ function createWindow(): void {
       sandbox: true                   // ✅ Sandbox renderer
     }
   })
+
+  // Enable developer tools for debugging
+  if (is.dev) {
+    mainWindow.webContents.openDevTools()
+  }
 
   // Load the UI
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
@@ -103,26 +109,30 @@ app.whenReady().then(() => {
     throw new Error('Process monitor not available')
   })
 
+
   // Send process stats updates to renderer (reduced frequency to prevent crashes)
   setInterval(async () => {
-    if (monitor && mainWindow && mainWindow.isVisible()) {
+    if (monitor && mainWindow && !mainWindow.isDestroyed()) {
       try {
         const stats = await monitor.getDetailedProcessStats()
         mainWindow.webContents.send('process-stats-update', stats)
       } catch (error) {
         console.error('Error sending process stats update:', error)
-        // Send error state to renderer
-        mainWindow.webContents.send('process-stats-update', {
-          totalProcesses: 0,
-          blockedAppsDetected: [],
-          systemInfo: { cpuUsage: 0, memoryUsage: 0, uptime: 0 },
-          recentProcesses: [],
-          timestamp: Date.now(),
-          error: 'Failed to get process stats'
-        })
+        // Only send error if window is still valid
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('process-stats-update', {
+            totalProcesses: 0,
+            blockedAppsDetected: [],
+            systemInfo: { cpuUsage: 0, memoryUsage: 0, uptime: 0 },
+            recentProcesses: [],
+            timestamp: Date.now(),
+            error: 'Failed to get process stats'
+          })
+        }
       }
     }
   }, 5000) // Update every 5 seconds (reduced from 3 seconds)
+
 
   console.log('✓ Security Agent started on port 8765')
 })
