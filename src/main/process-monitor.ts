@@ -13,6 +13,7 @@ export class ProcessMonitor {
   private lastProcessSnapshot: Set<string> = new Set() // Track unique process identifiers
   private lastBroadcastedDetection: Array<{ name: string; pid: number; reason: string }> = []
   private hasInitialBroadcast: boolean = false // Track if we've done the initial broadcast
+  private killedProcesses: Set<string> = new Set() // Track killed processes to avoid duplicate kills
   
   // List of blocked applications - all others are considered legitimate
   // Made more specific to avoid false positives
@@ -20,7 +21,7 @@ export class ProcessMonitor {
     // AI/Chat applications (exact matches)
     'chatgpt', 'claude', 'copilot', 'gemini', 'bard',
     'openai', 'anthropic', 'perplexity', 'poe', 'character.ai',
-    'cursor', // AI-powered code editor
+    //'cursor', // AI-powered code editor
     
     // Remote access tools (exact matches)
     'anydesk', 'teamviewer', 'chrome remote', 'vnc', 'rdp',
@@ -53,6 +54,81 @@ export class ProcessMonitor {
   ]
 
   constructor(private wsServer: WebSocketServer) {}
+
+  // Cross-platform process killing method
+  private async killProcess(pid: number, processName: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const platform = os.platform()
+      let command: string
+
+      if (platform === 'win32') {
+        // Windows: Use taskkill
+        command = `taskkill /F /PID ${pid}`
+      } else {
+        // Unix-like systems (Linux, macOS): Use kill
+        command = `kill -9 ${pid}`
+      }
+
+      console.log(`Attempting to kill process: ${processName} (PID: ${pid}) with command: ${command}`)
+      
+      const { stderr } = await execAsync(command)
+      
+      if (stderr && !stderr.includes('No such process')) {
+        console.error(`Error killing process ${processName} (PID: ${pid}):`, stderr)
+        return { success: false, error: stderr }
+      }
+
+      console.log(`✓ Successfully killed process: ${processName} (PID: ${pid})`)
+      return { success: true }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error)
+      console.error(`Failed to kill process ${processName} (PID: ${pid}):`, errorMsg)
+      return { success: false, error: errorMsg }
+    }
+  }
+
+  // Kill all detected blocked processes
+  private async killBlockedProcesses(detected: Array<{ name: string; pid: number; reason: string }>): Promise<Array<{ name: string; pid: number; reason: string; killed: boolean; error?: string }>> {
+    const results: Array<{ name: string; pid: number; reason: string; killed: boolean; error?: string }> = []
+
+    for (const process of detected) {
+      const uniqueId = `${process.name}-${process.pid}`
+      
+      // Skip if we already tried to kill this process
+      if (this.killedProcesses.has(uniqueId)) {
+        results.push({ ...process, killed: false, error: 'Already attempted to kill' })
+        continue
+      }
+
+      // Add safety check - don't kill system critical processes (PID 0, 1)
+      if (process.pid <= 1) {
+        results.push({ ...process, killed: false, error: 'System process - not killed' })
+        continue
+      }
+
+      const killResult = await this.killProcess(process.pid, process.name)
+      
+      if (killResult.success) {
+        this.killedProcesses.add(uniqueId)
+        results.push({ ...process, killed: true })
+        
+        // Broadcast kill notification
+        this.wsServer.broadcast({
+          type: 'process-killed',
+          data: {
+            processName: process.name,
+            pid: process.pid,
+            reason: process.reason,
+            timestamp: Date.now()
+          }
+        })
+      } else {
+        results.push({ ...process, killed: false, error: killResult.error })
+      }
+    }
+
+    return results
+  }
 
   // Detection method that only checks against blocked apps - all others are considered legitimate
   private detectBlockedProcesses(processes: any[]): Array<{ name: string; pid: number; reason: string }> {
@@ -127,6 +203,23 @@ export class ProcessMonitor {
       
       const detected = this.detectBlockedProcesses(processes)
       
+      // Kill detected blocked processes
+      if (detected.length > 0) {
+        console.log(`🚫 Detected ${detected.length} blocked applications, attempting to kill them...`)
+        const killResults = await this.killBlockedProcesses(detected)
+        
+        // Log kill results
+        const killedCount = killResults.filter(r => r.killed).length
+        const failedCount = killResults.filter(r => !r.killed).length
+        
+        console.log(`✓ Killed ${killedCount} processes, ${failedCount} failed to kill`)
+        
+        // Log failed kills
+        killResults.filter(r => !r.killed).forEach(result => {
+          console.log(`❌ Failed to kill ${result.name} (PID: ${result.pid}): ${result.error}`)
+        })
+      }
+      
       // Create a snapshot of current blocked processes (unique identifiers)
       const currentSnapshot = new Set<string>()
       detected.forEach(process => {
@@ -184,6 +277,18 @@ export class ProcessMonitor {
       }
       
       const detected = this.detectBlockedProcesses(processes)
+
+      // Kill detected blocked processes
+      if (detected.length > 0) {
+        console.log(`🚫 Detected ${detected.length} blocked applications in stats, attempting to kill them...`)
+        const killResults = await this.killBlockedProcesses(detected)
+        
+        // Log kill results
+        const killedCount = killResults.filter(r => r.killed).length
+        const failedCount = killResults.filter(r => !r.killed).length
+        
+        console.log(`✓ Killed ${killedCount} processes, ${failedCount} failed to kill`)
+      }
 
       // Get system information
       const totalMemory = os.totalmem()
@@ -300,13 +405,22 @@ export class ProcessMonitor {
             reason: app.reason || 'Unknown'
           }))
           
+          // Enhanced status with blocking information
+          const enhancedStatus = {
+            ...status,
+            blockedAndKilled: status.blockedAppsDetected.length > 0,
+            message: status.blockedAppsDetected.length > 0 
+              ? `${status.blockedAppsDetected.length} blocked application(s) detected and terminated`
+              : 'No blocked applications detected'
+          }
+          
           this.wsServer.broadcast({
             type: 'status',
-            data: status
+            data: enhancedStatus
           })
           
           this.hasInitialBroadcast = true
-          console.log(`Broadcasting status update: ${status.blockedAppsDetected.length} blocked applications`)
+          console.log(`Broadcasting status update: ${status.blockedAppsDetected.length} blocked applications detected and terminated`)
         } else {
           console.log(`No broadcast needed: ${status.blockedAppsDetected.length} blocked applications (unchanged)`)
         }

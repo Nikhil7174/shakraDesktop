@@ -10,6 +10,8 @@ export interface SecurityStatus {
   blockedApps: string[]
   timestamp: number
   error?: string
+  blockedAndKilled?: boolean
+  message?: string
 }
 
 // ============================================================================
@@ -33,6 +35,8 @@ export interface ProcessStatus {
   }>
   timestamp: number
   error?: string
+  blockedAndKilled?: boolean
+  message?: string
 }
 
 export interface ProcessStatsData {
@@ -50,6 +54,13 @@ export interface ProcessStatsData {
   recentProcesses: ProcessInfo[]
   timestamp: number
   error?: string
+}
+
+export interface ProcessKillNotification {
+  processName: string
+  pid: number
+  reason: string
+  timestamp: number
 }
 
 

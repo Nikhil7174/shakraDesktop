@@ -63,10 +63,10 @@ export function ProcessStats({ isVisible, onClose }: ProcessStatsProps) {
     // Listen for process stats updates
     if (window.securityAgent) {
       try {
-        window.securityAgent.onProcessStatsUpdate(handleStatsUpdate)
+        (window.securityAgent as any).onProcessStatsUpdate(handleStatsUpdate)
         
         // Request initial stats with error handling
-        window.securityAgent.getProcessStats()
+        (window.securityAgent as any).getProcessStats()
           .then(handleStatsUpdate)
           .catch((error) => {
             console.error('Error getting initial process stats:', error)

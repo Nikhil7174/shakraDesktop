@@ -19,7 +19,9 @@ export function ProcessMonitor({ onStatusUpdate }: ProcessMonitorProps) {
         connected: true,
         blockedApps: newStatus.blockedAppsDetected?.map((a: any) => a.name) || [],
         timestamp: newStatus.timestamp,
-        error: newStatus.error
+        error: newStatus.error,
+        blockedAndKilled: newStatus.blockedAndKilled,
+        message: newStatus.message
       }
       
       setStatus(updatedStatus)
@@ -74,6 +76,11 @@ export function ProcessMonitor({ onStatusUpdate }: ProcessMonitorProps) {
     <div className="process-monitor">
       <div className={`status ${status.connected ? 'connected' : 'disconnected'}`}>
         {status.connected ? '✓ Running' : '⚠ Disconnected'}
+        {status.blockedAndKilled && (
+          <div className="blocking-status">
+            🚫 Active Blocking Enabled
+          </div>
+        )}
       </div>
 
       {status.error && (
@@ -108,8 +115,8 @@ export function ProcessMonitor({ onStatusUpdate }: ProcessMonitorProps) {
             {status.blockedApps.length > 0 ? (
               <>
                 <div className="blocked-apps-header">
-                  <h4>⚠️ Blocked Applications Detected</h4>
-                  <p>Please close these applications to maintain security</p>
+                  <h4>🚫 Blocked Applications Detected & Terminated</h4>
+                  <p>{status.message || 'These applications were automatically terminated for security'}</p>
                 </div>
                 <ul className="blocked-apps-list">
                   {status.blockedApps.slice(0, 20).map((app, idx) => (

@@ -7,7 +7,7 @@ import {
 
 // ✅ BEST PRACTICE: Expose ONLY what renderer needs
 // Never expose full ipcRenderer or require()
-contextBridge.exposeInMainWorld('securityAgent', {
+const securityAgentAPI: SecurityAgentAPI = {
   getStatus: () => ipcRenderer.invoke('get-status'),
   
   onStatusUpdate: (callback: (status: SecurityStatus) => void) => {
@@ -19,4 +19,6 @@ contextBridge.exposeInMainWorld('securityAgent', {
   onProcessStatsUpdate: (callback: (stats: ProcessStatsData) => void) => {
     ipcRenderer.on('process-stats-update', (_event, stats) => callback(stats))
   }
-} as SecurityAgentAPI)
+}
+
+contextBridge.exposeInMainWorld('securityAgent', securityAgentAPI)

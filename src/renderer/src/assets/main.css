@@ -749,6 +749,19 @@ code {
   opacity: 0.9;
 }
 
+.blocking-status {
+  background: linear-gradient(135deg, #ff4757, #c44569);
+  color: white;
+  padding: 6px 12px;
+  border-radius: 15px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 8px;
+  text-align: center;
+  box-shadow: 0 3px 10px rgba(255, 71, 87, 0.4);
+  animation: pulse 1.5s infinite;
+}
+
 .info {
   background: rgba(59, 130, 246, 0.1);
   border: 1px solid rgba(59, 130, 246, 0.3);

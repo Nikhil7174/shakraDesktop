@@ -109,6 +109,22 @@ app.whenReady().then(() => {
     throw new Error('Process monitor not available')
   })
 
+  // Set up IPC handler for status
+  ipcMain.handle('get-status', async () => {
+    if (monitor) {
+      const status = await monitor.checkProcesses()
+      return {
+        connected: true,
+        blockedApps: status.blockedAppsDetected.map(app => app.name),
+        timestamp: status.timestamp,
+        error: status.error,
+        blockedAndKilled: status.blockedAndKilled,
+        message: status.message
+      }
+    }
+    throw new Error('Process monitor not available')
+  })
+
 
   // Send process stats updates to renderer (reduced frequency to prevent crashes)
   setInterval(async () => {
