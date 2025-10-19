@@ -1,7 +1,7 @@
 {
-  "name": "security-agent-app",
+  "name": "crisp-interview-app",
   "version": "1.0.0",
-  "description": "An Electron application with React and TypeScript",
+  "description": "Crisp Interview Desktop App - AI-powered interview platform with security monitoring",
   "main": "./out/main/index.js",
   "author": "example.com",
   "homepage": "https://electron-vite.org",
@@ -23,11 +23,24 @@
     "build:linux": "electron-vite build && electron-builder --linux"
   },
   "dependencies": {
+    "@ant-design/icons": "^5.6.1",
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
+    "@monaco-editor/loader": "^1.6.1",
+    "@monaco-editor/react": "^4.7.0",
+    "@reduxjs/toolkit": "^2.9.0",
+    "antd": "^5.27.4",
+    "axios": "^1.12.2",
+    "dayjs": "^1.11.18",
     "electron-updater": "^6.3.9",
+    "framer-motion": "^12.23.22",
+    "localforage": "^1.10.0",
+    "monaco-editor": "^0.53.0",
     "node-machine-id": "^1.1.12",
     "node-processlist": "^1.0.2",
+    "react-redux": "^9.2.0",
+    "react-router-dom": "^7.9.3",
+    "redux-persist": "^6.0.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {

@@ -1,45 +1,86 @@
-import { useState } from 'react'
-import { ProcessStats } from './components/ProcessStats'
-import { ProcessMonitor } from './components/ProcessMonitor'
-import { SecurityStatus } from '../../shared/types'
+// src/App.tsx
+import React from 'react';
+import { ConfigProvider, App as AntApp } from 'antd';
+import { Provider } from 'react-redux';
+import { PersistGate } from 'redux-persist/integration/react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { store, persistor } from './store';
+import { theme } from './styles/theme';
+import { Layout } from './components/layout/Layout';
+import { ProtectedRoute } from './components/ProtectedRoute';
+import Home from './pages/Home';
+import InterviewChat from './pages/InterviewChat';
+import { PublicRoute } from './components/PublicRoute';
+import { Login } from './pages/Login';
+import { Register } from './pages/Register';
+import { CandidateDashboard } from './pages/CandidateDashboard';
+import { JoinInterview } from './pages/JoinInterview';
+import { SessionCleanup } from './components/SessionCleanup';
 
-function App() {
-  const [status, setStatus] = useState<SecurityStatus>({
-    connected: false,
-    blockedApps: [],
-    timestamp: 0
-  })
-  const [showProcessStats, setShowProcessStats] = useState(false)
-
-  const handleProcessStatusUpdate = (newStatus: SecurityStatus) => {
-    setStatus(newStatus)
-  }
-
+const App: React.FC = () => {
   return (
-    <div className="app">
-      <div className="container">
-        <div className="icon">🛡️</div>
-        <h1>Interview Security Agent</h1>
-        
-        <ProcessMonitor onStatusUpdate={handleProcessStatusUpdate} />
+    <Provider store={store}>
+      <PersistGate loading={null} persistor={persistor}>
+        <ConfigProvider theme={theme}>
+          <AntApp>
+            <Router>
+              <SessionCleanup />
+              <Routes>
+                {/* Public Routes */}
+                <Route path="/" element={<Layout />}>
+                  <Route index element={
+                    <PublicRoute>
+                      <Home />
+                    </PublicRoute>
+                  } />
+                </Route>
 
-        <div className="app-actions">
-          <button 
-            className="stats-btn"
-            onClick={() => setShowProcessStats(true)}
-            disabled={!status.connected}
-          >
-            📊 View Process Stats
-          </button>
-        </div>
-      </div>
+                {/* Auth Routes */}
+                <Route path="/login" element={<Login />} />
+                <Route path="/register" element={<Register />} />
 
-      <ProcessStats 
-        isVisible={showProcessStats}
-        onClose={() => setShowProcessStats(false)}
-      />
-    </div>
-  )
+                {/* Join Interview - Public but requires validation */}
+                <Route path="/join" element={<JoinInterview />} />
+
+                {/* Candidate Routes */}
+                <Route
+                  path="/candidate/dashboard"
+                  element={
+                    <ProtectedRoute allowedUserTypes={['candidate']}>
+                      <CandidateDashboard />
+                    </ProtectedRoute>
+                  }
+                />
+
+                {/* Interview Routes - Protected */}
+                <Route
+                  path="/interview/:sessionId"
+                  element={
+                    <ProtectedRoute allowedUserTypes={['candidate']}>
+                      <InterviewChat />
+                    </ProtectedRoute>
+                  }
+                />
+
+                {/* New Interview Route - For starting new interviews with resume upload */}
+                <Route
+                  path="/interview"
+                  element={
+                    <ProtectedRoute allowedUserTypes={['candidate']}>
+                      <InterviewChat />
+                    </ProtectedRoute>
+                  }
+                />
+
+                {/* 404 Redirect */}
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Routes>
+            </Router>
+          </AntApp>
+        </ConfigProvider>
+      </PersistGate>
+    </Provider>
+  );
 }
 
-export default App
+export default App;

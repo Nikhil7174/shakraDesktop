@@ -30,14 +30,16 @@ export function ProcessMonitor({ onStatusUpdate }: ProcessMonitorProps) {
     } catch (error) {
       console.error('Error processing status update:', error)
       const errorStatus = {
-        ...status,
+        connected: false,
+        blockedApps: [],
+        timestamp: Date.now(),
         error: 'Failed to process status update'
       }
       setStatus(errorStatus)
       onStatusUpdate(errorStatus)
       setIsLoading(false)
     }
-  }, [onStatusUpdate, status])
+  }, [onStatusUpdate]) // Removed status from dependencies to prevent circular dependency
 
   useEffect(() => {
     // Listen for process status updates from main process
@@ -60,7 +62,7 @@ export function ProcessMonitor({ onStatusUpdate }: ProcessMonitorProps) {
       console.warn('Security agent not available')
       setIsLoading(false)
     }
-  }, [handleStatusUpdate, onStatusUpdate, status])
+  }, [handleStatusUpdate, onStatusUpdate]) // Removed status from dependencies to prevent infinite loop
 
   if (isLoading) {
     return (

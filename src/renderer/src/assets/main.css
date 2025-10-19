@@ -170,6 +170,31 @@ code {
   }
 }
 
+/* Layout overrides: make the app fill the full window */
+html, body, #root {
+  height: 100vh;
+  width: 100vw;
+}
+
+body {
+  display: block;
+  align-items: unset;
+  justify-content: unset;
+  overflow: auto;
+  overlay: hidden;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  /* Remove decorative background to avoid letterboxing */
+  background-image: none;
+}
+
+#root {
+  display: block;
+  align-items: unset;
+  justify-content: unset;
+  margin-bottom: 0;
+}
+
 /* Process Stats Styles */
 .app-actions {
   display: flex;

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, globalShortcut } from 'electron'
+import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, globalShortcut, session } from 'electron'
 import { join } from 'path'
 import { WebSocketServer } from './websocket-server'
 import { ProcessMonitor } from './process-monitor'
@@ -11,17 +11,25 @@ let wsServer: WebSocketServer | null = null
 let monitor: ProcessMonitor | null = null
 
 function createWindow(): void {
-  // Main window (can be hidden to tray)
+  // Main window - full screen for interview interface
   mainWindow = new BrowserWindow({
-    width: 500,
-    height: 400,
-    show: is.dev, // Show window in development, hide in production
+    width: 1400,
+    height: 900,
+    minWidth: 1000,
+    minHeight: 700,
+    show: false, // Don't show until ready
+    fullscreen: false, // Allow fullscreen toggle
+    maximizable: true,
+    resizable: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       // SECURITY BEST PRACTICES:
       nodeIntegration: false,        // ✅ Never expose Node to renderer
       contextIsolation: true,         // ✅ Isolate renderer context
-      sandbox: true                   // ✅ Sandbox renderer
+      sandbox: true,                  // ✅ Sandbox renderer
+      webSecurity: true,              // ✅ Enable web security
+      allowRunningInsecureContent: false, // ✅ Disable insecure content
+      experimentalFeatures: false     // ✅ Disable experimental features
     }
   })
 
@@ -29,6 +37,12 @@ function createWindow(): void {
   if (is.dev) {
     mainWindow.webContents.openDevTools()
   }
+
+  // Show and maximize window when ready
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.show()
+    mainWindow?.maximize()
+  })
 
   // Load the UI
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
@@ -44,12 +58,17 @@ function createTray(): void {
   
   const contextMenu = Menu.buildFromTemplate([
     { 
-      label: 'Status: Running', 
+      label: 'Crisp Interview App', 
       enabled: false 
     },
     { 
-      label: 'Show Window', 
+      label: 'Show Interview Window', 
       click: () => mainWindow?.show() 
+    },
+    { type: 'separator' },
+    { 
+      label: 'Security Status: Active', 
+      enabled: false 
     },
     { type: 'separator' },
     { 
@@ -62,7 +81,7 @@ function createTray(): void {
     }
   ])
   
-  tray.setToolTip('Interview Security Agent')
+  tray.setToolTip('Crisp Interview App - Security Monitoring Active')
   tray.setContextMenu(contextMenu)
   
   tray.on('double-click', () => {
@@ -73,6 +92,23 @@ function createTray(): void {
 app.whenReady().then(() => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.interview.security-agent')
+
+  // Configure session permissions for external API calls
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [
+          "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; " +
+          "connect-src 'self' https://crisp-3jy7.onrender.com https://localhost:3001 http://localhost:3001 ws://localhost:8765; " +
+          "img-src 'self' data: https:; " +
+          "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+          "style-src 'self' 'unsafe-inline'; " +
+          "font-src 'self' data:;"
+        ]
+      }
+    })
+  })
 
   // Optimize window on macOS
   app.on('browser-window-created', (_, window) => {
