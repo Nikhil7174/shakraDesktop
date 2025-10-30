@@ -36,7 +36,7 @@ export const UserTypeCard: React.FC<UserTypeCardProps> = memo(({
 
   // Determine card styling based on type
   const isInterviewee = type === 'interviewee';
-  const isCandidate = type === 'candidate';
+  // const isCandidate = type === 'candidate';
   const theme = isInterviewee ? colors.card.dark : colors.card.light;
   const imageSrc = intervieweeImage; // Use same image for both types
 

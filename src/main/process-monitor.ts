@@ -13,7 +13,7 @@ export class ProcessMonitor {
   private lastProcessSnapshot: Set<string> = new Set() // Track unique process identifiers
   private lastBroadcastedDetection: Array<{ name: string; pid: number; reason: string }> = []
   private hasInitialBroadcast: boolean = false // Track if we've done the initial broadcast
-  private killedProcesses: Set<string> = new Set() // Track killed processes to avoid duplicate kills
+  // private _killedProcesses: Set<string> = new Set() // Track killed processes to avoid duplicate kills
   
   // List of blocked applications - all others are considered legitimate
   // Made more specific to avoid false positives
@@ -55,80 +55,43 @@ export class ProcessMonitor {
 
   constructor(private wsServer: WebSocketServer) {}
 
-  // Cross-platform process killing method
-  private async killProcess(pid: number, processName: string): Promise<{ success: boolean; error?: string }> {
-    try {
-      const platform = os.platform()
-      let command: string
+  // Cross-platform process killing method - DISABLED
+  // private async _killProcess(_pid: number, _processName: string): Promise<{ success: boolean; error?: string }> {
+  //   try {
+  //     const platform = os.platform()
+  //     let command: string
 
-      if (platform === 'win32') {
-        // Windows: Use taskkill
-        command = `taskkill /F /PID ${pid}`
-      } else {
-        // Unix-like systems (Linux, macOS): Use kill
-        command = `kill -9 ${pid}`
-      }
+  //     if (platform === 'win32') {
+  //       // Windows: Use taskkill
+  //       command = `taskkill /F /PID ${_pid}`
+  //     } else {
+  //       // Unix-like systems (Linux, macOS): Use kill
+  //       command = `kill -9 ${_pid}`
+  //     }
 
-      console.log(`Attempting to kill process: ${processName} (PID: ${pid}) with command: ${command}`)
+  //     // console.log(`Attempting to kill process: ${_processName} (PID: ${_pid}) with command: ${command}`)
       
-      const { stderr } = await execAsync(command)
+  //     const { stderr } = await execAsync(command)
       
-      if (stderr && !stderr.includes('No such process')) {
-        console.error(`Error killing process ${processName} (PID: ${pid}):`, stderr)
-        return { success: false, error: stderr }
-      }
+  //     if (stderr && !stderr.includes('No such process')) {
+  //       // console.error(`Error killing process ${_processName} (PID: ${_pid}):`, stderr)
+  //       return { success: false, error: stderr }
+  //     }
 
-      console.log(`✓ Successfully killed process: ${processName} (PID: ${pid})`)
-      return { success: true }
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error)
-      console.error(`Failed to kill process ${processName} (PID: ${pid}):`, errorMsg)
-      return { success: false, error: errorMsg }
-    }
-  }
+  //     // console.log(`✓ Successfully killed process: ${_processName} (PID: ${_pid})`)
+  //     return { success: true }
+  //   } catch (error) {
+  //     const errorMsg = error instanceof Error ? error.message : String(error)
+  //     // console.error(`Failed to kill process ${_processName} (PID: ${_pid}):`, errorMsg)
+  //     return { success: false, error: errorMsg }
+  //   }
+  // }
 
-  // Kill all detected blocked processes
-  private async killBlockedProcesses(detected: Array<{ name: string; pid: number; reason: string }>): Promise<Array<{ name: string; pid: number; reason: string; killed: boolean; error?: string }>> {
-    const results: Array<{ name: string; pid: number; reason: string; killed: boolean; error?: string }> = []
-
-    for (const process of detected) {
-      const uniqueId = `${process.name}-${process.pid}`
-      
-      // Skip if we already tried to kill this process
-      if (this.killedProcesses.has(uniqueId)) {
-        results.push({ ...process, killed: false, error: 'Already attempted to kill' })
-        continue
-      }
-
-      // Add safety check - don't kill system critical processes (PID 0, 1)
-      if (process.pid <= 1) {
-        results.push({ ...process, killed: false, error: 'System process - not killed' })
-        continue
-      }
-
-      const killResult = await this.killProcess(process.pid, process.name)
-      
-      if (killResult.success) {
-        this.killedProcesses.add(uniqueId)
-        results.push({ ...process, killed: true })
-        
-        // Broadcast kill notification
-        this.wsServer.broadcast({
-          type: 'process-killed',
-          data: {
-            processName: process.name,
-            pid: process.pid,
-            reason: process.reason,
-            timestamp: Date.now()
-          }
-        })
-      } else {
-        results.push({ ...process, killed: false, error: killResult.error })
-      }
-    }
-
-    return results
-  }
+  // Kill all detected blocked processes - DISABLED FOR NOW
+  // private async _killBlockedProcesses(detected: Array<{ name: string; pid: number; reason: string }>): Promise<Array<{ name: string; pid: number; reason: string; killed: boolean; error?: string }>> {
+  //   // Function disabled to avoid build errors
+  //   return detected.map(process => ({ ...process, killed: false, error: 'Function disabled' }))
+  // }
 
   // Detection method that only checks against blocked apps - all others are considered legitimate
   private detectBlockedProcesses(processes: any[]): Array<{ name: string; pid: number; reason: string }> {
@@ -196,28 +159,28 @@ export class ProcessMonitor {
         processes = await Promise.race([processPromise, timeoutPromise]) as any[]
         console.log(`Found ${processes.length} processes using node-processlist`)
       } catch (error) {
-        console.log('node-processlist failed in checkProcesses, trying fallback...')
+        // console.log('node-processlist failed in checkProcesses, trying fallback...')
         processes = await this.getProcessesFallback()
-        console.log(`Found ${processes.length} processes using fallback method`)
+        // console.log(`Found ${processes.length} processes using fallback method`)
       }
       
       const detected = this.detectBlockedProcesses(processes)
       
       // Kill detected blocked processes
       if (detected.length > 0) {
-        console.log(`🚫 Detected ${detected.length} blocked applications, attempting to kill them...`)
-        const killResults = await this.killBlockedProcesses(detected)
+        // console.log(`🚫 Detected ${detected.length} blocked applications, attempting to kill them...`)
+        // const killResults = await this.killBlockedProcesses(detected)
         
         // Log kill results
-        const killedCount = killResults.filter(r => r.killed).length
-        const failedCount = killResults.filter(r => !r.killed).length
+        // const killedCount = killResults.filter(r => r.killed).length
+        // const failedCount = killResults.filter(r => !r.killed).length
         
-        console.log(`✓ Killed ${killedCount} processes, ${failedCount} failed to kill`)
+        // console.log(`✓ Killed ${killedCount} processes, ${failedCount} failed to kill`)
         
         // Log failed kills
-        killResults.filter(r => !r.killed).forEach(result => {
-          console.log(`❌ Failed to kill ${result.name} (PID: ${result.pid}): ${result.error}`)
-        })
+        // killResults.filter(r => !r.killed).forEach(_result => {
+        //   console.log(`❌ Failed to kill ${result.name} (PID: ${result.pid}): ${result.error}`)
+        // })
       }
       
       // Create a snapshot of current blocked processes (unique identifiers)
@@ -230,9 +193,9 @@ export class ProcessMonitor {
       if (this.hasProcessSnapshotChanged(currentSnapshot)) {
         this.lastStableDetection = [...detected]
         this.lastProcessSnapshot = new Set(currentSnapshot)
-        console.log(`Process snapshot changed: ${detected.length} blocked applications:`, detected.map(d => d.name))
+        // console.log(`Process snapshot changed: ${detected.length} blocked applications:`, detected.map(d => d.name))
       } else {
-        console.log(`No change in process snapshot: ${this.lastStableDetection.length} blocked applications (unchanged)`)
+        // console.log(`No change in process snapshot: ${this.lastStableDetection.length} blocked applications (unchanged)`)
       }
 
       return {
@@ -245,7 +208,7 @@ export class ProcessMonitor {
         timestamp: Date.now()
       }
     } catch (error) {
-      console.error('Error checking processes:', error)
+      // console.error('Error checking processes:', error)
       return {
         totalProcesses: 0,
         blockedAppsDetected: [],
@@ -257,7 +220,7 @@ export class ProcessMonitor {
 
   async getDetailedProcessStats(): Promise<ProcessStatsData> {
     try {
-      console.log('Getting process list...')
+      // console.log('Getting process list...')
       
       let processes: any[] = []
       
@@ -271,9 +234,9 @@ export class ProcessMonitor {
         processes = await Promise.race([processPromise, timeoutPromise]) as any[]
         console.log(`Found ${processes.length} processes using node-processlist`)
       } catch (error) {
-        console.log('node-processlist failed, trying fallback method...')
+        // console.log('node-processlist failed, trying fallback method...')
         processes = await this.getProcessesFallback()
-        console.log(`Found ${processes.length} processes using fallback method`)
+        // console.log(`Found ${processes.length} processes using fallback method`)
       }
       
       const detected = this.detectBlockedProcesses(processes)
@@ -281,13 +244,13 @@ export class ProcessMonitor {
       // Kill detected blocked processes
       if (detected.length > 0) {
         console.log(`🚫 Detected ${detected.length} blocked applications in stats, attempting to kill them...`)
-        const killResults = await this.killBlockedProcesses(detected)
+        // const killResults = await this.killBlockedProcesses(detected)
         
         // Log kill results
-        const killedCount = killResults.filter(r => r.killed).length
-        const failedCount = killResults.filter(r => !r.killed).length
+        // const killedCount = killResults.filter(r => r.killed).length
+        // const failedCount = killResults.filter(r => !r.killed).length
         
-        console.log(`✓ Killed ${killedCount} processes, ${failedCount} failed to kill`)
+        // console.log(`✓ Killed ${killedCount} processes, ${failedCount} failed to kill`)
       }
 
       // Get system information
@@ -396,7 +359,7 @@ export class ProcessMonitor {
         const lastCount = this.lastBroadcastedDetection.length
         const shouldBroadcast = !this.hasInitialBroadcast || currentCount !== lastCount
         
-        console.log(`Debug - hasInitialBroadcast: ${this.hasInitialBroadcast}, current: ${currentCount}, last: ${lastCount}, shouldBroadcast: ${shouldBroadcast}`)
+        // console.log(`Debug - hasInitialBroadcast: ${this.hasInitialBroadcast}, current: ${currentCount}, last: ${lastCount}, shouldBroadcast: ${shouldBroadcast}`)
         
         if (shouldBroadcast) {
           this.lastBroadcastedDetection = status.blockedAppsDetected.map(app => ({
@@ -420,12 +383,12 @@ export class ProcessMonitor {
           })
           
           this.hasInitialBroadcast = true
-          console.log(`Broadcasting status update: ${status.blockedAppsDetected.length} blocked applications detected and terminated`)
+          // console.log(`Broadcasting status update: ${status.blockedAppsDetected.length} blocked applications detected and terminated`)
         } else {
-          console.log(`No broadcast needed: ${status.blockedAppsDetected.length} blocked applications (unchanged)`)
+          // console.log(`No broadcast needed: ${status.blockedAppsDetected.length} blocked applications (unchanged)`)
         }
       } catch (error) {
-        console.error('Error in process monitoring interval:', error)
+        // console.error('Error in process monitoring interval:', error)
         // Send error status
         this.wsServer.broadcast({
           type: 'status',

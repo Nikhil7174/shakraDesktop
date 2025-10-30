@@ -8,6 +8,7 @@ import { colors, spacing } from '../styles';
 import { ResumeUpload } from '../components/interview/ResumeUpload';
 import { InfoCollection } from '../components/interview/InfoCollection';
 import { InterviewSession } from '../components/interview/InterviewSession';
+import VoiceInterviewSession from './VoiceInterviewSession';
 import { WelcomeBackModal } from '../components/interview/WelcomeBackModal';
 import { useResumeUpload } from '../hooks/api/useResumeUpload';
 import { useInterview } from '../hooks/api/useInterview';
@@ -29,6 +30,8 @@ export const InterviewChat: React.FC = () => {
   const [processingResume, setProcessingResume] = useState(false);
   const [collectingInfo, setCollectingInfo] = useState(false);
   const [userHasChosen, setUserHasChosen] = useState(false); // Track if user made a choice about session
+  const [resumeRequested, setResumeRequested] = useState(false); // Track if user chose to resume
+  const modalDismissedRef = React.useRef(false); // Ref to track if modal was explicitly dismissed
 
   const handleBack = () => {
     const from = (location.state as any)?.from;
@@ -83,26 +86,76 @@ export const InterviewChat: React.FC = () => {
     console.log('User has chosen:', userHasChosen);
     console.log('Current session exists:', !!currentSession);
     console.log('Session summary exists:', !!sessionSummary);
+    console.log('Modal dismissed ref:', modalDismissedRef.current);
+    
+    // CRITICAL: Never show modal again if user explicitly dismissed it
+    if (modalDismissedRef.current) {
+      console.log('Modal was explicitly dismissed - never showing again');
+      setShowWelcomeBack(false);
+      return;
+    }
+    
+    // Check if we're navigating from CandidateDashboard with flag to check existing session
+    const checkExistingSession = (location.state as any)?.checkExistingSession;
+    const fromLink = (location.state as any)?.fromLink;
+    console.log('Check existing session flag:', checkExistingSession);
+    console.log('From link:', fromLink);
 
-    // Don't show modal if user has already made a choice
-    if (userHasChosen) {
+    // Don't show modal if coming from a link (fresh interview start)
+    if (fromLink) {
+      console.log('Coming from link - not showing welcome back modal');
+      setShowWelcomeBack(false);
+      setUserHasChosen(true); // Mark as chosen to proceed
+      modalDismissedRef.current = true; // Mark as dismissed
+      // Clear the navigation state to prevent re-triggering
+      window.history.replaceState({}, document.title);
+      return;
+    }
+
+    // Don't show modal if user has already made a choice (unless explicitly checking from dashboard)
+    if (userHasChosen && !checkExistingSession) {
       console.log('User has already made a choice, skipping modal check');
       return;
     }
 
-    // Show welcome back modal for interrupted interviews
-    if (shouldShowWelcomeBack && currentSession && sessionSummary) {
-      console.log('Valid interrupted session found:', {
-        answered: sessionSummary.questionsAnswered,
-        total: sessionSummary.totalQuestions,
-        timeAway: sessionSummary.timeAway
+    // Show welcome back modal for unfinished/interrupted interviews
+    // Case A: Explicit detection (page hidden/reload) from shouldShowWelcomeBack
+    // Case B: Fresh navigation to interview route with an unfinished session (answers exist)
+    // Case C: Navigation from CandidateDashboard with checkExistingSession flag AND session exists
+    const hasUnfinished = !!(currentSession && Array.isArray((currentSession as any).answers) && (currentSession as any).answers.length > 0);
+    const shouldCheckExisting = checkExistingSession && currentSession;
+
+    if ((shouldShowWelcomeBack && currentSession && sessionSummary) || hasUnfinished || shouldCheckExisting) {
+      const summary = sessionSummary || {
+        questionsAnswered: (currentSession as any)?.answers?.length || 0,
+        totalQuestions: (currentSession as any)?.questions?.length || 6,
+        timeAway: 0
+      };
+      console.log('Unfinished session detected - showing welcome back modal:', {
+        answered: summary.questionsAnswered,
+        total: summary.totalQuestions,
+        timeAway: summary.timeAway,
+        fromDashboard: checkExistingSession
       });
       setShowWelcomeBack(true);
+      
+      // Reset the userHasChosen flag when coming from dashboard
+      if (checkExistingSession) {
+        setUserHasChosen(false);
+        // Clear the navigation state to prevent re-triggering
+        window.history.replaceState({}, document.title);
+      }
     } else {
       console.log('No interrupted session found - not showing modal');
       setShowWelcomeBack(false);
+      
+      // If coming from dashboard but no session exists, mark as chosen to allow new interview
+      if (checkExistingSession && !currentSession) {
+        console.log('No existing session - proceeding with new interview');
+        setUserHasChosen(true);
+      }
     }
-  }, [shouldShowWelcomeBack, currentSession, sessionSummary, userHasChosen]);
+  }, [shouldShowWelcomeBack, currentSession, sessionSummary, userHasChosen, location.state]);
 
   // Effect 2: Handle initial step determination (separate from modal logic)
   useEffect(() => {
@@ -110,6 +163,7 @@ export const InterviewChat: React.FC = () => {
     console.log('Current step:', currentStep);
     console.log('Has existing resume:', hasResume);
     console.log('Current session resume data:', !!sessionResumeData);
+    console.log('Show welcome back modal:', showWelcomeBack);
 
     // Only set initial step if we're still on upload (initial state)
     if (currentStep !== 'upload') {
@@ -117,12 +171,28 @@ export const InterviewChat: React.FC = () => {
       return;
     }
 
+    // CRITICAL: If welcome back modal is showing, wait for user choice
+    if (showWelcomeBack) {
+      console.log('Welcome back modal is showing - waiting for user choice');
+      return;
+    }
+
     // Check if there's already a current session in progress
     if (currentSession && currentSession.sessionId) {
-      console.log('Found existing session, starting with interview step');
-      console.log('Session details:', currentSession);
-      setCurrentStep('interview');
-      return;
+      const answersCount = (currentSession as any)?.answers?.length || 0;
+      if (answersCount > 0 && !userHasChosen) {
+        console.log('Found unfinished session, awaiting user choice before entering interview');
+        // Do not auto-enter interview; modal will prompt the user
+        return;
+      }
+
+      // Only proceed to interview if user has made their choice
+      if (userHasChosen) {
+        console.log('User chose to continue, starting with interview step');
+        console.log('Session details:', currentSession);
+        setCurrentStep('interview');
+        return;
+      }
     }
 
     // Always start with upload page - enhanced to show existing resume with replace option
@@ -141,7 +211,7 @@ export const InterviewChat: React.FC = () => {
     // 5. Each user now gets their own isolated resume data
     // 6. ENHANCED: Upload page now shows existing resume with option to replace
 
-  }, [hasResume, existingResumeData, sessionResumeData, currentStep]);
+  }, [hasResume, existingResumeData, sessionResumeData, currentStep, currentSession, userHasChosen, showWelcomeBack]);
 
 
   // Real-time tracking is now handled by useSessionManager hook
@@ -189,6 +259,9 @@ export const InterviewChat: React.FC = () => {
     console.log('=== STARTING NEW INTERVIEW ===');
 
     try {
+      // Mark modal as dismissed permanently
+      modalDismissedRef.current = true;
+      
       // Clear all session data using unified method
       clearAllSessions();
 
@@ -201,6 +274,7 @@ export const InterviewChat: React.FC = () => {
       setProcessingResume(false);
       setCollectingInfo(false);
       setUserHasChosen(true); // Mark that user has made a choice
+      setResumeRequested(false);
 
       // Reset page visibility tracking for new session
       resetPageVisibilityTracking();
@@ -230,9 +304,17 @@ export const InterviewChat: React.FC = () => {
 
   const handleContinueSession = useCallback(() => {
     console.log('User chose to continue session');
-    setUserHasChosen(true); // Mark that user has made a choice
-    setCurrentStep('interview');
+    
+    // Mark modal as dismissed permanently
+    modalDismissedRef.current = true;
+    
+    // Close modal FIRST before any other state changes
     setShowWelcomeBack(false);
+    
+    // Then update other states
+    setUserHasChosen(true); // Mark that user has made a choice
+    setResumeRequested(true);
+    setCurrentStep('interview');
 
     // Reset page visibility tracking since user is continuing
     resetPageVisibilityTracking();
@@ -243,6 +325,10 @@ export const InterviewChat: React.FC = () => {
 
   const handleWelcomeBackClose = useCallback(() => {
     console.log('User closed welcome back modal');
+    
+    // Mark modal as dismissed permanently
+    modalDismissedRef.current = true;
+    
     setUserHasChosen(true); // Mark that user has made a choice (by closing)
     setShowWelcomeBack(false);
 
@@ -290,6 +376,45 @@ export const InterviewChat: React.FC = () => {
         );
 
       case 'interview':
+        // Prefer voice interview session when questions are present
+        if (currentSession && currentSession.questions && currentSession.questions.length > 0) {
+          // Use pre-separated questions from backend if available, otherwise filter manually
+          const theoreticalQuestions = (currentSession as any).theoreticalQuestions || 
+            (currentSession.questions || []).filter((q: any) => q.type === 'technical');
+          
+          const codingQuestionsRaw = (currentSession as any).codingQuestions || 
+            (currentSession.questions || []).filter((q: any) => q.type === 'coding');
+          
+          // Transform coding questions into CodingProblem format
+          const codingProblems = codingQuestionsRaw.map((q: any) => ({
+            id: q.id,
+            title: q.question || q.instructions || 'Coding Problem',
+            description: q.instructions || q.question || '',
+            language: (q.language || 'javascript'),
+            starterCode: q.initialCode || '',
+            solution: q.expectedAnswer || '',
+            hints: Array.isArray(q.keyPoints) ? q.keyPoints : [],
+            testCases: Array.isArray(q.testCases) ? q.testCases.map((t: any) => ({
+              input: t.input,
+              expectedOutput: t.expectedOutput,
+              description: t.description || ''
+            })) : [],
+            difficulty: q.difficulty || 'easy'
+          }));
+
+          console.log(`📊 Interview setup: ${theoreticalQuestions.length} theoretical, ${codingProblems.length} coding`);
+
+          return (
+            <VoiceInterviewSession
+              interviewId={currentSession.sessionId}
+              questions={theoreticalQuestions as any}
+              codingProblems={codingProblems as any}
+              resumeFromIndex={(currentSession as any)?.answers?.length || 0}
+              skipIntro={resumeRequested && ((currentSession as any)?.answers?.length || 0) > 0}
+              onComplete={handleInterviewComplete}
+            />
+          );
+        }
         return (
           <InterviewSession
             onStartNew={handleStartNew}

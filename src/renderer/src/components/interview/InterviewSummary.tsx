@@ -104,7 +104,7 @@ export const InterviewSummary: React.FC<InterviewSummaryProps> = ({
     };
 
     const generateStrengths = (score: number, answers: any[]): string[] => {
-        const strengths = [];
+        const strengths: string[] = [];
 
         if (score >= 80) {
             strengths.push('Excellent technical knowledge');
@@ -125,7 +125,7 @@ export const InterviewSummary: React.FC<InterviewSummaryProps> = ({
     };
 
     const generateAreasForImprovement = (score: number, answers: any[]): string[] => {
-        const areas = [];
+        const areas: string[] = [];
 
         if (score < 60) {
             areas.push('Review fundamental concepts');

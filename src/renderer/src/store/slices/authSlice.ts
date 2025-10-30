@@ -6,7 +6,7 @@ import type { AuthState, User } from '../../types';
 const initialState: AuthState = {
   user: null,
   token: localStorage.getItem('authToken'),
-  isAuthenticated: !!localStorage.getItem('authToken'),
+  isAuthenticated: false, // Always start as false, will be validated by getCurrentUser
   loading: false,
   error: null,
 };

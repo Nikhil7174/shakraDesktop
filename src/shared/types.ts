@@ -126,6 +126,75 @@ export interface ProcessStatsProps {
 }
 
 // ============================================================================
+// INTERVIEW TYPES
+// ============================================================================
+
+export interface Question {
+  id: string
+  question: string
+  expectedAnswer: string
+  keyPoints: string[]
+  followUps?: FollowUp[]
+}
+
+export interface FollowUp {
+  trigger: string | string[]
+  question: string
+  expectedAnswer: string
+  keyPoints: string[]
+}
+
+export interface CodingProblem {
+  id: string
+  title: string
+  description: string
+  language: string
+  starterCode?: string
+  solution: string
+  hints: string[]
+  testCases: TestCase[]
+  difficulty: 'easy' | 'medium' | 'hard'
+}
+
+export interface TestCase {
+  input: string
+  expectedOutput: string
+  description: string
+}
+
+export interface Evaluation {
+  questionId: string
+  candidateAnswer: string
+  keyPointsCovered: string[]
+  score: number
+  needsFollowUp: boolean
+  followUpQuestion?: string
+  feedback: string
+}
+
+export interface CodeAnalysis {
+  progress: number // 0-100
+  approach: 'correct' | 'incorrect' | 'incomplete' | 'unsure'
+  isStuck: boolean
+  issues: string[]
+  suggestedHint?: string
+  hintLevel: 1 | 2 | 3
+  timeStuck: number // milliseconds
+  codeQuality: 'good' | 'fair' | 'poor'
+  testable: boolean
+}
+
+export interface InterviewSession {
+  id: string
+  candidateId: string
+  questions: Question[]
+  codingProblems: CodingProblem[]
+  startTime: Date
+  endTime?: Date
+  status: 'scheduled' | 'in_progress' | 'completed'
+}
+
+// ============================================================================
 // SECURITY AGENT API TYPES
 // ============================================================================
 

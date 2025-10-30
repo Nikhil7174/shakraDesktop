@@ -167,7 +167,8 @@ export const CandidateDashboard: React.FC = () => {
   }, [logout, navigate]);
 
   const handleJoinInterview = useCallback(() => {
-    navigate('/interview');
+    // Pass a flag to tell InterviewChat to check for existing session
+    navigate('/interview', { state: { checkExistingSession: true } });
   }, [navigate]);
 
   // Memoized table columns

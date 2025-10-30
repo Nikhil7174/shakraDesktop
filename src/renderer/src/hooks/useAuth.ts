@@ -13,7 +13,7 @@ export const useAuth = () => {
       email: string;
       password: string;
       fullName: string;
-      userType: 'candidate';
+      userType: 'candidate' | 'interviewer';
       phone?: string;
       company?: string;
     }) => {
@@ -21,7 +21,7 @@ export const useAuth = () => {
         dispatch(setLoading(true));
         dispatch(setError(null));
 
-        const response = await axios.post(`${API_BASE_URL}/auth/register`, data);
+        const response = await axios.post(`${API_BASE_URL}/auth/register/candidate`, data);
 
         if (response.data.success) {
           dispatch(

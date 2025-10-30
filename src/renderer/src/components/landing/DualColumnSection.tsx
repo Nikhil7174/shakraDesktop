@@ -23,10 +23,10 @@ export const DualColumnSection: React.FC = () => {
     navigate('/login', { state: { returnTo: '/join' } });
   }, [navigate]);
 
-  const handleStartNewInterview = useCallback(() => {
-    // Always navigate to login page
-    navigate('/login', { state: { returnTo: '/interview' } });
-  }, [navigate]);
+  // const _handleStartNewInterview = useCallback(() => {
+  //   // Always navigate to login page
+  //   navigate('/login', { state: { returnTo: '/interview' } });
+  // }, [navigate]);
 
 
   return (

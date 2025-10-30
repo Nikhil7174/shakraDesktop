@@ -1,14 +1,23 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, globalShortcut, session } from 'electron'
+import * as dotenv from 'dotenv'
 import { join } from 'path'
 import { WebSocketServer } from './websocket-server'
 import { ProcessMonitor } from './process-monitor'
+import { InterviewOrchestrator } from './interview-orchestrator'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { ProcessStatsData } from '../shared/types'
+
+// Load environment variables from .env at project root (dev and prod)
+dotenv.config()
+console.log('🔧 [Main] Environment check:')
+console.log('🔧 [Main] ASSEMBLYAI_API_KEY:', process.env.ASSEMBLYAI_API_KEY ? `${process.env.ASSEMBLYAI_API_KEY.substring(0, 10)}...` : 'NOT SET')
+console.log('🔧 [Main] OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? `${process.env.OPENAI_API_KEY.substring(0, 10)}...` : 'NOT SET')
 
 let tray: Tray | null = null
 let mainWindow: BrowserWindow | null = null
 let wsServer: WebSocketServer | null = null
 let monitor: ProcessMonitor | null = null
+let interviewOrchestrator: InterviewOrchestrator | null = null
 
 function createWindow(): void {
   // Main window - full screen for interview interface
@@ -89,7 +98,7 @@ function createTray(): void {
   })
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.interview.security-agent')
 
@@ -161,6 +170,324 @@ app.whenReady().then(() => {
     throw new Error('Process monitor not available')
   })
 
+  // Initialize interview orchestrator
+  try {
+    interviewOrchestrator = new InterviewOrchestrator()
+    await interviewOrchestrator.initialize({
+      stt: {
+        provider: 'assemblyai',
+        apiKey: process.env.ASSEMBLYAI_API_KEY || '',
+        sampleRate: 16000,
+        language: 'en'
+      },
+      llm: {
+        serverUrl: process.env.SERVER_URL || 'http://localhost:3001'
+      },
+      tts: {
+        provider: 'openai',
+        apiKey: process.env.OPENAI_API_KEY || '',
+        voice: 'alloy', // Cheapest voice (all voices same price)
+        model: 'tts-1',  // Cheapest model ($15/1M chars vs $30 for tts-1-hd)
+        speed: 1.2       // Slightly faster = shorter audio = lower cost
+      },
+      codeAnalysis: {
+        serverUrl: process.env.SERVER_URL || 'http://localhost:3001'
+      }
+    })
+
+    // Set up interview event listeners
+    interviewOrchestrator.on('askQuestion', (question) => {
+      mainWindow?.webContents.send('question-changed', question)
+    })
+
+    interviewOrchestrator.on('presentCodingProblem', (problem) => {
+      mainWindow?.webContents.send('coding-problem-changed', problem)
+    })
+
+    interviewOrchestrator.on('evaluation', (evaluation) => {
+      mainWindow?.webContents.send('evaluation', evaluation)
+    })
+
+    interviewOrchestrator.on('codeAnalysisComplete', (analysis) => {
+      mainWindow?.webContents.send('code-analysis', analysis)
+    })
+
+    interviewOrchestrator.on('interviewCompleted', (results) => {
+      mainWindow?.webContents.send('interview-completed', results)
+    })
+
+    console.log('✓ Interview orchestrator initialized')
+  } catch (error) {
+    console.error('Failed to initialize interview orchestrator:', error)
+  }
+
+  // Set up interview IPC handlers
+  if (interviewOrchestrator) {
+    // Forward high-level interview state changes to renderer
+    interviewOrchestrator.on('stateChanged', (stateChange: any) => {
+      try {
+        mainWindow?.webContents.send('interview-state-change', stateChange.to)
+      } catch (e: unknown) {
+        const err = e as Error
+        console.error('Failed to send interview-state-change:', err.message)
+      }
+    })
+
+    // Forward STT listening state
+    interviewOrchestrator.on('sttConnected', () => {
+      try {
+        console.log('🎤 [Main] STT connected, setting listening to true')
+        mainWindow?.webContents.send('listening-state-change', true)
+      } catch (e: unknown) {
+        const err = e as Error
+        console.error('Failed to send listening-state-change:', err.message)
+      }
+    })
+    interviewOrchestrator.on('sttDisconnected', () => {
+      try {
+        console.log('🎤 [Main] STT disconnected, setting listening to false')
+        mainWindow?.webContents.send('listening-state-change', false)
+      } catch (e: unknown) {
+        const err = e as Error
+        console.error('Failed to send listening-state-change:', err.message)
+      }
+    })
+
+    // Forward interview state changes to control listening
+    interviewOrchestrator.on('stateChanged', (payload: any) => {
+      try {
+        console.log('🎤 [Main] State changed:', payload.to)
+        // Set listening to true when waiting for answer
+        if (payload.to === 'waiting_for_answer') {
+          console.log('🎤 [Main] Setting listening to true for waiting_for_answer state')
+          mainWindow?.webContents.send('listening-state-change', true)
+        } else if (payload.to === 'evaluating_answer' || payload.to === 'theoretical_question') {
+          console.log('🎤 [Main] Setting listening to false for', payload.to, 'state')
+          mainWindow?.webContents.send('listening-state-change', false)
+        }
+      } catch (e: unknown) {
+        const err = e as Error
+        console.error('Failed to send state-based listening change:', err.message)
+      }
+    })
+
+    // Forward TTS speaking state
+    interviewOrchestrator.on('speakingStarted', () => {
+      try {
+        mainWindow?.webContents.send('speaking-state-change', true)
+      } catch (e: unknown) {
+        const err = e as Error
+        console.error('Failed to send speaking-state-change:', err.message)
+      }
+    })
+    interviewOrchestrator.on('speakingCompleted', () => {
+      try {
+        mainWindow?.webContents.send('speaking-state-change', false)
+      } catch (e: unknown) {
+        const err = e as Error
+        console.error('Failed to send speaking-state-change:', err.message)
+      }
+    })
+
+    // Notify renderer when audio capture is required (to start microphone streaming)
+    interviewOrchestrator.on('audioCaptureRequired', () => {
+      try {
+        mainWindow?.webContents.send('audio-capture-required')
+      } catch (e: unknown) {
+        const err = e as Error
+        console.error('Failed to send audio-capture-required:', err.message)
+      }
+    })
+  }
+
+  // Receive audio chunks from renderer and forward to STT
+  ipcMain.on('audio-chunk', (_event, data: Uint8Array) => {
+    try {
+      if (interviewOrchestrator) {
+        interviewOrchestrator.streamAudio(Buffer.from(data))
+      }
+    } catch (e: unknown) {
+      const err = e as Error
+      console.error('Failed to stream audio chunk:', err.message)
+    }
+  })
+
+  
+  // Check for unfinished interview
+  ipcMain.handle('check-unfinished-interview', async () => {
+    try {
+      if (!interviewOrchestrator) {
+        return { hasUnfinished: false }
+      }
+      
+      const sessionInfo = interviewOrchestrator.getSessionInfo()
+      return {
+        hasUnfinished: !!sessionInfo,
+        sessionInfo
+      }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to check unfinished interview:', err)
+      return { hasUnfinished: false, error: err.message }
+    }
+  })
+
+  // Clear unfinished interview
+  ipcMain.handle('clear-unfinished-interview', async () => {
+    try {
+      if (!interviewOrchestrator) {
+        return { success: true }
+      }
+      
+      interviewOrchestrator.clearSession()
+      return { success: true }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to clear unfinished interview:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('start-interview', async (_event, interviewData) => {
+    try {
+      if (!interviewOrchestrator) {
+        throw new Error('Interview orchestrator not initialized')
+      }
+      
+      await interviewOrchestrator.startInterview(interviewData)
+      return { success: true }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to start interview:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('analyze-code', async (_event, codeData) => {
+    try {
+      if (!interviewOrchestrator) {
+        throw new Error('Interview orchestrator not initialized')
+      }
+      
+      const analysis = await interviewOrchestrator.analyzeCode(codeData)
+      return { success: true, analysis }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to analyze code:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('submit-solution', async (_event, code: string) => {
+    try {
+      if (!interviewOrchestrator) {
+        throw new Error('Interview orchestrator not initialized')
+      }
+      
+      const result = await interviewOrchestrator.submitCodingSolution(code)
+      return result
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to submit solution:', err)
+      return { success: false, error: err.message, feedback: '', hasNextProblem: false }
+    }
+  })
+
+  ipcMain.handle('pause-interview', async () => {
+    try {
+      if (interviewOrchestrator) {
+        await interviewOrchestrator.pauseInterview()
+      }
+      return { success: true }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to pause interview:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('resume-interview', async () => {
+    try {
+      if (interviewOrchestrator) {
+        await interviewOrchestrator.resumeInterview()
+      }
+      return { success: true }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to resume interview:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('stop-interview', async () => {
+    try {
+      if (interviewOrchestrator) {
+        await interviewOrchestrator.stopInterview()
+      }
+      return { success: true }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to stop interview:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
+  // Generate temporary token for STT authentication
+  ipcMain.handle('get-stt-token', async () => {
+    try {
+      const { AssemblyAI } = await import('assemblyai')
+      const client = new AssemblyAI({ apiKey: process.env.ASSEMBLYAI_API_KEY || '' })
+      
+      // Generate token valid for 5 minutes (300 seconds)
+      const token = await client.streaming.createTemporaryToken({ 
+        expires_in_seconds: 300 
+      })
+      
+      console.log('🎤 [STT] Generated temporary token')
+      return { success: true, token }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to generate STT token:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
+  // Update STT service with new token
+  ipcMain.handle('update-stt-token', async (_event, token: string) => {
+    try {
+      if (!interviewOrchestrator) {
+        throw new Error('Interview orchestrator not initialized')
+      }
+      
+      await interviewOrchestrator.updateSTTToken(token)
+      return { success: true }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to update STT token:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('request-audio-permissions', async () => {
+    try {
+      // Request microphone permissions
+      const { systemPreferences } = require('electron')
+      
+      if (process.platform === 'darwin') {
+        const status = systemPreferences.getMediaAccessStatus('microphone')
+        if (status !== 'granted') {
+          await systemPreferences.askForMediaAccess('microphone')
+        }
+      }
+      
+      return { success: true }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to request audio permissions:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
 
   // Send process stats updates to renderer (reduced frequency to prevent crashes)
   setInterval(async () => {
@@ -209,6 +536,7 @@ app.on('before-quit', () => {
   globalShortcut.unregisterAll()
   wsServer?.stop()
   monitor?.stop()
+  interviewOrchestrator?.destroy()
 })
 
 // Handle app termination
@@ -216,6 +544,7 @@ process.on('SIGINT', () => {
   console.log('Received SIGINT, cleaning up...')
   wsServer?.stop()
   monitor?.stop()
+  interviewOrchestrator?.destroy()
   process.exit(0)
 })
 
@@ -223,5 +552,6 @@ process.on('SIGTERM', () => {
   console.log('Received SIGTERM, cleaning up...')
   wsServer?.stop()
   monitor?.stop()
+  interviewOrchestrator?.destroy()
   process.exit(0)
 })

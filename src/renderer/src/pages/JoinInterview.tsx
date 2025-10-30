@@ -142,8 +142,8 @@ export const JoinInterview: React.FC = () => {
         dispatch(setCurrentSession(session));
         
         message.success('Interview started successfully!');
-        // Navigate to interview with session ID
-        navigate(`/interview/${session.sessionId}`);
+        // Navigate to interview chat (new flow with resume upload)
+        navigate('/interview', { state: { fromLink: true, sessionId: session.sessionId } });
       }
     } catch (error: any) {
       message.error(error.response?.data?.message || 'Failed to start interview');
