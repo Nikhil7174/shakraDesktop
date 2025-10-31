@@ -159,6 +159,15 @@ export class InterviewOrchestrator extends EventEmitter {
       this.emit('askFollowUp', followUp)
       console.log('🎯 [Interview] Speaking follow-up question:', followUp.substring(0, 50))
       
+      // Reset hint and clarification counts for the follow-up question
+      // Follow-up questions should start fresh with their own counts
+      this.stateMachine.resetHintEventCount()
+      this.stateMachine.resetClarificationRequestCount()
+      this.stateMachine.resetHintLevel()
+      this.stateMachine.resetNormalConversationCount()
+      this.stateMachine.resetSilenceTimeoutCount()
+      console.log('🎯 [Interview] Reset hint/clarification counts for follow-up question')
+      
       // Increment follow-up depth when asking follow-up question
       this.stateMachine.incrementFollowUpDepth()
       this.llm.incrementFollowUpDepth()
@@ -488,8 +497,8 @@ export class InterviewOrchestrator extends EventEmitter {
         const hintEvents = this.stateMachine.incrementHintEventCount()
         console.log('🎯 [Interview] Combined hint event count:', hintEvents)
 
-        const currentQuestion = this.llm.getCurrentQuestion()
-        if (!currentQuestion) {
+        const questionForHint = this.llm.getCurrentQuestion()
+        if (!questionForHint) {
           return
         }
 
@@ -499,7 +508,7 @@ export class InterviewOrchestrator extends EventEmitter {
           const hintLevel = this.stateMachine.getHintLevel()
           console.log('🎯 [Interview] Providing hint at level:', hintLevel)
           // Use generateTheoreticalHint to respect hint level (same as silence timeout)
-          const hintText = await this.llm.generateTheoreticalHint(currentQuestion, hintLevel)
+          const hintText = await this.llm.generateTheoreticalHint(questionForHint, hintLevel)
           const result = await this.speakWithPolicy(hintText, {
             interruptible: true,
             bargeInPolicy: 'hard'
@@ -515,10 +524,25 @@ export class InterviewOrchestrator extends EventEmitter {
         }
 
         // Second or more: provide answer and move to next question (no second hint)
-        const answerText = currentQuestion.expectedAnswer || 'Here is the concise answer based on best practices.'
-        const finalPrompt = `Here's the answer: ${answerText}. Let's move to the next question.`
-        console.log('🎯 [Interview] Second hint event (verbal) - providing answer and moving to next question')
-        await this.speakWithPolicy(finalPrompt, {
+        // If in follow-up mode, provide answer to follow-up; otherwise answer to original
+        const currentEvaluation = this.stateMachine.getCurrentEvaluation()
+        const isFollowUp = followUpDepth > 0
+        
+        let answerText: string
+        let answerContext: string
+        
+        if (isFollowUp && currentEvaluation?.followUpQuestion) {
+          // In follow-up: explain what the follow-up was asking about
+          answerText = currentEvaluation.followUpQuestion
+          answerContext = `Since you've asked for help twice, here's what I was asking: ${answerText}. This was a follow up question to your previous answer. Let's move to the next question.`
+        } else {
+          // Original question: provide the expected answer
+          answerText = questionForHint.expectedAnswer || 'Here is the concise answer based on best practices.'
+          answerContext = `Here's the answer: ${answerText}. Let's move to the next question.`
+        }
+        
+        console.log('🎯 [Interview] Second hint event - providing answer (isFollowUp:', isFollowUp, ')')
+        await this.speakWithPolicy(answerContext, {
           interruptible: false,
           bargeInPolicy: 'soft'
         })
@@ -550,10 +574,26 @@ export class InterviewOrchestrator extends EventEmitter {
         }
 
         // Second or more: provide answer and move to next
-        const currentQuestion = this.llm.getCurrentQuestion()
-        if (currentQuestion) {
-          const answerText = currentQuestion.expectedAnswer || 'Here is the concise answer based on best practices.'
-          const finalPrompt = `Here's the answer: ${answerText}. Let's move to the next question.`
+        // If in follow-up mode, provide answer to follow-up; otherwise answer to original
+        const questionForAnswer = this.llm.getCurrentQuestion()
+        const currentEvaluation = this.stateMachine.getCurrentEvaluation()
+        const isFollowUp = followUpDepth > 0
+        
+        if (questionForAnswer) {
+          let answerText: string
+          let finalPrompt: string
+          
+          if (isFollowUp && currentEvaluation?.followUpQuestion) {
+            // In follow-up: explain what the follow-up was asking about
+            answerText = currentEvaluation.followUpQuestion
+            finalPrompt = `Since you've asked for clarification twice, here's what I was asking: ${answerText}. This was a follow up question to your previous answer. Let's move to the next question.`
+          } else {
+            // Original question: provide the expected answer
+            answerText = questionForAnswer.expectedAnswer || 'Here is the concise answer based on best practices.'
+            finalPrompt = `Here's the answer: ${answerText}. Let's move to the next question.`
+          }
+          
+          console.log('🎯 [Interview] Second clarification (isFollowUp:', isFollowUp, ') - speaking answer:', finalPrompt.substring(0, 100))
           await this.speakWithPolicy(finalPrompt, {
             interruptible: false,
             bargeInPolicy: 'soft'
@@ -787,13 +827,18 @@ export class InterviewOrchestrator extends EventEmitter {
       ])
       console.log('🎯 [Interview] Speech completed, proceeding with transition')
 
-      // Speak feedback if available
+      // Speak feedback if available, but skip if follow-up question is present
       if (evaluation.feedback && evaluation.feedback.trim().length > 0) {
-        console.log('🎯 [Interview] 💬 Speaking feedback:', evaluation.feedback.substring(0, 50) + '...')
-        await this.speakWithPolicy(evaluation.feedback, {
-          interruptible: true,
-          bargeInPolicy: 'hard'
-        })
+        // Only speak feedback if there's no follow-up question
+        if (!evaluation.followUpQuestion) {
+          console.log('🎯 [Interview] 💬 Speaking feedback:', evaluation.feedback.substring(0, 50) + '...')
+          await this.speakWithPolicy(evaluation.feedback, {
+            interruptible: true,
+            bargeInPolicy: 'hard'
+          })
+        } else {
+          console.log('🎯 [Interview] ⏭️ Skipping feedback because follow-up question is present')
+        }
       }
 
       // Decide next action based on new criteria

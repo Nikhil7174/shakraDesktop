@@ -516,9 +516,23 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
       }
     }
 
+    // If we're in a follow-up, clarify the follow-up question, not the original
+    const questionForClarification = this.followUpDepth > 0 && this.currentFollowUpQuestion 
+      ? {
+          ...this.currentQuestion,
+          question: this.currentFollowUpQuestion,
+          // Keep original key points and expected answer as they're still relevant
+        }
+      : this.currentQuestion;
+
+    const questionText = questionForClarification.question.substring(0, 100);
+    console.log('🔍 [LLM] Generating clarification for question:', questionText);
+    console.log('🔍 [LLM] Follow-up depth:', this.followUpDepth);
+    console.log('🔍 [LLM] Is follow-up clarification:', this.followUpDepth > 0 && !!this.currentFollowUpQuestion);
+
     try {
       const response = await axios.post(`${this.serverUrl}/api/llm/generate-clarification`, {
-        question: this.currentQuestion
+        question: questionForClarification
       })
 
       if (response.data.success) {
@@ -539,7 +553,7 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
     } catch (error) {
       console.error('Error generating clarification:', error)
       return {
-        text: `Let me rephrase that: ${this.currentQuestion.question}`,
+        text: `Let me rephrase that: ${questionForClarification.question}`,
         action: 'clarification'
       }
     }
