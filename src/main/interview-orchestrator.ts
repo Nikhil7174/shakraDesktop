@@ -61,11 +61,11 @@ interface SpeakResult {
   interrupted: boolean
 }
 
-// Helper: Split text into sentences
-function splitSentences(text: string): string[] {
-  const sentences = text.match(/[^.!?]+[.!?]+\s*/g) ?? [text]
-  return sentences.map(s => s.trim()).filter(s => s.length > 0)
-}
+// Helper: Split text into sentences (currently unused, kept for potential future use)
+// function splitSentences(text: string): string[] {
+//   const sentences = text.match(/[^.!?]+[.!?]+\s*/g) ?? [text]
+//   return sentences.map(s => s.trim()).filter(s => s.length > 0)
+// }
 
 export interface InterviewConfig {
   stt: STTConfig | STTTokenConfig
@@ -99,6 +99,7 @@ export class InterviewOrchestrator extends EventEmitter {
   private currentSpeakOptions?: SpeakOptions
   private softStopRequested = false
   private micPaused = false
+  private suppressAutoMicResume = false
 
   constructor() {
     super()
@@ -299,11 +300,15 @@ export class InterviewOrchestrator extends EventEmitter {
 
     this.tts.on('playbackCompleted', () => {
       console.log('🎯 [Interview] TTS completed - resuming mic after 250ms grace period')
-      // Add grace period before resuming mic to avoid echo tail
-      setTimeout(() => {
-        this.micPaused = false
-        console.log('🎯 [Interview] Mic resumed')
-      }, 250)
+      if (this.suppressAutoMicResume) {
+        console.log('🎯 [Interview] Mic resume suppressed (batch speaking in progress)')
+      } else {
+        // Add grace period before resuming mic to avoid echo tail
+        setTimeout(() => {
+          this.micPaused = false
+          console.log('🎯 [Interview] Mic resumed')
+        }, 250)
+      }
       this.emit('speakingCompleted')
     })
   }
@@ -477,22 +482,83 @@ export class InterviewOrchestrator extends EventEmitter {
       const intent = await this.llm.detectIntent(text)
       console.log('🎯 [Interview] Detected intent:', intent)
       
-      // Handle hint requests
+      // Handle hint requests with unified escalation (combined with silence timeouts)
       if (intent.intent === 'hint_request') {
         console.log('🎯 [Interview] ✨ Handling hint request')
-        response = await this.llm.handleHintRequest()
-        if (response && response.text) {
-          await this.speechGate.speak(response.text)
+        const hintEvents = this.stateMachine.incrementHintEventCount()
+        console.log('🎯 [Interview] Combined hint event count:', hintEvents)
+
+        const currentQuestion = this.llm.getCurrentQuestion()
+        if (!currentQuestion) {
+          return
         }
+
+        if (hintEvents === 1) {
+          // First hint: provide hint at current level and restart silence timer
+          await this.stateMachine.transition('hint_requested')
+          const hintLevel = this.stateMachine.getHintLevel()
+          console.log('🎯 [Interview] Providing hint at level:', hintLevel)
+          // Use generateTheoreticalHint to respect hint level (same as silence timeout)
+          const hintText = await this.llm.generateTheoreticalHint(currentQuestion, hintLevel)
+          const result = await this.speakWithPolicy(hintText, {
+            interruptible: true,
+            bargeInPolicy: 'hard'
+          })
+          if (result.completed) {
+            await this.stateMachine.transition('hint_provided')
+            this.emit('hintProvided', hintText)
+            // Increase hint level for subsequent escalation
+            this.stateMachine.incrementHintLevel()
+            this.stateMachine.startSilenceTimer(40000)
+          }
+          return
+        }
+
+        // Second or more: provide answer and move to next question (no second hint)
+        const answerText = currentQuestion.expectedAnswer || 'Here is the concise answer based on best practices.'
+        const finalPrompt = `Here's the answer: ${answerText}. Let's move to the next question.`
+        console.log('🎯 [Interview] Second hint event (verbal) - providing answer and moving to next question')
+        await this.speakWithPolicy(finalPrompt, {
+          interruptible: false,
+          bargeInPolicy: 'soft'
+        })
+        await this.forceMoveToNextQuestion()
         return
       }
       
-      // Handle clarification requests
+      // Handle clarification requests with escalation
       if (intent.intent === 'clarification_request') {
         console.log('🎯 [Interview] ❓ Handling clarification request')
-        response = await this.llm.handleClarificationRequest()
-        if (response && response.text) {
-          await this.speechGate.speak(response.text)
+        const clarifyCount = this.stateMachine.incrementClarificationRequestCount()
+        console.log('🎯 [Interview] Clarification request count:', clarifyCount)
+
+        if (clarifyCount === 1) {
+          // First time: provide clarification and restart silence timer
+          await this.stateMachine.transition('clarification_requested')
+          response = await this.llm.handleClarificationRequest()
+          if (response && response.text) {
+            const result = await this.speakWithPolicy(response.text, {
+              interruptible: true,
+              bargeInPolicy: 'hard'
+            })
+            if (result.completed) {
+              await this.stateMachine.transition('clarification_provided')
+              this.stateMachine.startSilenceTimer(40000)
+            }
+          }
+          return
+        }
+
+        // Second or more: provide answer and move to next
+        const currentQuestion = this.llm.getCurrentQuestion()
+        if (currentQuestion) {
+          const answerText = currentQuestion.expectedAnswer || 'Here is the concise answer based on best practices.'
+          const finalPrompt = `Here's the answer: ${answerText}. Let's move to the next question.`
+          await this.speakWithPolicy(finalPrompt, {
+            interruptible: false,
+            bargeInPolicy: 'soft'
+          })
+          await this.forceMoveToNextQuestion()
         }
         return
       }
@@ -537,6 +603,38 @@ export class InterviewOrchestrator extends EventEmitter {
           interruptible: true,
           bargeInPolicy: 'hard'
         })
+
+        // Treat generic 'speak' responses during theoretical phase as normal conversation
+        const chitChatCount = this.stateMachine.incrementNormalConversationCount()
+        console.log('🎯 [Interview] Chit-chat count for current question:', chitChatCount)
+
+        if (chitChatCount === 2) {
+          const nudge = "Let's focus on the question. Please share your answer. You can also ask for a hint, or say 'I don't know' if you're unsure."
+          await this.speakWithPolicy(nudge, {
+            interruptible: true,
+            bargeInPolicy: 'hard'
+          })
+          // Restart silence timer after nudge
+          this.stateMachine.startSilenceTimer(40000)
+          return
+        }
+
+        if (chitChatCount >= 3) {
+          console.log('🎯 [Interview] Chit-chat limit reached, providing answer and moving to next question')
+          const currentQuestion = this.llm.getCurrentQuestion()
+          if (currentQuestion) {
+            const answerText = currentQuestion.expectedAnswer || 'Let me provide a concise answer based on best practices.'
+            const finalPrompt = `Here's a concise answer: ${answerText}. Let's move to the next question.`
+            await this.speakWithPolicy(finalPrompt, {
+              interruptible: false,
+              bargeInPolicy: 'soft'
+            })
+
+            // Force progression to next question (bypass evaluation)
+            await this.forceMoveToNextQuestion()
+            return
+          }
+        }
         
         // Check if this is a positive acknowledgement after clarification/hint
         // If so, we should create an evaluation and move to next question
@@ -741,6 +839,29 @@ export class InterviewOrchestrator extends EventEmitter {
     })
   }
 
+  // Force progression to the next question without a normal evaluation
+  private async forceMoveToNextQuestion(): Promise<void> {
+    // Ensure consistent state transitions
+    const currentState = this.stateMachine.getState()
+    if (currentState === InterviewState.WAITING_FOR_ANSWER) {
+      await this.stateMachine.transition('candidate_finished_speaking')
+    }
+
+    // Reset per-question counters/depth
+    this.stateMachine.resetFollowUpDepth()
+    this.llm.resetFollowUpDepth()
+
+    // Move to next or coding if limit reached
+    if (this.stateMachine.hasReachedTheoreticalLimit()) {
+      await this.stateMachine.transition('all_questions_done')
+      return
+    }
+
+    this.stateMachine.moveToNextQuestion()
+    this.llm.moveToNextQuestion()
+    await this.stateMachine.transition('next_question')
+  }
+
   async analyzeCode(codeData: { code: string, problemId: string, timestamp: number }): Promise<any> {
     if (!this.currentSession) {
       throw new Error('No active interview session')
@@ -843,33 +964,29 @@ export class InterviewOrchestrator extends EventEmitter {
     try {
       this.currentSpeakOptions = opts
       this.softStopRequested = false
+      // Suppress automatic mic resume between sentences; resume once after the whole batch
+      this.suppressAutoMicResume = true
+      this.micPaused = true
       this.emit('speakingStarted')
 
-      const parts = splitSentences(text)
-      console.log(`🎯 [Speech] Speaking ${parts.length} sentences with policy:`, opts)
-
-      for (let i = 0; i < parts.length; i++) {
-        // Check for soft stop or hard interrupt before next sentence
-        if (i > 0 && (this.speechGate.wasInterrupted() || this.softStopRequested)) {
-          console.log(`🎯 [Speech] Stopping at sentence ${i}/${parts.length}`)
-          break
-        }
-
-        await this.speechGate.speak(parts[i])
-        await this.speechGate.wait()
-
-        if (this.softStopRequested) {
-          console.log(`🎯 [Speech] Soft stop after sentence ${i + 1}/${parts.length}`)
-          break
-        }
-      }
+      // Always send entire text as one TTS call to avoid delays between sentences
+      console.log(`🎯 [Speech] Speaking full text with policy:`, opts)
+      await this.speechGate.speak(text)
+      await this.speechGate.wait()
 
       const interrupted = this.speechGate.wasInterrupted()
       const softStopped = this.softStopRequested
       const completed = !interrupted && !softStopped
 
+      // Manually resume mic once at the end of batch (if not interrupted early)
+      setTimeout(() => {
+        this.micPaused = false
+        console.log('🎯 [Interview] Mic resumed (batch complete)')
+      }, 250)
+
       this.emit('speakingCompleted')
       this.currentSpeakOptions = undefined
+      this.suppressAutoMicResume = false
 
       return { completed, softStopped, interrupted }
 
@@ -878,6 +995,7 @@ export class InterviewOrchestrator extends EventEmitter {
       this.emit('ttsError', error)
       this.emit('speakingCompleted')
       this.currentSpeakOptions = undefined
+      this.suppressAutoMicResume = false
       return { completed: false, softStopped: false, interrupted: true }
     }
   }
@@ -907,23 +1025,38 @@ export class InterviewOrchestrator extends EventEmitter {
     if (currentState === InterviewState.THEORETICAL_QUESTION || currentState === InterviewState.WAITING_FOR_ANSWER) {
       const currentQuestion = this.llm.getCurrentQuestion()
       if (currentQuestion) {
-        const hintLevel = this.stateMachine.getHintLevel()
-        console.log('🎯 [Interview] Providing automatic hint at level:', hintLevel)
+        // Use unified hint event counter for silence too
+        const hintEvents = this.stateMachine.incrementHintEventCount()
+        console.log('🎯 [Interview] Combined hint event count (silence):', hintEvents)
         
         try {
-          const hintText = await this.llm.generateTheoreticalHint(currentQuestion, hintLevel)
-          // Hints are interruptible with hard stop
-          const result = await this.speakWithPolicy(hintText, {
-            interruptible: true,
-            bargeInPolicy: 'hard'
-          })
-          
-          if (result.completed) {
-            this.emit('hintProvided', hintText)
-            // Increment hint level for next timeout
-            this.stateMachine.incrementHintLevel()
-            // Restart silence timer for next hint if needed
-            this.stateMachine.startSilenceTimer(40000)
+          if (hintEvents === 1) {
+            // First silence: provide a hint
+            const hintLevel = this.stateMachine.getHintLevel()
+            console.log('🎯 [Interview] First hint event (silence) - providing hint at level:', hintLevel)
+            const hintText = await this.llm.generateTheoreticalHint(currentQuestion, hintLevel)
+            const result = await this.speakWithPolicy(hintText, {
+              interruptible: true,
+              bargeInPolicy: 'hard'
+            })
+            if (result.completed) {
+              this.emit('hintProvided', hintText)
+              // Increment hint level for potential subsequent hint
+              this.stateMachine.incrementHintLevel()
+              // Restart timer for potential second silence
+              this.stateMachine.startSilenceTimer(40000)
+            }
+          } else {
+            // Second hint-related event: provide answer and move on (no second hint)
+            const answerText = currentQuestion.expectedAnswer || 'Here is the concise answer based on best practices.'
+            const finalPrompt = `Here's the answer: ${answerText}. Let's move to the next question.`
+            console.log('🎯 [Interview] Second hint event (silence) - providing answer and moving to next question')
+            await this.speakWithPolicy(finalPrompt, {
+              interruptible: false,
+              bargeInPolicy: 'soft'
+            })
+            // Do not restart silence timer; progress to next
+            await this.forceMoveToNextQuestion()
           }
         } catch (error) {
           console.error('Error providing automatic hint:', error)

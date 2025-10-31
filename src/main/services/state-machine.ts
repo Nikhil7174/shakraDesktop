@@ -28,6 +28,11 @@ export interface InterviewData {
   followUpDepth: number
   maxTheoreticalQuestions: number
   totalTheoreticalQuestions: number
+  normalConversationCount?: number
+  silenceTimeoutCount?: number
+  clarificationRequestCount?: number
+  hintRequestCount?: number
+  hintEventCount?: number
 }
 
 export interface StateTransition {
@@ -52,7 +57,12 @@ export class InterviewStateMachine extends EventEmitter {
       evaluations: [],
       followUpDepth: 0,
       maxTheoreticalQuestions: 10,
-      totalTheoreticalQuestions: 0
+      totalTheoreticalQuestions: 0,
+      normalConversationCount: 0,
+      silenceTimeoutCount: 0,
+      clarificationRequestCount: 0,
+      hintRequestCount: 0,
+      hintEventCount: 0
     }
     this.initializeTransitions()
   }
@@ -235,6 +245,16 @@ export class InterviewStateMachine extends EventEmitter {
       this.incrementTotalTheoreticalQuestions()
       // Reset hint level for new question
       this.resetHintLevel()
+      // Reset chit-chat counter for new question
+      this.resetNormalConversationCount()
+      // Reset silence timeout counter for new question
+      this.resetSilenceTimeoutCount()
+      // Reset clarification request counter for new question
+      this.resetClarificationRequestCount()
+      // Reset hint request counter for new question
+      this.resetHintRequestCount()
+      // Reset combined hint event counter for new question
+      this.resetHintEventCount()
       this.emit('askQuestion', question)
     } else {
       // No more questions, transition to coding
@@ -290,6 +310,11 @@ export class InterviewStateMachine extends EventEmitter {
 
   moveToNextQuestion(): void {
     this.data.currentQuestionIndex++
+    this.resetNormalConversationCount()
+    this.resetSilenceTimeoutCount()
+    this.resetClarificationRequestCount()
+    this.resetHintRequestCount()
+    this.resetHintEventCount()
     console.log('🎯 [StateMachine] Moved to question index:', this.data.currentQuestionIndex)
   }
 
@@ -297,6 +322,11 @@ export class InterviewStateMachine extends EventEmitter {
   setCurrentQuestionIndex(index: number): void {
     const clamped = Math.max(0, Math.min(index, this.data.questions.length - 1))
     this.data.currentQuestionIndex = clamped
+    this.resetNormalConversationCount()
+    this.resetSilenceTimeoutCount()
+    this.resetClarificationRequestCount()
+    this.resetHintRequestCount()
+    this.resetHintEventCount()
     console.log('🎯 [StateMachine] Set current question index to:', this.data.currentQuestionIndex)
   }
 
@@ -355,7 +385,12 @@ export class InterviewStateMachine extends EventEmitter {
       evaluations: [],
       followUpDepth: 0,
       maxTheoreticalQuestions: 10,
-      totalTheoreticalQuestions: 0
+      totalTheoreticalQuestions: 0,
+      normalConversationCount: 0,
+      silenceTimeoutCount: 0,
+      clarificationRequestCount: 0,
+      hintRequestCount: 0,
+      hintEventCount: 0
     }
     this.clearSilenceTimer()
     this.resetHintLevel()
@@ -437,6 +472,81 @@ export class InterviewStateMachine extends EventEmitter {
 
   resetHintLevel(): void {
     this.hintLevel = 1
+  }
+
+  // Normal conversation (chit-chat) counter per question
+  incrementNormalConversationCount(): number {
+    const current = (this.data.normalConversationCount || 0) + 1
+    this.data.normalConversationCount = current
+    return current
+  }
+
+  getNormalConversationCount(): number {
+    return this.data.normalConversationCount || 0
+  }
+
+  resetNormalConversationCount(): void {
+    this.data.normalConversationCount = 0
+  }
+
+  // Silence timeout count per question
+  incrementSilenceTimeoutCount(): number {
+    const current = (this.data.silenceTimeoutCount || 0) + 1
+    this.data.silenceTimeoutCount = current
+    return current
+  }
+
+  getSilenceTimeoutCount(): number {
+    return this.data.silenceTimeoutCount || 0
+  }
+
+  resetSilenceTimeoutCount(): void {
+    this.data.silenceTimeoutCount = 0
+  }
+
+  // Clarification request count per question
+  incrementClarificationRequestCount(): number {
+    const current = (this.data.clarificationRequestCount || 0) + 1
+    this.data.clarificationRequestCount = current
+    return current
+  }
+
+  getClarificationRequestCount(): number {
+    return this.data.clarificationRequestCount || 0
+  }
+
+  resetClarificationRequestCount(): void {
+    this.data.clarificationRequestCount = 0
+  }
+
+  // Hint request count per question
+  incrementHintRequestCount(): number {
+    const current = (this.data.hintRequestCount || 0) + 1
+    this.data.hintRequestCount = current
+    return current
+  }
+
+  getHintRequestCount(): number {
+    return this.data.hintRequestCount || 0
+  }
+
+  resetHintRequestCount(): void {
+    this.data.hintRequestCount = 0
+  }
+
+  // Shared hint event count (silence timeout or verbal hint)
+  incrementHintEventCount(): number {
+    const current = (this.data.hintEventCount || 0) + 1
+    this.data.hintEventCount = current
+    return current
+  }
+
+  getHintEventCount(): number {
+    return this.data.hintEventCount || 0
+  }
+
+  resetHintEventCount(): void {
+    this.data.hintEventCount = 0
   }
 }
 

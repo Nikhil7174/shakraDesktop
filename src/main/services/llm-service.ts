@@ -91,8 +91,9 @@ export class LLMService extends EventEmitter {
       } else if (intent.intent === 'clarification_request') {
         return await this.handleClarificationRequest()
       } else if (intent.intent === 'answer') {
-        // This is an answer - evaluate it
-        if (this.currentQuestion && this.shouldEvaluate(text)) {
+        // This is an answer - always evaluate it if we have a current question
+        // The LLM evaluation endpoint will handle incomplete/partial answers appropriately
+        if (this.currentQuestion) {
           return await this.evaluateAnswer(text, this.followUpDepth, this.maxTheoreticalQuestions)
         }
       }
@@ -135,31 +136,6 @@ Current Question: ${this.currentQuestion.question}
 Expected Answer Key Points: ${this.currentQuestion.keyPoints.join(', ')}
 Expected Answer: ${this.currentQuestion.expectedAnswer}`
   }
-
-  private shouldEvaluate(text: string): boolean {
-    // Simple heuristic to determine if the candidate has finished answering
-    const endingPhrases = [
-      "that's it",
-      "that's all",
-      "i think that covers it",
-      "i'm done",
-      'finished',
-      'nothing else',
-      'that covers it',
-      'covered everything',
-      'we can move on',
-      'move on',
-      'next question',
-      'we can continue',
-      'go ahead',
-      "that's enough"
-    ]
-    const lowerText = text.toLowerCase()
-    const hasEndingPhrase = endingPhrases.some(phrase => lowerText.includes(phrase))
-    const isLongEnough = lowerText.trim().length >= 80
-    return hasEndingPhrase || isLongEnough
-  }
-
 
   private async evaluateAnswer(candidateAnswer: string, followUpDepth: number = 0, maxTheoreticalQuestions: number = 10): Promise<LLMResponse> {
     console.log('🔍 [LLM-Main] evaluateAnswer called with:', {
