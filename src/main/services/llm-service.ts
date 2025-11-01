@@ -1,5 +1,7 @@
 import { EventEmitter } from 'events'
 import axios from 'axios'
+import http from 'http'
+import https from 'https'
 
 export interface Message {
   role: 'system' | 'user' | 'assistant'
@@ -60,8 +62,33 @@ export interface LLMResponse {
   }
 }
 
+// Create reusable HTTP/HTTPS agents for connection pooling
+// Keep connection alive for entire interview (set high, but server will close idle connections anyway)
+// Note: This doesn't increase costs - keep-alive connections are free and actually save resources
+const httpAgent = new http.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 7200000,  // 2 hours (high value, but servers close idle connections ~60-120s anyway)
+  maxSockets: 10,          // Max concurrent connections per host
+  maxFreeSockets: 2       // Max idle connections to keep
+})
+
+const httpsAgent = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 7200000,  // 2 hours (high value, but servers close idle connections ~60-120s anyway)
+  maxSockets: 10,
+  maxFreeSockets: 2
+})
+
+// Create shared axios instance with connection reuse
+const axiosInstance = axios.create({
+  httpAgent: httpAgent,
+  httpsAgent: httpsAgent,
+  timeout: 30000  // 30s timeout
+})
+
 export class LLMService extends EventEmitter {
   private serverUrl: string
+  private axios: typeof axiosInstance  // Use shared instance with connection reuse
   private conversationHistory: Message[] = []
   private currentQuestion: Question | null = null
   private currentQuestionIndex: number = 0
@@ -73,6 +100,7 @@ export class LLMService extends EventEmitter {
   constructor(serverUrl: string) {
     super()
     this.serverUrl = serverUrl
+    this.axios = axiosInstance  // Use shared instance with connection reuse
   }
 
   async processTranscript(text: string, detectedIntent?: IntentDetection): Promise<LLMResponse> {
@@ -106,7 +134,7 @@ export class LLMService extends EventEmitter {
       }
 
       // Fallback to regular conversation
-      const response = await axios.post(`${this.serverUrl}/api/llm/generate-response`, {
+      const response = await this.axios.post(`${this.serverUrl}/api/llm/generate-response`, {
         context: this.buildContext(),
         conversationHistory: this.conversationHistory
       })
@@ -160,7 +188,7 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
 
     try {
       console.log('🔍 [LLM-Main] Calling evaluate-answer API')
-      const response = await axios.post(`${this.serverUrl}/api/llm/evaluate-answer`, {
+      const response = await this.axios.post(`${this.serverUrl}/api/llm/evaluate-answer`, {
         question: this.currentQuestion,
         candidateAnswer,
         followUpDepth,
@@ -240,7 +268,7 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
 
   async analyzeCode(code: string, problem: string, language: string = 'javascript'): Promise<CodeAnalysis> {
     try {
-      const response = await axios.post(`${this.serverUrl}/api/llm/analyze-code`, {
+      const response = await this.axios.post(`${this.serverUrl}/api/llm/analyze-code`, {
         code,
         problem,
         language
@@ -259,7 +287,7 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
 
   async generateFollowUp(question: Question, candidateAnswer: string): Promise<string> {
     try {
-      const response = await axios.post(`${this.serverUrl}/api/llm/generate-followup`, {
+      const response = await this.axios.post(`${this.serverUrl}/api/llm/generate-followup`, {
         question,
         candidateAnswer
       })
@@ -443,7 +471,7 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
   // Intent detection - separate from evaluation
   async detectIntent(candidateInput: string): Promise<IntentDetection> {
     try {
-      const response = await axios.post(`${this.serverUrl}/api/llm/detect-intent`, {
+      const response = await this.axios.post(`${this.serverUrl}/api/llm/detect-intent`, {
         candidateInput
       })
 
@@ -483,7 +511,7 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
     console.log('🔍 [LLM] Is follow-up hint:', this.followUpDepth > 0 && !!this.currentFollowUpQuestion);
 
     try {
-      const response = await axios.post(`${this.serverUrl}/api/llm/generate-hint`, {
+      const response = await this.axios.post(`${this.serverUrl}/api/llm/generate-hint`, {
         question: questionForHint,
         candidateAnswer: '' // Parameter still required by API but not used
       })
@@ -538,7 +566,7 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
     console.log('🔍 [LLM] Is follow-up clarification:', this.followUpDepth > 0 && !!this.currentFollowUpQuestion);
 
     try {
-      const response = await axios.post(`${this.serverUrl}/api/llm/generate-clarification`, {
+      const response = await this.axios.post(`${this.serverUrl}/api/llm/generate-clarification`, {
         question: questionForClarification
       })
 
@@ -583,7 +611,7 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
     
     try {
       console.log('🔍 [LLM-Main] Calling evaluate-followup API')
-      const response = await axios.post(`${this.serverUrl}/api/llm/evaluate-followup`, {
+      const response = await this.axios.post(`${this.serverUrl}/api/llm/evaluate-followup`, {
         originalQuestion,
         originalCandidateAnswer,
         followUpQuestion,

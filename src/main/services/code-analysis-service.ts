@@ -1,5 +1,7 @@
 import { EventEmitter } from 'events'
 import axios from 'axios'
+import http from 'http'
+import https from 'https'
 
 export interface CodingProblem {
   id: string
@@ -43,8 +45,33 @@ export interface Observation {
   analysis: CodeAnalysis
 }
 
+// Create reusable HTTP/HTTPS agents for connection pooling (shared with llm-service)
+// Keep connection alive for entire interview (set high, but server will close idle connections anyway)
+// Note: This doesn't increase costs - keep-alive connections are free and actually save resources
+const httpAgent = new http.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 7200000,  // 2 hours (high value, but servers close idle connections ~60-120s anyway)
+  maxSockets: 10,          // Max concurrent connections per host
+  maxFreeSockets: 2       // Max idle connections to keep
+})
+
+const httpsAgent = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 7200000,  // 2 hours (high value, but servers close idle connections ~60-120s anyway)
+  maxSockets: 10,
+  maxFreeSockets: 2
+})
+
+// Create shared axios instance with connection reuse
+const axiosInstance = axios.create({
+  httpAgent: httpAgent,
+  httpsAgent: httpsAgent,
+  timeout: 30000  // 30s timeout
+})
+
 export class CodeAnalysisService extends EventEmitter {
   private serverUrl: string
+  private axios: typeof axiosInstance  // Use shared instance with connection reuse
   private observations: Observation[] = []
   private currentProblem: CodingProblem | null = null
   private startTime: number = 0
@@ -55,11 +82,12 @@ export class CodeAnalysisService extends EventEmitter {
   constructor(serverUrl: string) {
     super()
     this.serverUrl = serverUrl
+    this.axios = axiosInstance  // Use shared instance with connection reuse
   }
 
   async analyzeCode(code: string, problem: CodingProblem): Promise<CodeAnalysis> {
     try {
-      const response = await axios.post(`${this.serverUrl}/api/llm/analyze-code`, {
+      const response = await this.axios.post(`${this.serverUrl}/api/llm/analyze-code`, {
         code,
         problem: problem.description,
         language: problem.language
@@ -100,7 +128,7 @@ export class CodeAnalysisService extends EventEmitter {
     clarification?: string
   }> {
     try {
-      const response = await axios.post(`${this.serverUrl}/api/llm/evaluate-coding-approach`, {
+      const response = await this.axios.post(`${this.serverUrl}/api/llm/evaluate-coding-approach`, {
         explanation: verbalExplanation,
         problem: {
           title: problem.title,
@@ -164,7 +192,7 @@ export class CodeAnalysisService extends EventEmitter {
         ? "Provide a moderate hint about the implementation"
         : "Provide a direct hint about the solution"
 
-      const response = await axios.post(`${this.serverUrl}/api/llm/generate-response`, {
+      const response = await this.axios.post(`${this.serverUrl}/api/llm/generate-response`, {
         context: `${hintContext}. Coding problem: ${problem.description}. Current code: ${currentCode}.`,
         conversationHistory: []
       })

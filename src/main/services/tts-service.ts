@@ -2,6 +2,17 @@ import { EventEmitter } from 'events'
 import OpenAI from 'openai'
 import { Readable } from 'stream'
 import Speaker from 'speaker'
+import https from 'https'
+
+// Create reusable HTTPS agent for connection pooling (OpenAI API is HTTPS-only)
+// Keep connection alive for entire interview (set high, but server will close idle connections anyway)
+// Note: This doesn't increase costs - keep-alive connections are free and actually save resources
+const httpsAgent = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 7200000,  // 2 hours (high value, but servers close idle connections ~60-120s anyway)
+  maxSockets: 10,          // Max concurrent connections per host
+  maxFreeSockets: 2       // Max idle connections to keep
+})
 
 export interface TTSConfig {
   provider: 'openai'
@@ -27,7 +38,11 @@ export class TTSService extends EventEmitter {
   constructor(config: TTSConfig) {
     super()
     this.config = config
-    this.openai = new OpenAI({ apiKey: config.apiKey })
+    this.openai = new OpenAI({ 
+      apiKey: config.apiKey,
+      httpAgent: httpsAgent, // Use connection pooling for HTTPS (OpenAI API is HTTPS-only)
+      timeout: 30000  // 30s timeout
+    })
   }
 
   async generateSpeech(text: string): Promise<TTSResponse> {

@@ -143,9 +143,7 @@ export class InterviewOrchestrator extends EventEmitter {
         bargeInPolicy: 'hard'
       })
       if (result.completed) {
-        // Add a small pause after intro completes
-        await this.delay(500)
-        // Then transition to first question
+        // Transition to first question immediately
         await this.stateMachine.transition('begin_questions')
       }
     })
@@ -205,7 +203,6 @@ export class InterviewOrchestrator extends EventEmitter {
         console.log(`🎯 [Interview] ${this.currentSession.codingProblems.length} coding problem(s) available`)
         // Only transition if intro completed
         if (result.completed || result.softStopped) {
-          await this.delay(1000) // Small pause before presenting problem
           await this.stateMachine.transition('coding_problem_presented')
         }
       } else {
@@ -308,7 +305,7 @@ export class InterviewOrchestrator extends EventEmitter {
     })
 
     this.tts.on('playbackCompleted', () => {
-      console.log('🎯 [Interview] TTS completed - resuming mic after 250ms grace period')
+      console.log('🎯 [Interview] TTS completed - resuming mic after 100ms grace period')
       if (this.suppressAutoMicResume) {
         console.log('🎯 [Interview] Mic resume suppressed (batch speaking in progress)')
       } else {
@@ -316,7 +313,7 @@ export class InterviewOrchestrator extends EventEmitter {
         setTimeout(() => {
           this.micPaused = false
           console.log('🎯 [Interview] Mic resumed')
-        }, 250)
+        }, 100)
       }
       this.emit('speakingCompleted')
     })
@@ -400,7 +397,6 @@ export class InterviewOrchestrator extends EventEmitter {
           console.log('🎯 [Interview] No theoretical questions, starting directly with coding')
           // Transition directly to coding intro
           await this.stateMachine.transition('start_interview')
-          await this.delay(500)
           // Manual transition since we're bypassing theoretical phase
           await this.stateMachine.setState(InterviewState.CODING_INTRO)
           this.stateMachine.emit('codingIntroStarted')
@@ -418,7 +414,6 @@ export class InterviewOrchestrator extends EventEmitter {
             interruptible: false,
             bargeInPolicy: 'soft'
           })
-          await this.delay(500)
           // Transition directly to coding intro
           await this.stateMachine.setState(InterviewState.CODING_INTRO)
           this.stateMachine.emit('codingIntroStarted')
@@ -821,13 +816,17 @@ export class InterviewOrchestrator extends EventEmitter {
       this.llm.setFollowUpDepth(this.stateMachine.getFollowUpDepth())
       this.llm.setMaxTheoreticalQuestions(this.stateMachine.getMaxTheoreticalQuestions())
 
-      // Wait for any current TTS to complete before making transitions
-      console.log('🎯 [Interview] Waiting for speech to complete...')
-      await Promise.race([
-        this.speechGate.wait(),
-        new Promise(resolve => setTimeout(resolve, 10000)) // 10s timeout
-      ])
-      console.log('🎯 [Interview] Speech completed, proceeding with transition')
+      // Only wait if speech is actually playing (usually not the case after evaluation)
+      if (this.speechGate.isSpeaking()) {
+        console.log('🎯 [Interview] Waiting for speech to complete...')
+        await Promise.race([
+          this.speechGate.wait(),
+          new Promise(resolve => setTimeout(resolve, 5000)) // 5s timeout (reduced from 10s)
+        ])
+        console.log('🎯 [Interview] Speech completed, proceeding with transition')
+      } else {
+        console.log('🎯 [Interview] No speech playing, skipping wait')
+      }
 
       // Speak feedback if available, but skip if follow-up question is present
       if (evaluation.feedback && evaluation.feedback.trim().length > 0) {
@@ -984,14 +983,12 @@ export class InterviewOrchestrator extends EventEmitter {
         this.codeAnalysis.setCurrentProblem(nextProblem)
         console.log('🎯 [Interview] Moving to next coding problem:', nextProblem.title)
         
-        // Present next problem
-        await this.delay(1000)
+        // Present next problem immediately
         await this.speakCodingProblem(nextProblem)
         this.emit('presentCodingProblem', nextProblem)
       } else if (!hasNextProblem && analysis.progress >= 70) {
         // All coding problems done
         console.log('🎯 [Interview] All coding problems completed')
-        await this.delay(1000)
         await this.stateMachine.transition('solution_complete')
       }
 
@@ -1029,7 +1026,7 @@ export class InterviewOrchestrator extends EventEmitter {
       setTimeout(() => {
         this.micPaused = false
         console.log('🎯 [Interview] Mic resumed (batch complete)')
-      }, 250)
+      }, 100)
 
       this.emit('speakingCompleted')
       this.currentSpeakOptions = undefined
@@ -1251,8 +1248,4 @@ export class InterviewOrchestrator extends EventEmitter {
     this.isInitialized = false
   }
 
-  // Utility method for delays
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms))
-  }
 }
