@@ -25,6 +25,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 }) => {
   const [currentState, setCurrentState] = useState<string>('connecting')
   const [currentQuestion, setCurrentQuestion] = useState<Question | null>(null)
+  const [followUpQuestionText, setFollowUpQuestionText] = useState<string | null>(null)
   const [currentCodingProblem, setCurrentCodingProblem] = useState<CodingProblem | null>(null)
   const [isListening, setIsListening] = useState(false)
   const [isSpeaking, setIsSpeaking] = useState(false)
@@ -147,7 +148,14 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       // Question changes
       window.electronAPI.onQuestionChanged((question: Question) => {
         setCurrentQuestion(question)
+        setFollowUpQuestionText(null) // Clear any follow-up when moving to new question
         setProgress(prev => ({ ...prev, current: prev.current + 1 }))
+      })
+
+      // Follow-up question asked
+      window.electronAPI.onFollowUpAsked?.((followUpText: string) => {
+        console.log('📝 [Renderer] Follow-up question asked:', followUpText)
+        setFollowUpQuestionText(followUpText)
       })
 
       // Coding problem changes
@@ -426,6 +434,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           <div className="theoretical-section">
             <QuestionDisplay 
               question={currentQuestion}
+              followUpQuestionText={followUpQuestionText}
               isListening={isListening}
               isSpeaking={isSpeaking}
               progress={progress}

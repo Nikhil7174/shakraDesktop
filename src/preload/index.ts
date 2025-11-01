@@ -58,6 +58,10 @@ const interviewAPI = {
     ipcRenderer.on('question-changed', (_event, question) => callback(question))
   },
   
+  onFollowUpAsked: (callback: (followUpText: string) => void) => {
+    ipcRenderer.on('follow-up-asked', (_event, followUpText) => callback(followUpText))
+  },
+  
   onCodingProblemChanged: (callback: (problem: any) => void) => {
     ipcRenderer.on('coding-problem-changed', (_event, problem) => callback(problem))
   },

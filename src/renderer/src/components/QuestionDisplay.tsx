@@ -3,6 +3,7 @@ import { Question } from '../../../shared/types'
 
 interface QuestionDisplayProps {
   question: Question | null
+  followUpQuestionText?: string | null
   isListening: boolean
   isSpeaking: boolean
   progress: { current: number, total: number }
@@ -10,6 +11,7 @@ interface QuestionDisplayProps {
 
 export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
   question,
+  followUpQuestionText,
   isListening,
   isSpeaking,
   progress
@@ -25,11 +27,16 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
     )
   }
 
+  // Display follow-up question if available, otherwise show original question
+  const displayQuestion = followUpQuestionText || question.question
+  const isFollowUp = !!followUpQuestionText
+
   return (
     <div className="question-display">
       <div className="question-header">
         <div className="question-number">
           Question {progress.current} of {progress.total}
+          {isFollowUp && <span className="follow-up-badge">Follow-up</span>}
         </div>
         <div className="question-status">
           {isSpeaking && (
@@ -48,33 +55,13 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
       </div>
 
       <div className="question-content">
-        <h2 className="question-text">{question.question}</h2>
-        
-        {question.keyPoints && question.keyPoints.length > 0 && (
-          <div className="key-points">
-            <h4>Key points to cover:</h4>
-            <ul>
-              {question.keyPoints.map((point, index) => (
-                <li key={index}>{point}</li>
-              ))}
-            </ul>
+        {isFollowUp && (
+          <div className="original-question-context">
+            <div className="context-label">Original Question:</div>
+            <div className="context-text">{question.question}</div>
           </div>
         )}
-
-        {question.followUps && question.followUps.length > 0 && (
-          <div className="follow-ups">
-            <h4>Possible follow-up topics:</h4>
-            <ul>
-              {question.followUps.map((followUp, index) => (
-                <li key={index}>
-                  <strong>If you mention:</strong> {Array.isArray(followUp.trigger) ? followUp.trigger.join(', ') : followUp.trigger}
-                  <br />
-                  <strong>I might ask:</strong> {followUp.question}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+        <h2 className="question-text">{displayQuestion}</h2>
       </div>
 
       <div className="question-instructions">
@@ -143,6 +130,23 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
           font-size: 14px;
           color: #888888;
           font-weight: 500;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .follow-up-badge {
+          display: inline-flex;
+          align-items: center;
+          padding: 2px 8px;
+          background: rgba(156, 39, 176, 0.2);
+          color: #ab47bc;
+          border: 1px solid rgba(156, 39, 176, 0.3);
+          border-radius: 12px;
+          font-size: 11px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
         }
 
         .question-status {
@@ -190,49 +194,34 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
           margin-bottom: 24px;
         }
 
+        .original-question-context {
+          margin-bottom: 20px;
+          padding: 16px;
+          background: rgba(33, 150, 243, 0.1);
+          border-left: 3px solid #2196f3;
+          border-radius: 4px;
+        }
+
+        .context-label {
+          font-size: 12px;
+          color: #2196f3;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin-bottom: 8px;
+        }
+
+        .context-text {
+          font-size: 14px;
+          color: #b0b0b0;
+          line-height: 1.5;
+        }
+
         .question-text {
           font-size: 20px;
           color: #ffffff;
           margin: 0 0 20px 0;
           line-height: 1.4;
-        }
-
-        .key-points,
-        .follow-ups {
-          margin: 20px 0;
-          padding: 16px;
-          background: #1a1a1a;
-          border-radius: 8px;
-          border: 1px solid #333;
-        }
-
-        .key-points h4,
-        .follow-ups h4 {
-          margin: 0 0 12px 0;
-          color: #4caf50;
-          font-size: 14px;
-          font-weight: 600;
-        }
-
-        .key-points ul,
-        .follow-ups ul {
-          margin: 0;
-          padding-left: 20px;
-        }
-
-        .key-points li,
-        .follow-ups li {
-          margin: 8px 0;
-          color: #cccccc;
-          line-height: 1.4;
-        }
-
-        .follow-ups li {
-          font-size: 13px;
-        }
-
-        .follow-ups strong {
-          color: #ffffff;
         }
 
         .question-instructions {

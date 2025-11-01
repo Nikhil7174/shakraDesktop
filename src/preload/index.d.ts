@@ -17,6 +17,7 @@ type InterviewAPI = {
   onAudioCaptureRequired: (callback: () => void) => void
   onInterviewStateChange: (callback: (state: string) => void) => void
   onQuestionChanged: (callback: (question: any) => void) => void
+  onFollowUpAsked?: (callback: (followUpText: string) => void) => void
   onCodingProblemChanged: (callback: (problem: any) => void) => void
   onListeningStateChange: (callback: (listening: boolean) => void) => void
   onSpeakingStateChange: (callback: (speaking: boolean) => void) => void
