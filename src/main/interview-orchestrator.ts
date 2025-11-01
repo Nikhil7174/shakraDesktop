@@ -627,12 +627,14 @@ export class InterviewOrchestrator extends EventEmitter {
         } else {
           // Fallback to regular processing if context is missing
           console.log('🎯 [Interview] Missing context, falling back to regular evaluation')
-          response = await this.llm.processTranscript(text)
+          // Pass detected intent to avoid duplicate detection
+          response = await this.llm.processTranscript(text, intent)
         }
       } else {
         // Regular answer evaluation
         console.log('🎯 [Interview] Regular answer evaluation')
-        response = await this.llm.processTranscript(text)
+        // Pass detected intent to avoid duplicate detection
+        response = await this.llm.processTranscript(text, intent)
       }
       
       console.log('🎯 [Interview] LLM response:', response)

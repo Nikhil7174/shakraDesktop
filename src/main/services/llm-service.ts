@@ -75,7 +75,7 @@ export class LLMService extends EventEmitter {
     this.serverUrl = serverUrl
   }
 
-  async processTranscript(text: string): Promise<LLMResponse> {
+  async processTranscript(text: string, detectedIntent?: IntentDetection): Promise<LLMResponse> {
     // Add user message to conversation history
     this.conversationHistory.push({
       role: 'user',
@@ -83,8 +83,15 @@ export class LLMService extends EventEmitter {
     })
 
     try {
-      // First, detect the intent of the candidate's input
-      const intent = await this.detectIntent(text)
+      // Use provided intent or detect it
+      let intent: IntentDetection
+      if (detectedIntent) {
+        console.log('🔍 [LLM] Using pre-detected intent:', detectedIntent.intent, '(skipping duplicate detection)')
+        intent = detectedIntent
+      } else {
+        console.log('🔍 [LLM] No intent provided, detecting...')
+        intent = await this.detectIntent(text)
+      }
       
       if (intent.intent === 'hint_request') {
         return await this.handleHintRequest()
