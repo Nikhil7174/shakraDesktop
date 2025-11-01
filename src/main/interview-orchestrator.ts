@@ -871,10 +871,20 @@ export class InterviewOrchestrator extends EventEmitter {
         // If we weren't in a follow-up, we just completed a regular question
         // Either way, move to next question or coding
         
-        if (this.stateMachine.hasReachedTheoreticalLimit()) {
+        // First, check if there are more theoretical questions available
+        const progress = this.llm.getProgress()
+        const hasMoreQuestions = progress.current < progress.total
+        
+        if (!hasMoreQuestions) {
+          // No more questions in the array, move to coding regardless of limit
+          console.log('🎯 [Interview] No more theoretical questions available, transitioning to all_questions_done')
+          await this.stateMachine.transition('all_questions_done')
+        } else if (this.stateMachine.hasReachedTheoreticalLimit()) {
+          // Still have questions, but reached theoretical limit (too many follow-ups), move to coding
           console.log('🎯 [Interview] Reached theoretical limit, transitioning to all_questions_done')
           await this.stateMachine.transition('all_questions_done')
         } else {
+          // More questions available and under limit, move to next question
           console.log('🎯 [Interview] Moving to next_question (was in follow-up:', currentFollowUpDepth > 0, ')')
           // Increment question index in both state machine and LLM service before transitioning
           this.stateMachine.moveToNextQuestion()
@@ -897,12 +907,25 @@ export class InterviewOrchestrator extends EventEmitter {
     this.stateMachine.resetFollowUpDepth()
     this.llm.resetFollowUpDepth()
 
-    // Move to next or coding if limit reached
-    if (this.stateMachine.hasReachedTheoreticalLimit()) {
+    // First, check if there are more theoretical questions available
+    const progress = this.llm.getProgress()
+    const hasMoreQuestions = progress.current < progress.total
+    
+    if (!hasMoreQuestions) {
+      // No more questions in the array, move to coding regardless of limit
+      console.log('🎯 [Interview] No more theoretical questions available, transitioning to all_questions_done')
       await this.stateMachine.transition('all_questions_done')
       return
     }
 
+    // Check if reached theoretical limit (for preventing too many follow-ups)
+    if (this.stateMachine.hasReachedTheoreticalLimit()) {
+      console.log('🎯 [Interview] Reached theoretical limit, transitioning to all_questions_done')
+      await this.stateMachine.transition('all_questions_done')
+      return
+    }
+
+    // More questions available and under limit, move to next question
     this.stateMachine.moveToNextQuestion()
     this.llm.moveToNextQuestion()
     await this.stateMachine.transition('next_question')
