@@ -9,10 +9,18 @@ export interface CodingProblem {
   description: string
   language: string
   starterCode?: string
+  // Support for multiple languages
+  starterCodes?: Record<string, string> // e.g., { javascript: "code", python: "code", cpp: "code", java: "code" }
   solution: string
   hints: string[]
   testCases: TestCase[]
   difficulty: 'easy' | 'medium' | 'hard'
+  constraints?: string[] | string // Optional constraints (can be array or JSON string)
+  examples?: Array<{
+    input?: string
+    output?: string
+    explanation?: string
+  }> | string | any // Optional examples (can be array, object, or JSON string)
 }
 
 export interface TestCase {
@@ -176,13 +184,23 @@ export class CodeAnalysisService extends EventEmitter {
     }
   }
 
-  async getHint(problem: CodingProblem, currentCode: string, hintLevel: 1 | 2 | 3 = 1): Promise<string> {
+  async getHint(problem: CodingProblem, currentCode: string, hintLevel: 1 | 2 | 3 = 1, skipAnalysis: boolean = false): Promise<string> {
     try {
-      // First analyze the current code
-      const analysis = await this.analyzeCode(currentCode, problem)
-      
-      if (analysis.suggestedHint) {
-        return analysis.suggestedHint
+      // Optionally analyze the current code (skip if already analyzed to avoid recursion)
+      let analysis: CodeAnalysis | null = null
+      if (!skipAnalysis) {
+        analysis = await this.analyzeCode(currentCode, problem)
+        if (analysis.suggestedHint) {
+          return analysis.suggestedHint
+        }
+      } else {
+        // Use the most recent analysis if available
+        if (this.observations.length > 0) {
+          const lastObservation = this.observations[this.observations.length - 1]
+          if (lastObservation.code === currentCode && lastObservation.analysis.suggestedHint) {
+            return lastObservation.analysis.suggestedHint
+          }
+        }
       }
 
       // Generate hint based on level

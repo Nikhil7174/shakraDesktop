@@ -64,13 +64,36 @@ export const useResumeUpload = () => {
       dispatch(setError(null));
 
       console.log('Collecting missing info:', info);
+      console.log('Current resumeData:', resumeData);
+      console.log('Current detailedResumeData:', detailedResumeData);
+
+      // Ensure we have a resumeData object, even if it's empty
+      const resumeDataToSend = resumeData || {
+        name: null,
+        email: null,
+        phone: null,
+        text: '',
+        fileName: ''
+      };
+
+      // Ensure we have a detailedResumeData object with proper structure
+      const detailedResumeDataToSend = detailedResumeData || {
+        name: null,
+        email: null,
+        phone: null,
+        text: '',
+        fileName: '',
+        personalInfo: {},
+        experience: { internships: [], projects: [], awards: [] },
+        technicalSkills: { languages: [], frameworks: [], tools: [], databases: [], other: [] }
+      };
 
       // Send the data in the format the backend expects
       const response = await axios.post(`${API_BASE_URL}/upload/collect-info`, {
         name: info.name,
         email: info.email,
         phone: info.phone,
-        resumeData: resumeData
+        resumeData: detailedResumeDataToSend // Send detailedResumeData which has the proper structure
       }, {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('authToken')}`,
@@ -101,7 +124,7 @@ export const useResumeUpload = () => {
     } finally {
       dispatch(setLoading(false));
     }
-  }, [dispatch, resumeData]);
+  }, [dispatch, resumeData, detailedResumeData]);
 
   const isDataFresh = useCallback(() => {
     if (!resumeData) return false;

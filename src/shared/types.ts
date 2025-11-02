@@ -150,10 +150,18 @@ export interface CodingProblem {
   description: string
   language: string
   starterCode?: string
+  // Support for multiple languages
+  starterCodes?: Record<string, string> // e.g., { javascript: "code", python: "code", cpp: "code", java: "code" }
   solution: string
   hints: string[]
   testCases: TestCase[]
   difficulty: 'easy' | 'medium' | 'hard'
+  constraints?: string[] | string // Optional constraints (can be array or JSON string)
+  examples?: Array<{
+    input?: string
+    output?: string
+    explanation?: string
+  }> | string | any // Optional examples (can be array, object, or JSON string)
 }
 
 export interface TestCase {

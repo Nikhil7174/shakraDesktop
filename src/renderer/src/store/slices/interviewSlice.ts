@@ -121,6 +121,7 @@ const interviewSlice = createSlice({
       state.detailedResumeData = null;
       state.resumeUploadTimestamp = null;
       state.lastDataFetch = null;
+      state.error = null; // Clear error when clearing cache
     },
 
     // Session Management Actions
@@ -153,6 +154,7 @@ const interviewSlice = createSlice({
       state.resumeData = null;
       state.detailedResumeData = null;
       state.resumeUploadTimestamp = null;
+      state.error = null; // Clear error when clearing sessions
     },
 
     // Reset Actions

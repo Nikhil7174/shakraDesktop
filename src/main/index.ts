@@ -262,9 +262,9 @@ app.whenReady().then(async () => {
     interviewOrchestrator.on('stateChanged', (payload: any) => {
       try {
         console.log('🎤 [Main] State changed:', payload.to)
-        // Set listening to true when waiting for answer
-        if (payload.to === 'waiting_for_answer') {
-          console.log('🎤 [Main] Setting listening to true for waiting_for_answer state')
+        // Set listening to true when waiting for answer or monitoring code
+        if (payload.to === 'waiting_for_answer' || payload.to === 'monitoring_code' || payload.to === 'coding_problem') {
+          console.log('🎤 [Main] Setting listening to true for', payload.to, 'state')
           mainWindow?.webContents.send('listening-state-change', true)
         } else if (payload.to === 'evaluating_answer' || payload.to === 'theoretical_question') {
           console.log('🎤 [Main] Setting listening to false for', payload.to, 'state')
@@ -276,10 +276,13 @@ app.whenReady().then(async () => {
       }
     })
 
-    // Forward TTS speaking state
+    // Forward TTS speaking state and manage listening state during TTS
     interviewOrchestrator.on('speakingStarted', () => {
       try {
+        console.log('🎤 [Main] TTS started - setting speaking:true, listening:false')
         mainWindow?.webContents.send('speaking-state-change', true)
+        // Turn off listening indicator when TTS starts (mic is paused)
+        mainWindow?.webContents.send('listening-state-change', false)
       } catch (e: unknown) {
         const err = e as Error
         console.error('Failed to send speaking-state-change:', err.message)
@@ -287,7 +290,19 @@ app.whenReady().then(async () => {
     })
     interviewOrchestrator.on('speakingCompleted', () => {
       try {
+        console.log('🎤 [Main] TTS completed - setting speaking:false')
         mainWindow?.webContents.send('speaking-state-change', false)
+        // Re-enable listening indicator based on current state
+        if (interviewOrchestrator) {
+          const currentState = interviewOrchestrator.getCurrentState()
+          const shouldListen = currentState === 'waiting_for_answer' || 
+                              currentState === 'monitoring_code' || 
+                              currentState === 'coding_problem'
+          if (shouldListen) {
+            console.log('🎤 [Main] Restoring listening state after TTS for state:', currentState)
+            mainWindow?.webContents.send('listening-state-change', true)
+          }
+        }
       } catch (e: unknown) {
         const err = e as Error
         console.error('Failed to send speaking-state-change:', err.message)

@@ -196,8 +196,8 @@ export const ResumeUpload: React.FC<ResumeUploadProps> = ({
           )}
           
           <div style={{ fontSize: 14, color: colors.neutral[600] }}>
-            <div><strong>Name:</strong> {existingResumeData.personalInfo?.name || 'N/A'}</div>
-            <div><strong>Email:</strong> {existingResumeData.personalInfo?.email || 'N/A'}</div>
+            <div><strong>Name:</strong> {existingResumeData?.personalInfo?.name || existingResumeData?.name || 'N/A'}</div>
+            <div><strong>Email:</strong> {existingResumeData?.personalInfo?.email || existingResumeData?.email || 'N/A'}</div>
           </div>
           
           <Space>

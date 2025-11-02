@@ -15,7 +15,7 @@ import { useInterview } from '../hooks/api/useInterview';
 import { useResumeData } from '../hooks/useResumeData';
 import { useSession } from '../hooks/useSession';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { resetInterview } from '../store/slices/interviewSlice';
+import { resetInterview, setResumeData, setDetailedResumeData, setError } from '../store/slices/interviewSlice';
 import { SecurityWarning } from '../components/security/SecurityWarning';
 // SESSION_CONFIG removed - using Redux-only session management
 
@@ -52,6 +52,20 @@ export const InterviewChat: React.FC = () => {
     uploadResume,
     collectMissingInfo
   } = useResumeUpload();
+
+  // Clear error on component mount
+  useEffect(() => {
+    // Clear any persisted errors when component mounts (fresh start)
+    dispatch(setError(null));
+  }, [dispatch]); // Only run once on mount
+
+  // Clear error when navigating to upload step
+  useEffect(() => {
+    // Clear error when navigating to upload step (fresh start)
+    if (currentStep === 'upload') {
+      dispatch(setError(null));
+    }
+  }, [currentStep, dispatch]); // Clear when step changes to upload
 
   const {
     chatMessages,
@@ -356,9 +370,49 @@ export const InterviewChat: React.FC = () => {
             onUseExistingResume={() => {
               // Use existing resume data and move to next step
               if (existingResumeData) {
-                // Set the resume data in the hook state
-                // This will trigger the next step
+                console.log('✅ Using existing resume data:', existingResumeData);
+                
+                // Clear any previous errors
+                dispatch(setError(null));
+                
+                // Extract resume data - handle different possible structures
+                let baseResumeData: any = null;
+                let detailedResumeData: any = null;
+                
+                // Check if it's a nested structure (resumeData.resumeData)
+                if (existingResumeData.resumeData) {
+                  baseResumeData = existingResumeData.resumeData;
+                  detailedResumeData = existingResumeData.detailedResumeData || existingResumeData.resumeData;
+                } 
+                // Check if it's a DetailedResumeData structure (has personalInfo)
+                else if (existingResumeData.personalInfo || existingResumeData.experience || existingResumeData.technicalSkills) {
+                  baseResumeData = {
+                    name: existingResumeData.name,
+                    email: existingResumeData.email,
+                    phone: existingResumeData.phone,
+                    text: existingResumeData.text || '',
+                    fileName: existingResumeData.fileName || ''
+                  };
+                  detailedResumeData = existingResumeData;
+                }
+                // Otherwise, assume it's a simple ResumeData structure
+                else {
+                  baseResumeData = existingResumeData;
+                  detailedResumeData = {
+                    ...existingResumeData,
+                    personalInfo: existingResumeData.personalInfo || {},
+                    experience: existingResumeData.experience || { internships: [], projects: [], awards: [] },
+                    technicalSkills: existingResumeData.technicalSkills || { languages: [], frameworks: [], tools: [], databases: [], other: [] }
+                  };
+                }
+                
+                // Set resume data in Redux state
+                dispatch(setResumeData(baseResumeData));
+                dispatch(setDetailedResumeData(detailedResumeData));
+                console.log('✅ Resume data set in Redux state:', { baseResumeData, detailedResumeData });
                 setCurrentStep('info');
+              } else {
+                console.warn('⚠️ No existing resume data to use');
               }
             }}
           />
@@ -392,6 +446,8 @@ export const InterviewChat: React.FC = () => {
             description: q.instructions || q.question || '',
             language: (q.language || 'javascript'),
             starterCode: q.initialCode || '',
+            // Include multi-language starter codes if available
+            starterCodes: q.starterCodes || (q.initialCode ? { [q.language || 'javascript']: q.initialCode } : undefined),
             solution: q.expectedAnswer || '',
             hints: Array.isArray(q.keyPoints) ? q.keyPoints : [],
             testCases: Array.isArray(q.testCases) ? q.testCases.map((t: any) => ({
