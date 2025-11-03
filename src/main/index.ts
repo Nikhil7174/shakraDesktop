@@ -200,6 +200,10 @@ app.whenReady().then(async () => {
       mainWindow?.webContents.send('question-changed', question)
     })
 
+    interviewOrchestrator.on('progressUpdate', (progress) => {
+      mainWindow?.webContents.send('progress-update', progress)
+    })
+
     interviewOrchestrator.on('askFollowUp', (followUpText) => {
       console.log('📝 [Main] Forwarding follow-up question to renderer:', followUpText.substring(0, 50))
       mainWindow?.webContents.send('follow-up-asked', followUpText)

@@ -164,6 +164,12 @@ export class InterviewStateMachine extends EventEmitter {
 
   // Manual state setter for bypassing normal transitions (use sparingly)
   async setState(newState: InterviewState): Promise<void> {
+    // Prevent re-entering the same state (which would trigger handlers twice)
+    if (this.state === newState) {
+      console.log(`State already in ${newState}, skipping setState`)
+      return
+    }
+    
     const previousState = this.state
     this.state = newState
     
@@ -176,6 +182,9 @@ export class InterviewStateMachine extends EventEmitter {
       event: 'manual_transition',
       data: {}
     })
+    
+    // Call onStateEnter to trigger state-specific handlers
+    await this.onStateEnter(this.state, {})
   }
 
   private async onStateEnter(state: InterviewState, _data?: any) {
@@ -302,6 +311,14 @@ export class InterviewStateMachine extends EventEmitter {
 
   getCurrentQuestion(): Question | null {
     return this.data.questions[this.data.currentQuestionIndex] || null
+  }
+
+  getCurrentQuestionIndex(): number {
+    return this.data.currentQuestionIndex
+  }
+
+  getQuestions(): Question[] {
+    return this.data.questions
   }
 
   getCurrentEvaluation(): Evaluation | null {

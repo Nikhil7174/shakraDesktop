@@ -3,15 +3,13 @@ import React from 'react'
 interface InterviewProgressProps {
   currentState: string
   progress: { current: number, total: number }
-  isListening: boolean
-  isSpeaking: boolean
+  isListening?: boolean // Optional - not used, kept for backward compatibility
+  isSpeaking?: boolean  // Optional - not used, kept for backward compatibility
 }
 
 export const InterviewProgress: React.FC<InterviewProgressProps> = ({
   currentState,
-  progress,
-  isListening,
-  isSpeaking
+  progress
 }) => {
   const getStateDisplayName = (state: string) => {
     const stateNames: { [key: string]: string } = {
@@ -49,20 +47,6 @@ export const InterviewProgress: React.FC<InterviewProgressProps> = ({
     <div className="interview-progress">
       <div className="progress-header">
         <h3>AI Interview Session</h3>
-        <div className="status-indicators">
-          {isListening && (
-            <div className="status-badge listening">
-              <div className="pulse-dot"></div>
-              Listening
-            </div>
-          )}
-          {isSpeaking && (
-            <div className="status-badge speaking">
-              <div className="pulse-dot"></div>
-              AI Speaking
-            </div>
-          )}
-        </div>
       </div>
 
       <div className="progress-content">
@@ -124,47 +108,6 @@ export const InterviewProgress: React.FC<InterviewProgressProps> = ({
           color: #ffffff;
           font-size: 18px;
           font-weight: 600;
-        }
-
-        .status-indicators {
-          display: flex;
-          gap: 8px;
-        }
-
-        .status-badge {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 4px 8px;
-          border-radius: 4px;
-          font-size: 12px;
-          font-weight: 500;
-        }
-
-        .status-badge.listening {
-          background: rgba(76, 175, 80, 0.2);
-          color: #4caf50;
-          border: 1px solid rgba(76, 175, 80, 0.3);
-        }
-
-        .status-badge.speaking {
-          background: rgba(33, 150, 243, 0.2);
-          color: #2196f3;
-          border: 1px solid rgba(33, 150, 243, 0.3);
-        }
-
-        .pulse-dot {
-          width: 6px;
-          height: 6px;
-          border-radius: 50%;
-          background: currentColor;
-          animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-          0% { opacity: 1; transform: scale(1); }
-          50% { opacity: 0.5; transform: scale(1.2); }
-          100% { opacity: 1; transform: scale(1); }
         }
 
         .progress-content {

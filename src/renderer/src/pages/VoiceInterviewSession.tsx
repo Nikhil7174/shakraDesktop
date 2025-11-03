@@ -145,11 +145,16 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         setCurrentState(state)
       })
 
-      // Question changes
+      // Question changes - this fires for NEW questions only (not follow-ups)
       window.electronAPI.onQuestionChanged((question: Question) => {
         setCurrentQuestion(question)
         setFollowUpQuestionText(null) // Clear any follow-up when moving to new question
-        setProgress(prev => ({ ...prev, current: prev.current + 1 }))
+        // Progress will be updated via progressUpdate event, not here
+      })
+
+      // Progress updates from main process (for new questions only, not follow-ups)
+      window.electronAPI.onProgressUpdate?.((progress: { current: number, total: number }) => {
+        setProgress(progress)
       })
 
       // Follow-up question asked

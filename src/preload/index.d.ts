@@ -22,6 +22,7 @@ type InterviewAPI = {
   onListeningStateChange: (callback: (listening: boolean) => void) => void
   onSpeakingStateChange: (callback: (speaking: boolean) => void) => void
   onEvaluation: (callback: (evaluation: any) => void) => void
+  onProgressUpdate?: (callback: (progress: { current: number, total: number }) => void) => void
   onCodeAnalysis: (callback: (analysis: any) => void) => void
   onInterviewCompleted: (callback: (results: any) => void) => void
 }

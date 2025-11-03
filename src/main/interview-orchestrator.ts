@@ -100,6 +100,7 @@ export class InterviewOrchestrator extends EventEmitter {
   private softStopRequested = false
   private micPaused = false
   private suppressAutoMicResume = false
+  private hadTheoreticalQuestions = false // Track if session had theoretical questions
 
   constructor() {
     super()
@@ -150,6 +151,9 @@ export class InterviewOrchestrator extends EventEmitter {
 
     this.stateMachine.on('askQuestion', async (question: Question) => {
       this.emit('askQuestion', question)
+      // Emit progress update when asking a NEW question (not follow-up)
+      const progress = this.stateMachine.getProgress()
+      this.emit('progressUpdate', progress)
       await this.speakQuestion(question.question)
     })
 
@@ -190,24 +194,47 @@ export class InterviewOrchestrator extends EventEmitter {
     })
 
     this.stateMachine.on('codingIntroStarted', async () => {
-      console.log('🎯 [Interview] Theoretical questions completed, transitioning to coding phase')
-      // Speak intro to coding section
-      const introText = "Great work on the theoretical questions! Now let's move to the coding section."
-      const result = await this.speakWithPolicy(introText, {
-        interruptible: false,
-        bargeInPolicy: 'soft'
-      })
+      console.log('🎯 [Interview] Coding intro started')
       
-      // Check if we have coding problems
-      if (this.currentSession?.codingProblems && this.currentSession.codingProblems.length > 0) {
-        console.log(`🎯 [Interview] ${this.currentSession.codingProblems.length} coding problem(s) available`)
-        // Only transition if intro completed
-        if (result.completed || result.softStopped) {
-          await this.stateMachine.transition('coding_problem_presented')
+      // Only speak transition message if we actually had theoretical questions
+      if (this.hadTheoreticalQuestions) {
+        console.log('🎯 [Interview] Theoretical questions completed, transitioning to coding phase')
+        // Speak intro to coding section
+        const introText = "Great work on the theoretical questions! Now let's move to the coding section."
+        const result = await this.speakWithPolicy(introText, {
+          interruptible: false,
+          bargeInPolicy: 'soft'
+        })
+        
+        // Check if we have coding problems
+        if (this.currentSession?.codingProblems && this.currentSession.codingProblems.length > 0) {
+          console.log(`🎯 [Interview] ${this.currentSession.codingProblems.length} coding problem(s) available`)
+          // Only transition if intro completed
+          if (result.completed || result.softStopped) {
+            await this.stateMachine.transition('coding_problem_presented')
+          }
+        } else {
+          console.log('🎯 [Interview] No coding problems, moving to wrap up')
+          await this.stateMachine.transition('no_coding_problems')
         }
       } else {
-        console.log('🎯 [Interview] No coding problems, moving to wrap up')
-        await this.stateMachine.transition('no_coding_problems')
+        // Coding-only interview - speak welcome message here (centralized, no duplication)
+        console.log('🎯 [Interview] Coding-only interview, speaking welcome message')
+        const introText = "Welcome! Today we'll focus on coding problems. Let's begin."
+        const result = await this.speakWithPolicy(introText, {
+          interruptible: false,
+          bargeInPolicy: 'soft'
+        })
+        
+        if (this.currentSession?.codingProblems && this.currentSession.codingProblems.length > 0) {
+          // Only transition if intro completed
+          if (result.completed || result.softStopped) {
+            await this.stateMachine.transition('coding_problem_presented')
+          }
+        } else {
+          console.log('🎯 [Interview] No coding problems, moving to wrap up')
+          await this.stateMachine.transition('no_coding_problems')
+        }
       }
     })
 
@@ -386,6 +413,9 @@ export class InterviewOrchestrator extends EventEmitter {
       const hasTheoreticalQuestions = session.questions && session.questions.length > 0
       const hasCodingProblems = session.codingProblems && session.codingProblems.length > 0
       
+      // Track if we had theoretical questions for transition handling
+      this.hadTheoreticalQuestions = hasTheoreticalQuestions
+      
       console.log(`🎯 [Interview] Session setup: ${session.questions?.length || 0} theoretical, ${session.codingProblems?.length || 0} coding`)
 
       // Begin or resume interview
@@ -395,11 +425,11 @@ export class InterviewOrchestrator extends EventEmitter {
           await this.stateMachine.transition('begin_questions')
         } else if (hasCodingProblems) {
           console.log('🎯 [Interview] No theoretical questions, starting directly with coding')
-          // Transition directly to coding intro
-          await this.stateMachine.transition('start_interview')
-          // Manual transition since we're bypassing theoretical phase
-          await this.stateMachine.setState(InterviewState.CODING_INTRO)
-          this.stateMachine.emit('codingIntroStarted')
+          // For coding-only interviews with skipIntro, go directly to CODING_INTRO (handler will skip transition message)
+          if (this.currentSession?.codingProblems && this.currentSession.codingProblems.length > 0) {
+            // Skip INTRO state entirely and go directly to CODING_INTRO
+            await this.stateMachine.setState(InterviewState.CODING_INTRO)
+          }
         }
       } else {
         // Normal flow - check if we have theoretical questions
@@ -409,14 +439,11 @@ export class InterviewOrchestrator extends EventEmitter {
         } else if (hasCodingProblems) {
           // Only coding problems - skip theoretical phase entirely
           console.log('🎯 [Interview] Only coding problems, skipping theoretical section')
-          const introText = "Welcome! Today we'll focus on coding problems. Let's begin."
-          await this.speakWithPolicy(introText, {
-            interruptible: false,
-            bargeInPolicy: 'soft'
-          })
-          // Transition directly to coding intro
-          await this.stateMachine.setState(InterviewState.CODING_INTRO)
-          this.stateMachine.emit('codingIntroStarted')
+          // Don't speak here - let CODING_INTRO handler speak (following theoretical question pattern)
+          // This prevents duplication - state machine emits event, handler speaks once
+          if (this.currentSession?.codingProblems && this.currentSession.codingProblems.length > 0) {
+            await this.stateMachine.setState(InterviewState.CODING_INTRO)
+          }
         } else {
           throw new Error('No questions or coding problems provided')
         }
@@ -866,14 +893,11 @@ export class InterviewOrchestrator extends EventEmitter {
         this.stateMachine.resetFollowUpDepth()
         this.llm.resetFollowUpDepth()
         
-        // If we were in a follow-up, we've now completed the original question + follow-ups
-        // So we should move to the next question
-        // If we weren't in a follow-up, we just completed a regular question
-        // Either way, move to next question or coding
-        
         // First, check if there are more theoretical questions available
-        const progress = this.llm.getProgress()
-        const hasMoreQuestions = progress.current < progress.total
+        // Use currentQuestionIndex directly (don't add 1) to check if we've completed all questions
+        const currentIndex = this.stateMachine.getCurrentQuestionIndex()
+        const totalQuestions = this.stateMachine.getQuestions().length
+        const hasMoreQuestions = currentIndex < totalQuestions - 1
         
         if (!hasMoreQuestions) {
           // No more questions in the array, move to coding regardless of limit
@@ -889,6 +913,9 @@ export class InterviewOrchestrator extends EventEmitter {
           // Increment question index in both state machine and LLM service before transitioning
           this.stateMachine.moveToNextQuestion()
           this.llm.moveToNextQuestion()
+          // Emit progress update when moving to next question
+          const progress = this.stateMachine.getProgress()
+          this.emit('progressUpdate', progress)
           await this.stateMachine.transition('next_question')
         }
       }
@@ -1135,7 +1162,7 @@ export class InterviewOrchestrator extends EventEmitter {
   private async speakCodingProblem(problem: CodingProblem): Promise<void> {
     // Simple intro - problem details shown in editor
     const intro = "Please solve this problem. You can see the details on your screen."
-    const result = await this.speakWithPolicy(intro, {
+    await this.speakWithPolicy(intro, {
       interruptible: false,
       bargeInPolicy: 'soft'
     })
@@ -1143,10 +1170,9 @@ export class InterviewOrchestrator extends EventEmitter {
     // Set the problem in code analysis
     this.codeAnalysis.setCurrentProblem(problem)
     
-    // Only transition if completed or soft-stopped
-    if (result.completed || result.softStopped) {
-      await this.stateMachine.transition('coding_problem_presented')
-    }
+    // Note: We're already in CODING_PROBLEM state when this is called,
+    // so we don't need to transition - the state machine will auto-transition to monitoring
+    // after a delay (handled in handleCodingProblem)
   }
 
   private async handleHintProvision(): Promise<void> {

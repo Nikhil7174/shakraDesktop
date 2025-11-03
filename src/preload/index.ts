@@ -77,6 +77,10 @@ const interviewAPI = {
   onEvaluation: (callback: (evaluation: any) => void) => {
     ipcRenderer.on('evaluation', (_event, evaluation) => callback(evaluation))
   },
+
+  onProgressUpdate: (callback: (progress: { current: number, total: number }) => void) => {
+    ipcRenderer.on('progress-update', (_event, progress) => callback(progress))
+  },
   
   onCodeAnalysis: (callback: (analysis: any) => void) => {
     ipcRenderer.on('code-analysis', (_event, analysis) => callback(analysis))
