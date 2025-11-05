@@ -507,7 +507,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           display: flex;
           justify-content: space-between;
           align-items: center;
-          padding: 16px 20px;
+          padding: 16px 16px;
           background: #2d2d30;
           border-bottom: 1px solid #333;
         }
@@ -602,7 +602,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           display: flex;
           justify-content: flex-end;
           align-items: center;
-          padding: 12px 16px;
+          padding: 16px 16px;
           background: #2d2d30;
           border-bottom: 1px solid #333;
         }
