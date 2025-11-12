@@ -9,6 +9,12 @@ interface CodeEditorProps {
   onSubmit?: (code: string) => void
   isMonitoring?: boolean
   readOnly?: boolean
+  onTimerExpire?: () => void
+  showTimer?: boolean
+  timeComplexity?: string
+  spaceComplexity?: string
+  onTimeComplexityChange?: (value: string) => void
+  onSpaceComplexityChange?: (value: string) => void
 }
 
 export const CodeEditor: React.FC<CodeEditorProps> = ({
@@ -17,14 +23,22 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   onAnalysisRequest,
   onSubmit,
   isMonitoring = true,
-  readOnly = false
+  readOnly = false,
+  onTimerExpire,
+  showTimer = true,
+  timeComplexity = '',
+  spaceComplexity = '',
+  onTimeComplexityChange,
+  onSpaceComplexityChange
 }) => {
   const editorRef = useRef<HTMLDivElement>(null)
   const monacoEditorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const monitoringIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const timerIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const [isEditorReady, setIsEditorReady] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [selectedLanguage, setSelectedLanguage] = useState<string>(problem.language || 'javascript')
+  const [selectedLanguage, setSelectedLanguage] = useState<string>(problem.language || 'cpp')
+  const [timeRemaining, setTimeRemaining] = useState<number>(getTimeLimit(problem.difficulty))
 
   // Available languages
   const availableLanguages = ['javascript', 'python', 'cpp', 'java']
@@ -50,10 +64,18 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         })
 
         // Get starter code based on selected language
+        // Use problem.language as fallback if selectedLanguage doesn't have starter code
         const getStarterCode = () => {
+          // First try selected language
           if (problem.starterCodes && problem.starterCodes[selectedLanguage]) {
             return problem.starterCodes[selectedLanguage]
           }
+          // Then try problem's default language
+          const problemLang = problem.language || 'cpp'
+          if (problem.starterCodes && problem.starterCodes[problemLang]) {
+            return problem.starterCodes[problemLang]
+          }
+          // Fallback to generic starter code
           return problem.starterCode || ''
         }
 
@@ -112,7 +134,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         monacoEditorRef.current = null
       }
     }
-  }, [problem.language, readOnly])
+  }, [problem.id, problem.language, selectedLanguage, readOnly])
 
   // Start/stop monitoring
   useEffect(() => {
@@ -126,9 +148,8 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       monitoringIntervalRef.current = setInterval(() => {
         if (monacoEditorRef.current) {
           const code = monacoEditorRef.current.getValue()
-          if (code.trim().length > 0) {
-            onAnalysisRequest?.(code, problem.id)
-          }
+          // Always call analysis, even if code is empty, to detect inactivity
+          onAnalysisRequest?.(code, problem.id)
         }
       }, 10000) // Every 10 seconds
     }
@@ -143,15 +164,80 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
     }
   }, [isEditorReady, isMonitoring, problem.id, onAnalysisRequest])
 
-  // Update editor content when problem changes
+  // Timer countdown
   useEffect(() => {
-    if (monacoEditorRef.current && problem.starterCode) {
-      const currentValue = monacoEditorRef.current.getValue()
-      if (currentValue !== problem.starterCode) {
-        monacoEditorRef.current.setValue(problem.starterCode)
+    if (!showTimer || readOnly) return
+
+    // Reset timer when problem changes
+    setTimeRemaining(getTimeLimit(problem.difficulty))
+
+    const startTimer = () => {
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current)
+      }
+
+      timerIntervalRef.current = setInterval(() => {
+        setTimeRemaining(prev => {
+          if (prev <= 1) {
+            // Time's up
+            onTimerExpire?.()
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000) // Every second
+    }
+
+    startTimer()
+
+    return () => {
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current)
+        timerIntervalRef.current = null
       }
     }
-  }, [problem.starterCode])
+  }, [problem.id, problem.difficulty, showTimer, readOnly, onTimerExpire])
+
+  // Reset selected language when problem changes
+  // Preserve user's language choice if the new problem supports it, otherwise reset to problem's default
+  useEffect(() => {
+    const problemDefaultLanguage = problem.language || 'cpp'
+    
+    // Check if current selected language has starter code in the new problem
+    const hasStarterCodeForSelectedLang = problem.starterCodes && problem.starterCodes[selectedLanguage]
+    
+    // If selected language doesn't have starter code in new problem, reset to problem's default
+    if (!hasStarterCodeForSelectedLang && selectedLanguage !== problemDefaultLanguage) {
+      setSelectedLanguage(problemDefaultLanguage)
+    }
+  }, [problem.id, problem.language, problem.starterCodes, selectedLanguage])
+
+  // Update editor content when problem or selected language changes
+  useEffect(() => {
+    if (!monacoEditorRef.current) return
+    
+    // Get starter code for the selected language
+    const getStarterCode = () => {
+      if (problem.starterCodes && problem.starterCodes[selectedLanguage]) {
+        return problem.starterCodes[selectedLanguage]
+      }
+      return problem.starterCode || ''
+    }
+    
+    const starterCode = getStarterCode()
+    if (starterCode) {
+      const currentValue = monacoEditorRef.current.getValue()
+      // Only update if the code is different (avoid unnecessary updates)
+      if (currentValue !== starterCode) {
+        monacoEditorRef.current.setValue(starterCode)
+        // Also update the language mode
+        const model = monacoEditorRef.current.getModel()
+        if (model) {
+          monaco.editor.setModelLanguage(model, getMonacoLanguage(selectedLanguage))
+        }
+      }
+    }
+  }, [problem.id, problem.starterCode, problem.starterCodes, selectedLanguage])
 
   // Handle language change
   const handleLanguageChange = useCallback((newLanguage: string) => {
@@ -383,8 +469,15 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       <div className="coding-layout">
         {/* Left Column: Question Description */}
         <div className="question-panel">
-          <div className="question-header">
-            <h3>{problem.title}</h3>
+        <div className="question-header">
+          <h3>{problem.title}</h3>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            {showTimer && !readOnly && (
+              <div className="timer-display">
+                <span className="timer-icon">⏱️</span>
+                <span>{formatTime(timeRemaining)}</span>
+              </div>
+            )}
             {isMonitoring && (
               <span className="monitoring-indicator">
                 <div className="pulse-dot"></div>
@@ -392,6 +485,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
               </span>
             )}
           </div>
+        </div>
           <div className="question-content">
             <div className="question-section">
               <h4>Problem Description</h4>
@@ -466,6 +560,28 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           />
           {onSubmit && !readOnly && (
             <div className="code-editor-footer">
+              <div className="complexity-inputs">
+                <div className="complexity-input">
+                  <label htmlFor="time-complexity">Time Complexity</label>
+                  <input
+                    id="time-complexity"
+                    type="text"
+                    placeholder="e.g. O(n log n)"
+                    value={timeComplexity}
+                    onChange={(e) => onTimeComplexityChange?.(e.target.value)}
+                  />
+                </div>
+                <div className="complexity-input">
+                  <label htmlFor="space-complexity">Space Complexity</label>
+                  <input
+                    id="space-complexity"
+                    type="text"
+                    placeholder="e.g. O(n)"
+                    value={spaceComplexity}
+                    onChange={(e) => onSpaceComplexityChange?.(e.target.value)}
+                  />
+                </div>
+              </div>
               <button 
                 className="submit-button"
                 onClick={handleSubmit}
@@ -480,7 +596,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       <style>{`
         .code-editor-container {
           width: 100%;
-          height: 100%;
+          height: 80vh;
           display: flex;
           flex-direction: column;
           background: #1e1e1e;
@@ -517,6 +633,19 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           color: #ffffff;
           font-size: 18px;
           font-weight: 600;
+        }
+        
+        .timer-display {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 16px;
+          font-weight: 600;
+          color: ${timeRemaining > 300 ? '#4caf50' : timeRemaining > 60 ? '#ff9800' : '#f44336'};
+        }
+        
+        .timer-icon {
+          font-size: 18px;
         }
         
         .question-content {
@@ -665,11 +794,60 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         }
         
         .code-editor-footer {
-          padding: 16px;
+          height: 70px;
+          padding-left: 16px;
+          padding-right: 16px;
           background: #2d2d30;
           border-top: 1px solid #333;
           display: flex;
-          justify-content: flex-end;
+          align-items: center;
+          justify-content: space-evenly;
+          gap: 16px;
+        }
+        
+        .complexity-inputs {
+          width: 40%;
+          display: flex;
+          gap: 8px;
+          flex: 1;
+          align-items: center;
+        }
+        
+        .complexity-input {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          flex: 1;
+          max-width: 160px;
+        }
+        
+        .complexity-input label {
+          font-size: 11px;
+          font-weight: 500;
+          color: #cccccc;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+        
+        .complexity-input input {
+          width: 100%;
+          padding: 6px 10px;
+          background: #1e1e1e;
+          border: 1px solid #444;
+          border-radius: 4px;
+          color: #ffffff;
+          font-size: 12px;
+          font-family: 'Courier New', monospace;
+          outline: none;
+          transition: border-color 0.2s;
+        }
+        
+        .complexity-input input:focus {
+          border-color: #007acc;
+        }
+        
+        .complexity-input input::placeholder {
+          color: #666;
         }
         
         .submit-button {
@@ -682,6 +860,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           font-weight: 500;
           cursor: pointer;
           transition: background 0.2s;
+          white-space: nowrap;
         }
         
         .submit-button:hover:not(:disabled) {
@@ -722,6 +901,27 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       `}</style>
     </div>
   )
+}
+
+// Helper function to get time limit based on difficulty (in seconds)
+function getTimeLimit(difficulty: string): number {
+  switch (difficulty.toLowerCase()) {
+    case 'easy':
+      return 900 // 15 minutes
+    case 'medium':
+      return 1500 // 25 minutes
+    case 'hard':
+      return 1800 // 30 minutes
+    default:
+      return 1800 // Default 30 minutes
+  }
+}
+
+// Helper function to format time (MM:SS)
+function formatTime(seconds: number): string {
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  return `${mins}:${secs.toString().padStart(2, '0')}`
 }
 
 // Helper function to map language to Monaco language

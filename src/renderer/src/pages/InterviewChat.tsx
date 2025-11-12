@@ -455,7 +455,9 @@ export const InterviewChat: React.FC = () => {
               expectedOutput: t.expectedOutput,
               description: t.description || ''
             })) : [],
-            difficulty: q.difficulty || 'easy'
+            difficulty: q.difficulty || 'easy',
+            constraints: q.constraints,
+            examples: q.examples
           }));
 
           console.log(`📊 Interview setup: ${theoreticalQuestions.length} theoretical, ${codingProblems.length} coding`);

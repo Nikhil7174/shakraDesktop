@@ -246,6 +246,27 @@ export class InterviewOrchestrator extends EventEmitter {
       }
     })
 
+    this.stateMachine.on('askForApproach', async () => {
+      console.log('🎯 [Interview] Asking for coding approach')
+      await this.askForCodingApproach()
+    })
+
+    this.stateMachine.on('waitingForApproach', () => {
+      console.log('🎯 [Interview] Waiting for approach explanation')
+      // Start 2 minute silence timer for coding questions
+      this.stateMachine.startSilenceTimer(120000) // 120 seconds = 2 minutes
+    })
+
+    this.stateMachine.on('evaluatingApproach', () => {
+      console.log('🎯 [Interview] Evaluating approach')
+    })
+
+    this.stateMachine.on('codeMonitoringStarted', () => {
+      console.log('🎯 [Interview] Code monitoring started - can begin coding')
+      // Start 2-minute silence timer for code monitoring phase
+      this.stateMachine.startSilenceTimer(120000) // 120 seconds = 2 minutes
+    })
+
     this.stateMachine.on('provideHint', () => {
       this.handleHintProvision()
     })
@@ -287,7 +308,9 @@ export class InterviewOrchestrator extends EventEmitter {
       // Clear silence timer as soon as user starts speaking (interim or final)
       const currentState = this.stateMachine.getState()
       if (currentState === InterviewState.WAITING_FOR_ANSWER || 
-          currentState === InterviewState.THEORETICAL_QUESTION) {
+          currentState === InterviewState.THEORETICAL_QUESTION ||
+          currentState === InterviewState.WAITING_FOR_APPROACH ||
+          currentState === InterviewState.MONITORING_CODE) {
         // User is speaking - clear any silence timeout
         this.stateMachine.clearSilenceTimer()
         console.log('🎯 [Interview] User is speaking - silence timer cleared')
@@ -760,9 +783,10 @@ export class InterviewOrchestrator extends EventEmitter {
         console.log('🎯 [Interview] 📊 Handling evaluation:', response.evaluation)
         await this.handleEvaluation(response.evaluation)
       }
-    } else if (currentState === InterviewState.MONITORING_CODE || currentState === InterviewState.CODING_PROBLEM) {
-      // During coding phase - interactive discussion about approach
-      console.log('🎯 [Interview] 💻 Processing coding phase interaction:', text)
+    } else if (currentState === InterviewState.WAITING_FOR_APPROACH) {
+      // Candidate is providing their approach
+      console.log('🎯 [Interview] 💭 Processing approach explanation:', text)
+      this.stateMachine.clearSilenceTimer()
       
       const problem = this.getCurrentCodingProblem()
       if (!problem) {
@@ -770,54 +794,301 @@ export class InterviewOrchestrator extends EventEmitter {
         return
       }
 
-      // Use LLM to evaluate approach or handle clarification
+      // Check if user is actively writing code
+      const currentCode = this.stateMachine.getPreviousCode()
+      const isWritingCode = currentCode && currentCode.trim().length > 0
+      
+      // Transition to evaluating approach FIRST (before length check)
+      // This allows sentiment analysis to detect hints/clarifications even for short text
+      await this.stateMachine.transition('approach_provided')
+      
+      // Evaluate the approach with current code
       try {
-        const response = await this.codeAnalysis.evaluateApproach(text, problem)
+        const response = await this.codeAnalysis.evaluateApproach(text, problem, currentCode)
         
         console.log('🎯 [Interview] 💡 Approach evaluation:', response)
         
-        if (response.isApproach) {
-          // Candidate is explaining their approach
-          if (response.isCorrect) {
-            // Correct approach - encourage
-            const feedback = response.feedback || "That's a solid approach! Go ahead and implement it."
-            await this.speakWithPolicy(feedback, {
-              interruptible: true,
-              bargeInPolicy: 'hard'
-            })
-          } else {
-            // Wrong approach - provide minor hint
-            const feedback = response.feedback || "Hmm, that approach might have some issues. Think about the edge cases and constraints."
-            await this.speakWithPolicy(feedback, {
-              interruptible: true,
-              bargeInPolicy: 'hard'
-            })
-          }
-        } else if (response.isClarification) {
-          // Candidate asking clarifying question
-          const clarification = response.clarification || "Let me clarify - check the problem description for those details."
-          await this.speakWithPolicy(clarification, {
-            interruptible: true,
-            bargeInPolicy: 'hard'
-          })
-        } else {
-          // General conversation during coding
-          const acknowledgement = "I understand. Keep working on your solution."
-          await this.speakWithPolicy(acknowledgement, {
-            interruptible: true,
-            bargeInPolicy: 'hard'
-          })
-        }
+        // Check text length AFTER sentiment analysis
+        const textLength = text.trim().length
+        const isShortText = textLength < 80
         
-        console.log('🎯 [Interview] ✅ Coding interaction handled, waiting for code or submit')
+        // If user is writing code, treat any speech as approach attempt (don't disturb them)
+        if (isWritingCode) {
+          console.log('🎯 [Interview] User is writing code - treating speech as approach attempt')
+          
+          // Always respond to clarifications/hints, even if short
+          if (response.isClarification) {
+            const clarification = response.clarification || response.feedback || "Let me clarify that for you."
+            await this.speakWithPolicy(clarification, {
+              interruptible: true,
+              bargeInPolicy: 'hard'
+            })
+            await this.stateMachine.transition('approach_approved')
+            return
+          }
+          
+          // For approach explanations while coding: if short and unclear, don't respond
+          if (isShortText && !response.isApproach) {
+            console.log('🎯 [Interview] Short unclear text (< 80 chars) while coding - not responding')
+            this.stateMachine.setCodingApproachSpoken(true)
+            await this.stateMachine.transition('approach_approved')
+            return
+          }
+          
+          // Mark approach as spoken to prevent further prompts
+          this.stateMachine.setCodingApproachSpoken(true)
+          
+          if (response.isApproach && response.isCorrect) {
+            // Good approach - give brief positive feedback
+            const feedback = response.feedback || "Good approach! Keep implementing."
+            await this.speakWithPolicy(feedback, {
+              interruptible: true,
+              bargeInPolicy: 'hard'
+            })
+            // Transition to monitoring code
+            await this.stateMachine.transition('approach_approved')
+          } else if (response.isApproach && !response.isCorrect) {
+            // Wrong approach but they're coding - just acknowledge, don't interrupt
+            const feedback = response.feedback || "I see. Keep working on your solution."
+            await this.speakWithPolicy(feedback, {
+              interruptible: true,
+              bargeInPolicy: 'hard'
+            })
+            // Still transition to monitoring - let them code
+            await this.stateMachine.transition('approach_approved')
+          } else {
+            // Not clear approach but they're coding - just acknowledge silently
+            // Don't speak anything, just transition
+            await this.stateMachine.transition('approach_approved')
+          }
+        } else {
+          // User is NOT writing code - normal flow
+          
+          // Always respond to clarifications/hints, even if short
+          if (response.isClarification) {
+            const clarification = response.clarification || response.feedback || "Let me clarify that for you."
+            const result = await this.speakWithPolicy(clarification, {
+              interruptible: false,
+              bargeInPolicy: 'soft'
+            })
+            if (result.completed || result.softStopped) {
+              // Restart 2-minute silence timer and wait for approach again
+              this.stateMachine.startSilenceTimer(120000)
+              await this.stateMachine.transition('approach_needs_retry')
+            }
+            return
+          }
+          
+          // Check if sentiment is unclear (not approach, not clarification)
+          const isUnclear = !response.isApproach && !response.isClarification
+          
+          // For approach explanations: reject if short AND unclear
+          // But allow short text if it's a valid approach (let sentiment analysis decide)
+          if (isUnclear) {
+            console.log('🎯 [Interview] Unclear sentiment - not replying')
+            // Don't reply, just restart silence timer and continue waiting
+            this.stateMachine.startSilenceTimer(120000)
+            await this.stateMachine.transition('approach_needs_retry')
+            return
+          }
+          
+          // For approach explanations: reject if short (only for approach, not clarifications)
+          if (response.isApproach && isShortText) {
+            console.log('🎯 [Interview] Short approach explanation (< 80 chars) - not responding')
+            // Don't reply, just restart silence timer and continue waiting
+            this.stateMachine.startSilenceTimer(120000)
+            await this.stateMachine.transition('approach_needs_retry')
+            return
+          }
+          
+          if (response.isApproach) {
+            // Mark that approach has been spoken (whether correct or not)
+            this.stateMachine.setCodingApproachSpoken(true)
+            console.log('🎯 [Interview] ✅ Approach spoken flag set to true')
+            
+            if (response.isCorrect) {
+              // Correct approach - encourage and move to coding
+              const feedback = response.feedback || "That's a solid approach! Go ahead and implement it."
+              const result = await this.speakWithPolicy(feedback, {
+                interruptible: false,
+                bargeInPolicy: 'soft'
+              })
+              if (result.completed || result.softStopped) {
+                await this.stateMachine.transition('approach_approved')
+              }
+            } else {
+              // Wrong approach - provide hint and check retry count
+              const retryCount = this.stateMachine.getCodingApproachRetryCount()
+              if (retryCount === 0) {
+                // First time wrong - give hint and ask to retry
+                this.stateMachine.incrementCodingApproachRetryCount()
+                const feedback = response.feedback || "Hmm, that approach might have some issues. Think about the edge cases and constraints. Can you try explaining your approach once more?"
+                const result = await this.speakWithPolicy(feedback, {
+                  interruptible: false,
+                  bargeInPolicy: 'soft'
+                })
+                if (result.completed || result.softStopped) {
+                  // Restart 2-minute silence timer
+                  this.stateMachine.startSilenceTimer(120000)
+                  await this.stateMachine.transition('approach_needs_retry')
+                }
+              } else {
+                // Already retried once - accept and let them code anyway
+                const feedback = "I understand. Let's proceed with the implementation and see how it goes."
+                const result = await this.speakWithPolicy(feedback, {
+                  interruptible: false,
+                  bargeInPolicy: 'soft'
+                })
+                if (result.completed || result.softStopped) {
+                  await this.stateMachine.transition('approach_approved')
+                }
+              }
+            }
+          } else {
+            // Not a clear approach - ask them to explain approach (ONLY if no code written)
+            // But limit this to once to avoid continuous disturbance
+            const approachPromptCount = this.stateMachine.getApproachPromptCount()
+            if (approachPromptCount === 0) {
+              // First time asking - can ask once
+              this.stateMachine.incrementApproachPromptCount()
+              const acknowledgement = "I'd like to hear your approach to solving this problem. How do you plan to tackle it?"
+              const result = await this.speakWithPolicy(acknowledgement, {
+                interruptible: false,
+                bargeInPolicy: 'soft'
+              })
+              if (result.completed || result.softStopped) {
+                // Restart 2-minute silence timer and wait for approach again
+                this.stateMachine.startSilenceTimer(120000)
+                await this.stateMachine.transition('approach_needs_retry')
+              }
+            } else {
+              // Already asked once - don't ask again, just mark approach as spoken and move on
+              console.log('🎯 [Interview] Already prompted for approach once, treating as approach and moving on')
+              this.stateMachine.setCodingApproachSpoken(true)
+              await this.stateMachine.transition('approach_approved')
+            }
+          }
+        }
       } catch (error) {
         console.error('🎯 [Interview] Error evaluating approach:', error)
-        // Fallback response
-        await this.speakWithPolicy("I see. Continue with your implementation.", {
+        // Fallback - accept and move forward
+        const feedback = "I understand. Let's proceed with the implementation."
+        const result = await this.speakWithPolicy(feedback, {
+          interruptible: false,
+          bargeInPolicy: 'soft'
+        })
+        if (result.completed || result.softStopped) {
+          await this.stateMachine.transition('approach_approved')
+        }
+      }
+    } else if (currentState === InterviewState.MONITORING_CODE) {
+      // During coding phase - detect intent first, then handle accordingly
+      console.log('🎯 [Interview] 💻 Processing coding phase interaction:', text)
+      
+      // First, detect intent to check if this is a hint/clarification request
+      console.log('🎯 [Interview] Detecting intent for coding phase transcript:', text)
+      const intent = await this.llm.detectIntent(text)
+      console.log('🎯 [Interview] Detected intent during coding:', intent)
+      
+      // Handle hint requests during coding
+      if (intent.intent === 'hint_request') {
+        console.log('🎯 [Interview] ✨ Handling hint request during coding phase')
+        
+        if (!this.stateMachine.canProvideCodingHint()) {
+          console.log('🎯 [Interview] Coding hint limit reached, informing candidate')
+          await this.speakWithPolicy(
+            "I've provided the maximum number of hints. Please continue with your implementation.",
+            { interruptible: false, bargeInPolicy: 'soft' }
+          )
+          this.stateMachine.startSilenceTimer(120000)
+          return
+        }
+        
+        const problem = this.getCurrentCodingProblem()
+        if (!problem) {
+          console.log('🎯 [Interview] No coding problem available for hint')
+          this.stateMachine.startSilenceTimer(120000)
+          return
+        }
+        
+        const hintNumber = this.stateMachine.incrementCodingHintCount()
+        const hintLevel = Math.min(hintNumber, 2) as 1 | 2
+        console.log('🎯 [Interview] Providing coding hint at level:', hintLevel)
+        
+        // Get current code from state machine or use empty string
+        const currentCode = this.stateMachine.getPreviousCode() || ''
+        const hintText = await this.codeAnalysis.getHint(problem, currentCode, hintLevel)
+        
+        const result = await this.speakWithPolicy(hintText, {
           interruptible: true,
           bargeInPolicy: 'hard'
         })
+        
+        if (result.completed) {
+          this.emit('hintProvided', hintText)
+        }
+        
+        this.stateMachine.startSilenceTimer(120000)
+        return
       }
+      
+      // Handle clarification requests during coding
+      if (intent.intent === 'clarification_request') {
+        console.log('🎯 [Interview] ✨ Handling clarification request during coding phase')
+        
+        if (!this.stateMachine.canAskCodingClarification()) {
+          console.log('🎯 [Interview] Coding clarification limit reached')
+          await this.speakWithPolicy(
+            "I've provided the maximum number of clarifications. Please proceed with the information you have.",
+            { interruptible: false, bargeInPolicy: 'soft' }
+          )
+          this.stateMachine.startSilenceTimer(120000)
+          return
+        }
+        
+        const problem = this.getCurrentCodingProblem()
+        if (!problem) {
+          console.log('🎯 [Interview] No coding problem available for clarification')
+          this.stateMachine.startSilenceTimer(120000)
+          return
+        }
+        
+        this.stateMachine.incrementCodingClarificationCount()
+        
+        // Get current code from state machine or use empty string
+        const currentCode = this.stateMachine.getPreviousCode() || ''
+        
+        // Call LLM service to generate clarification
+        const clarification = await this.llm.generateCodingClarification(
+          problem,
+          text,
+          this.stateMachine.getCodingClarificationCount(),
+          currentCode
+        )
+        
+        await this.speakWithPolicy(clarification, {
+          interruptible: true,
+          bargeInPolicy: 'hard'
+        })
+        
+        this.stateMachine.startSilenceTimer(120000)
+        return
+      }
+      
+      // For other intents (answer, etc.), check length before acknowledging
+      const trimmed = text.trim()
+      if (trimmed.length < 80) {
+        console.log('🎯 [Interview] Short utterance during coding (< 80 chars) - no acknowledgement')
+        this.stateMachine.startSilenceTimer(120000)
+        return
+      }
+
+      const acknowledgement = "I understand. Keep working on your solution."
+      await this.speakWithPolicy(acknowledgement, {
+        interruptible: true,
+        bargeInPolicy: 'hard'
+      })
+      this.stateMachine.startSilenceTimer(120000)
     } else {
       console.log('🎯 [Interview] ⚠️ Not in listening state, ignoring transcript. Current state:', currentState)
     }
@@ -969,24 +1240,99 @@ export class InterviewOrchestrator extends EventEmitter {
         throw new Error('No coding problem context')
       }
 
+      // FIRST: Check if any code change was made (without LLM call)
+      const hasCodeChanged = this.codeAnalysis.hasCodeChanged(codeData.code || '')
+      
+      // Check for inactivity (no code changes for >60 seconds)
+      const inactivityCheck = this.codeAnalysis.checkInactivity()
+      
+      // If code is empty or no changes made, use inactivity check directly (skip LLM)
+      if (!codeData.code || codeData.code.trim().length === 0 || !hasCodeChanged) {
+        if (inactivityCheck.isStuck && inactivityCheck.timeStuck > 60000) {
+          if (!this.stateMachine.canProvideCodingHint()) {
+            console.log('🎯 [Interview] Candidate inactive >60s but hint limit reached, skipping auto-hint')
+          } else {
+            console.log('🎯 [Interview] Candidate inactive for more than 60 seconds, providing hint')
+            const hintNumber = this.stateMachine.incrementCodingHintCount()
+            const hintLevel = Math.min(hintNumber, 2) as 1 | 2
+            this.codeAnalysis.resetStuckTimer()
+            const hintText = await this.codeAnalysis.getHint(problem, codeData.code || '', hintLevel)
+            const result = await this.speakWithPolicy(hintText, {
+              interruptible: true,
+              bargeInPolicy: 'hard'
+            })
+            if (result.completed) {
+              this.emit('hintProvided', hintText)
+            }
+          }
+          this.codeAnalysis.resetStuckTimer()
+        }
+        
+        // Return a minimal analysis for empty/unchanged code
+        return {
+          progress: 0,
+          approach: 'incomplete' as const,
+          isStuck: inactivityCheck.isStuck,
+          issues: ['No code written yet'],
+          timeStuck: inactivityCheck.timeStuck,
+          codeQuality: 'poor' as const,
+          testable: false
+        }
+      }
+
+      // Code has changed - call LLM for analysis (with previous code context)
       const analysis = await this.codeAnalysis.analyzeCode(codeData.code, problem)
 
-      // If stuck, proactively provide a hint
-      if (analysis.isStuck) {
-        const hintText = await this.codeAnalysis.getHint(problem, codeData.code)
-        const result = await this.speakWithPolicy(hintText, {
-          interruptible: true,
-          bargeInPolicy: 'hard'
-        })
-        if (result.completed) {
-          this.emit('hintProvided', hintText)
+      // Only provide hints if stuck for more than 60 seconds
+      if (analysis.isStuck && analysis.timeStuck > 60000) {
+        if (!this.stateMachine.canProvideCodingHint()) {
+          console.log('🎯 [Interview] Candidate stuck >60s but hint limit reached, skipping auto-hint')
+        } else {
+          console.log('🎯 [Interview] Candidate stuck for more than 60 seconds, providing hint')
+          const hintNumber = this.stateMachine.incrementCodingHintCount()
+          const hintLevel = Math.min(hintNumber, 2) as 1 | 2
+          this.codeAnalysis.resetStuckTimer()
+          // getHint will automatically include previous code (1 min ago or starter code)
+          const hintText = await this.codeAnalysis.getHint(problem, codeData.code, hintLevel)
+          const result = await this.speakWithPolicy(hintText, {
+            interruptible: true,
+            bargeInPolicy: 'hard'
+          })
+          if (result.completed) {
+            this.emit('hintProvided', hintText)
+          }
         }
+        this.codeAnalysis.resetStuckTimer()
       }
 
       return analysis
 
     } catch (error) {
       console.error('Code analysis error:', error)
+      // Even on error, check for inactivity
+      const inactivityCheck = this.codeAnalysis.checkInactivity()
+      if (inactivityCheck.isStuck && inactivityCheck.timeStuck > 60000) {
+        if (!this.stateMachine.canProvideCodingHint()) {
+          console.log('🎯 [Interview] Candidate inactive >60s (error case) but hint limit reached, skipping auto-hint')
+        } else {
+          console.log('🎯 [Interview] Candidate inactive for more than 60 seconds (error case), providing hint')
+          const problem = this.codeAnalysis.getCurrentProblem() || this.currentSession?.codingProblems?.find(p => p.id === codeData.problemId) || null
+          if (problem) {
+            const hintNumber = this.stateMachine.incrementCodingHintCount()
+            const hintLevel = Math.min(hintNumber, 2) as 1 | 2
+            this.codeAnalysis.resetStuckTimer()
+            const hintText = await this.codeAnalysis.getHint(problem, codeData.code || '', hintLevel)
+            const result = await this.speakWithPolicy(hintText, {
+              interruptible: true,
+              bargeInPolicy: 'hard'
+            })
+            if (result.completed) {
+              this.emit('hintProvided', hintText)
+            }
+          }
+        }
+        this.codeAnalysis.resetStuckTimer()
+      }
       throw error
     }
   }
@@ -1027,25 +1373,34 @@ export class InterviewOrchestrator extends EventEmitter {
       const currentProblemIndex = codingProblems.findIndex(p => p.id === problem.id)
       const hasNextProblem = currentProblemIndex >= 0 && currentProblemIndex < codingProblems.length - 1
 
-      if (hasNextProblem && analysis.progress >= 70) {
-        // Move to next problem
+      if (hasNextProblem) {
         const nextProblem = codingProblems[currentProblemIndex + 1]
-        this.codeAnalysis.setCurrentProblem(nextProblem)
         console.log('🎯 [Interview] Moving to next coding problem:', nextProblem.title)
-        
-        // Present next problem immediately
-        await this.speakCodingProblem(nextProblem)
-        this.emit('presentCodingProblem', nextProblem)
-      } else if (!hasNextProblem && analysis.progress >= 70) {
-        // All coding problems done
-        console.log('🎯 [Interview] All coding problems completed')
-        await this.stateMachine.transition('solution_complete')
+
+        const transitionMessage = "Thanks for submitting that solution. Let's move on to the next problem."
+        await this.speakWithPolicy(transitionMessage, {
+          interruptible: false,
+          bargeInPolicy: 'soft'
+        })
+
+        this.stateMachine.clearSilenceTimer()
+        this.codeAnalysis.setCurrentProblem(nextProblem)
+        await this.stateMachine.setState(InterviewState.CODING_PROBLEM)
+        return {
+          success: analysis.progress >= 70,
+          feedback,
+          hasNextProblem: true
+        }
       }
+
+      console.log('🎯 [Interview] All coding problems completed')
+      this.stateMachine.clearSilenceTimer()
+      await this.stateMachine.transition('solution_complete')
 
       return {
         success: analysis.progress >= 70,
         feedback,
-        hasNextProblem: hasNextProblem && analysis.progress >= 70
+        hasNextProblem: false
       }
 
     } catch (error) {
@@ -1113,9 +1468,90 @@ export class InterviewOrchestrator extends EventEmitter {
 
   private async handleSilenceTimeout(): Promise<void> {
     const currentState = this.stateMachine.getState()
-    console.log('🎯 [Interview] Silence timeout detected in state:', currentState)
+    console.log('🎯 [Interview] Silence timeout (2 mins) detected in state:', currentState)
     
-    // Only provide hints during theoretical questions or waiting for answers
+    // Handle silence timeout during coding approach waiting
+    if (currentState === InterviewState.WAITING_FOR_APPROACH) {
+      const approachSpoken = this.stateMachine.hasCodingApproachSpoken()
+      const approachPromptCount = this.stateMachine.getApproachPromptCount()
+      const codingHintCount = this.stateMachine.getCodingHintCount()
+      const moveOnPromptGiven = this.stateMachine.hasCodingMoveOnPromptGiven()
+      
+      console.log('🎯 [Interview] Approach status - spoken:', approachSpoken, 'prompts:', approachPromptCount, 'hints:', codingHintCount, 'move-on:', moveOnPromptGiven)
+      
+      // If approach already spoken, don't prompt - just monitor
+      if (approachSpoken) {
+        console.log('🎯 [Interview] Approach already spoken, just monitoring')
+        this.stateMachine.startSilenceTimer(120000) // Continue monitoring
+        return
+      }
+      
+      // First silence: Ask to explain approach (only once)
+      if (approachPromptCount === 0) {
+        this.stateMachine.incrementApproachPromptCount()
+        console.log('🎯 [Interview] First silence - prompting for approach (1 time only)')
+        
+        const reminder = "Please explain your approach to solving this problem, or feel free to ask any clarifying questions."
+        await this.speakWithPolicy(reminder, {
+          interruptible: true,
+          bargeInPolicy: 'hard'
+        })
+        // Restart the 2-minute timer
+        this.stateMachine.startSilenceTimer(120000)
+        return
+      }
+      
+      // Second/Third silence: Provide escalating hints (max 2)
+      if (codingHintCount < 2) {
+        const hintLevel = (codingHintCount + 1) as 1 | 2
+        console.log('🎯 [Interview] Silence detected - providing escalating hint level', hintLevel)
+        
+        // Increment hint count
+        this.stateMachine.incrementCodingHintCount()
+        
+        // Provide escalating hint through code analysis service
+        const problem = this.getCurrentCodingProblem()
+        if (problem) {
+          const currentCode = this.stateMachine.getPreviousCode()
+          const hint = await this.codeAnalysis.getHint(problem, currentCode || '', hintLevel)
+          await this.speakWithPolicy(hint, {
+            interruptible: true,
+            bargeInPolicy: 'hard'
+          })
+          this.emit('hintProvided', hint)
+        }
+        
+        // Restart the 2-minute timer
+        this.stateMachine.startSilenceTimer(120000)
+        return
+      }
+      
+      // After 2 hints exhausted: Ask to move on (only once)
+      if (!moveOnPromptGiven) {
+        console.log('🎯 [Interview] Hints exhausted, asking if want to move on')
+        this.stateMachine.setCodingMoveOnPromptGiven(true)
+        
+        await this.speakWithPolicy(
+          "Would you like to move on to the next question?",
+          {
+            interruptible: true,
+            bargeInPolicy: 'hard'
+          }
+        )
+        this.stateMachine.startSilenceTimer(120000)
+        return
+      }
+      
+      // After move-on prompt: just wait silently until timer expires
+      console.log('🎯 [Interview] Move-on already prompted, waiting silently')
+      this.stateMachine.startSilenceTimer(120000) // Continue monitoring silently
+      return
+    }
+    
+    // Handle silence timeout during code monitoring
+    // Removed automatic hint cycle during code monitoring
+    
+    // Handle silence timeout for theoretical questions (existing logic)
     if (currentState === InterviewState.THEORETICAL_QUESTION || currentState === InterviewState.WAITING_FOR_ANSWER) {
       const currentQuestion = this.llm.getCurrentQuestion()
       if (currentQuestion) {
@@ -1160,9 +1596,18 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private async speakCodingProblem(problem: CodingProblem): Promise<void> {
-    // Simple intro - problem details shown in editor
-    const intro = "Please solve this problem. You can see the details on your screen."
+    // Reset all coding-specific counters for new coding question
+    this.stateMachine.resetCodingCounters()
+    console.log('🎯 [Interview] ♻️ Reset coding counters for new problem')
+    
+    // Present the problem - details are shown in editor
+    const intro = "Here's the coding problem. You can see the details on your screen."
+    const reminder = "While you work through it, please plan to note the time and space complexity of your final solution as well."
     await this.speakWithPolicy(intro, {
+      interruptible: false,
+      bargeInPolicy: 'soft'
+    })
+    await this.speakWithPolicy(reminder, {
       interruptible: false,
       bargeInPolicy: 'soft'
     })
@@ -1170,22 +1615,44 @@ export class InterviewOrchestrator extends EventEmitter {
     // Set the problem in code analysis
     this.codeAnalysis.setCurrentProblem(problem)
     
-    // Note: We're already in CODING_PROBLEM state when this is called,
-    // so we don't need to transition - the state machine will auto-transition to monitoring
+    // Note: The state machine will automatically transition to CODING_APPROACH
     // after a delay (handled in handleCodingProblem)
+  }
+
+  private async askForCodingApproach(): Promise<void> {
+    const problem = this.getCurrentCodingProblem()
+    if (!problem) {
+      console.log('🎯 [Interview] No coding problem to ask approach for')
+      return
+    }
+    
+    // Ask for approach and encourage clarifying questions
+    const approachPrompt = "Before you start coding, please explain your approach to solving this problem. Also feel free to ask any clarifying questions if you need to understand the requirements better."
+    const result = await this.speakWithPolicy(approachPrompt, {
+      interruptible: false,
+      bargeInPolicy: 'soft'
+    })
+    
+    // Transition to waiting for approach
+    if (result.completed || result.softStopped) {
+      await this.stateMachine.transition('approach_asked')
+    }
   }
 
   private async handleHintProvision(): Promise<void> {
     const last = this.codeAnalysis.getObservations().slice(-1)[0]
     const problem = this.codeAnalysis.getCurrentProblem() || (this.currentSession?.codingProblems?.[0] ?? null)
-    if (last && problem && last.analysis.isStuck) {
-      const hintText = await this.codeAnalysis.getHint(problem, last.code)
+    // Only provide hints if stuck for more than 40 seconds
+    if (last && problem && last.analysis.isStuck && last.analysis.timeStuck > 40000) {
+      console.log('🎯 [Interview] Providing hint - stuck for more than 40 seconds')
+      const hintText = await this.codeAnalysis.getHint(problem, last.code, 1) // Use level 1 hint
       // Coding hints are interruptible with hard stop
       const result = await this.speakWithPolicy(hintText, {
         interruptible: true,
         bargeInPolicy: 'hard'
       })
       if (result.completed) {
+        await this.stateMachine.transition('hint_provided')
         this.emit('hintProvided', hintText)
       }
     }
@@ -1193,12 +1660,13 @@ export class InterviewOrchestrator extends EventEmitter {
 
   private async speakWrapUp(data: any): Promise<void> {
     const summary = this.codeAnalysis.getSessionSummary()
-    const wrapUpText = `Thank you for completing the interview! Your theoretical score was ${data.finalScore?.toFixed(1) || 'N/A'}%. The coding section took ${Math.round(summary.totalTime / 1000)} seconds. Great work!`
+    const wrapUpText = `Thanks for submitting your solution. That wraps up the coding section. I'll share a brief summary now. Your theoretical score was ${data.finalScore?.toFixed(1) || 'N/A'}%. The coding section took ${Math.round(summary.totalTime / 1000)} seconds. Great work!`
     // Wrap-up is interruptible with hard stop
     await this.speakWithPolicy(wrapUpText, {
       interruptible: true,
       bargeInPolicy: 'hard'
     })
+    await this.stateMachine.transition('interview_complete')
   }
 
   private async handleInterviewCompletion(): Promise<void> {
@@ -1211,7 +1679,17 @@ export class InterviewOrchestrator extends EventEmitter {
       await this.tts.stopAudio()
       
       this.emit('interviewCompleted', this.currentSession)
+      this.cleanupListeners()
     }
+  }
+
+  private cleanupListeners(): void {
+    this.stt?.removeAllListeners()
+    this.tts?.removeAllListeners()
+    this.llm?.removeAllListeners()
+    this.codeAnalysis?.removeAllListeners()
+    this.stateMachine.removeAllListeners()
+    this.removeAllListeners()
   }
 
   // Public methods for external control

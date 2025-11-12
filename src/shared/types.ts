@@ -186,7 +186,7 @@ export interface CodeAnalysis {
   isStuck: boolean
   issues: string[]
   suggestedHint?: string
-  hintLevel: 1 | 2 | 3
+  hintLevel: 1 | 2 // Escalating hints: 1=data structure, 2=algorithm
   timeStuck: number // milliseconds
   codeQuality: 'good' | 'fair' | 'poor'
   testable: boolean

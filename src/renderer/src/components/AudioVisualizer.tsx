@@ -121,10 +121,7 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
 
       <style>{`
         .audio-visualizer {
-          position: fixed;
-          bottom: 20px;
-          right: 20px;
-          z-index: 1000;
+          /* Position is controlled by parent component */
         }
 
         .visualizer-container {
@@ -140,6 +137,7 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
         }
 
         .visualizer-canvas {
+          height: 30px;
           border-radius: 6px;
           background: rgba(0, 0, 0, 0.3);
         }

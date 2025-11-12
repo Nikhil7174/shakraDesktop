@@ -266,11 +266,17 @@ app.whenReady().then(async () => {
     interviewOrchestrator.on('stateChanged', (payload: any) => {
       try {
         console.log('🎤 [Main] State changed:', payload.to)
-        // Set listening to true when waiting for answer or monitoring code
-        if (payload.to === 'waiting_for_answer' || payload.to === 'monitoring_code' || payload.to === 'coding_problem') {
+        // Set listening to true when waiting for user input
+        if (payload.to === 'waiting_for_answer' || 
+            payload.to === 'monitoring_code' || 
+            payload.to === 'coding_problem' ||
+            payload.to === 'waiting_for_approach' ||
+            payload.to === 'follow_up') {
           console.log('🎤 [Main] Setting listening to true for', payload.to, 'state')
           mainWindow?.webContents.send('listening-state-change', true)
-        } else if (payload.to === 'evaluating_answer' || payload.to === 'theoretical_question') {
+        } else if (payload.to === 'evaluating_answer' || 
+                   payload.to === 'evaluating_approach' ||
+                   payload.to === 'theoretical_question') {
           console.log('🎤 [Main] Setting listening to false for', payload.to, 'state')
           mainWindow?.webContents.send('listening-state-change', false)
         }
@@ -299,12 +305,17 @@ app.whenReady().then(async () => {
         // Re-enable listening indicator based on current state
         if (interviewOrchestrator) {
           const currentState = interviewOrchestrator.getCurrentState()
+          // States where we should be actively listening for user input
           const shouldListen = currentState === 'waiting_for_answer' || 
                               currentState === 'monitoring_code' || 
-                              currentState === 'coding_problem'
+                              currentState === 'coding_problem' ||
+                              currentState === 'waiting_for_approach' ||
+                              currentState === 'follow_up'
           if (shouldListen) {
             console.log('🎤 [Main] Restoring listening state after TTS for state:', currentState)
             mainWindow?.webContents.send('listening-state-change', true)
+          } else {
+            console.log('🎤 [Main] Not restoring listening for state:', currentState)
           }
         }
       } catch (e: unknown) {

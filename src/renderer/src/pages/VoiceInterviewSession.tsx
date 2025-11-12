@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { CodeEditor } from '../components/CodeEditor'
 import { AudioVisualizer } from '../components/AudioVisualizer'
-import { InterviewProgress } from '../components/InterviewProgress'
 import { QuestionDisplay } from '../components/QuestionDisplay'
 import { ResumeInterviewModal } from '../components/interview/ResumeInterviewModal'
 import { CodingProblem, Question } from '../../../shared/types'
@@ -33,6 +32,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [progress, setProgress] = useState({ current: 0, total: questions.length })
   const [evaluations, setEvaluations] = useState<any[]>([])
   const [codeAnalysis, setCodeAnalysis] = useState<any>(null)
+  const [complexityNotes, setComplexityNotes] = useState<Record<string, { time: string; space: string }>>({})
   const [isMonitoring, setIsMonitoring] = useState(false)
   const [hasMicStream, setHasMicStream] = useState(false)
   const lastAudioTimeRef = useRef(0)
@@ -389,29 +389,62 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     }
   }, [])
 
-  const handlePauseInterview = useCallback(async () => {
-    try {
-      await window.electronAPI.pauseInterview()
-    } catch (error) {
-      console.error('Failed to pause interview:', error)
-    }
-  }, [])
 
-  const handleResumeInterview = useCallback(async () => {
-    try {
-      await window.electronAPI.resumeInterview()
-    } catch (error) {
-      console.error('Failed to resume interview:', error)
-    }
-  }, [])
+  const currentComplexity =
+    currentCodingProblem && complexityNotes[currentCodingProblem.id]
+      ? complexityNotes[currentCodingProblem.id]
+      : { time: '', space: '' }
 
-  const handleStopInterview = useCallback(async () => {
-    try {
-      await window.electronAPI.stopInterview()
-    } catch (error) {
-      console.error('Failed to stop interview:', error)
-    }
-  }, [])
+
+  const renderCodingWorkspace = (monitoringMode: boolean) => (
+    <div className="coding-section">
+      {currentCodingProblem && (
+        <div ref={codeEditorRef}>
+          <CodeEditor
+            problem={currentCodingProblem}
+            onCodeChange={handleCodeChange}
+            onAnalysisRequest={handleAnalysisRequest}
+            onSubmit={handleSubmit}
+            isMonitoring={monitoringMode ? isMonitoring : false}
+            timeComplexity={currentComplexity.time}
+            spaceComplexity={currentComplexity.space}
+            onTimeComplexityChange={(value) => {
+              if (currentCodingProblem) {
+                setComplexityNotes(prev => ({
+                  ...prev,
+                  [currentCodingProblem.id]: {
+                    time: value,
+                    space: prev[currentCodingProblem.id]?.space || ''
+                  }
+                }))
+              }
+            }}
+            onSpaceComplexityChange={(value) => {
+              if (currentCodingProblem) {
+                setComplexityNotes(prev => ({
+                  ...prev,
+                  [currentCodingProblem.id]: {
+                    time: prev[currentCodingProblem.id]?.time || '',
+                    space: value
+                  }
+                }))
+              }
+            }}
+          />
+        </div>
+      )}
+      {monitoringMode && codeAnalysis && (
+        <div className="code-analysis">
+          <h4>Progress Analysis</h4>
+          <p>Progress: {codeAnalysis.progress}%</p>
+          <p>Approach: {codeAnalysis.approach}</p>
+          {codeAnalysis.isStuck && codeAnalysis.timeStuck > 60000 && (
+            <p className="stuck-indicator">You seem to be stuck. A hint might be coming!</p>
+          )}
+        </div>
+      )}
+    </div>
+  )
 
   const renderCurrentSection = () => {
     switch (currentState) {
@@ -452,37 +485,21 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           <div className="coding-intro-section">
             <h2>Moving to Coding Section</h2>
             <p>Now we'll work on a programming problem. Take your time and think through the solution step by step.</p>
+            <p>As you implement, jot down the time and space complexity in the boxes beneath the editor so you can discuss them later.</p>
           </div>
         )
 
       case 'coding_problem':
+        return renderCodingWorkspace(false)
+
+      case 'coding_approach':
+      case 'waiting_for_approach':
+      case 'evaluating_approach':
+        return renderCodingWorkspace(false)
+
       case 'monitoring_code':
       case 'providing_hint':
-        return (
-          <div className="coding-section">
-            {currentCodingProblem && (
-              <div ref={codeEditorRef}>
-                <CodeEditor
-                  problem={currentCodingProblem}
-                  onCodeChange={handleCodeChange}
-                  onAnalysisRequest={handleAnalysisRequest}
-                  onSubmit={handleSubmit}
-                  isMonitoring={isMonitoring}
-                />
-              </div>
-            )}
-            {codeAnalysis && (
-              <div className="code-analysis">
-                <h4>Progress Analysis</h4>
-                <p>Progress: {codeAnalysis.progress}%</p>
-                <p>Approach: {codeAnalysis.approach}</p>
-                {codeAnalysis.isStuck && (
-                  <p className="stuck-indicator">You seem to be stuck. A hint might be coming!</p>
-                )}
-              </div>
-            )}
-          </div>
-        )
+        return renderCodingWorkspace(true)
 
       case 'wrap_up':
         return (
@@ -549,39 +566,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       />
       
       <div className="voice-interview-session">
-        <div className="interview-header">
-          <InterviewProgress 
-            currentState={currentState}
-            progress={progress}
-            isListening={isListening}
-            isSpeaking={isSpeaking}
-          />
-        
-        <div className="interview-controls">
-          <button 
-            onClick={handlePauseInterview}
-            disabled={currentState === 'completed'}
-            className="control-btn pause-btn"
-          >
-            Pause
-          </button>
-          <button 
-            onClick={handleResumeInterview}
-            disabled={currentState !== 'paused'}
-            className="control-btn resume-btn"
-          >
-            Resume
-          </button>
-          <button 
-            onClick={handleStopInterview}
-            className="control-btn stop-btn"
-          >
-            Stop
-          </button>
-        </div>
-      </div>
-
-      <div className="interview-content">
+        <div className="interview-content">
         {renderCurrentSection()}
       </div>
 
@@ -596,65 +581,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         .voice-interview-session {
           display: flex;
           flex-direction: column;
-          height: 100vh;
           background: #1a1a1a;
           color: #ffffff;
-        }
-
-        .interview-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 16px 24px;
-          background: #2d2d30;
-          border-bottom: 1px solid #333;
-        }
-
-        .interview-controls {
-          display: flex;
-          gap: 12px;
-        }
-
-        .control-btn {
-          padding: 8px 16px;
-          border: none;
-          border-radius: 4px;
-          cursor: pointer;
-          font-size: 14px;
-          font-weight: 500;
-          transition: all 0.2s;
-        }
-
-        .pause-btn {
-          background: #ff9800;
-          color: white;
-        }
-
-        .pause-btn:hover:not(:disabled) {
-          background: #f57c00;
-        }
-
-        .resume-btn {
-          background: #4caf50;
-          color: white;
-        }
-
-        .resume-btn:hover:not(:disabled) {
-          background: #388e3c;
-        }
-
-        .stop-btn {
-          background: #f44336;
-          color: white;
-        }
-
-        .stop-btn:hover {
-          background: #d32f2f;
-        }
-
-        .control-btn:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
         }
 
         .interview-content {
@@ -689,12 +617,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         }
 
         .theoretical-section {
-          max-width: 800px;
           margin: 0 auto;
         }
 
         .coding-section {
-          max-width: 1000px;
           margin: 0 auto;
         }
 
@@ -741,7 +667,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
         .audio-visualizer {
           position: fixed;
-          bottom: 20px;
+          bottom: 10px;
           right: 20px;
           z-index: 1000;
         }

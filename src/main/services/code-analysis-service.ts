@@ -41,7 +41,7 @@ export interface CodeAnalysis {
   isStuck: boolean
   issues: string[]
   suggestedHint?: string
-  hintLevel: 1 | 2 | 3
+  hintLevel: 1 | 2 // Escalating hints: 1=data structure, 2=algorithm
   timeStuck: number // milliseconds
   codeQuality: 'good' | 'fair' | 'poor'
   testable: boolean
@@ -86,6 +86,9 @@ export class CodeAnalysisService extends EventEmitter {
   // private lastAnalysisTime: number = 0
   private stuckStartTime: number = 0
   private isStuck: boolean = false
+  private lastCodeChangeTime: number = 0
+  private lastCodeHash: string = ''
+  private codeHistory: CodeSnapshot[] = [] // Track code snapshots over time
 
   constructor(serverUrl: string) {
     super()
@@ -95,6 +98,26 @@ export class CodeAnalysisService extends EventEmitter {
 
   async analyzeCode(code: string, problem: CodingProblem): Promise<CodeAnalysis> {
     try {
+      const now = Date.now()
+      const codeHash = this.normalizeCode(code)
+      
+      // Track code changes for inactivity detection and history
+      if (codeHash !== this.lastCodeHash) {
+        this.lastCodeChangeTime = now
+        this.lastCodeHash = codeHash
+        
+        // Store code snapshot in history
+        this.codeHistory.push({
+          code,
+          timestamp: now
+        })
+        
+        // Keep only last 20 snapshots to avoid memory issues
+        if (this.codeHistory.length > 20) {
+          this.codeHistory.shift()
+        }
+      }
+
       const response = await this.axios.post(`${this.serverUrl}/api/llm/analyze-code`, {
         code,
         problem: problem.description,
@@ -106,14 +129,14 @@ export class CodeAnalysisService extends EventEmitter {
         
         // Store observation
         const observation: Observation = {
-          timestamp: Date.now(),
+          timestamp: now,
           code,
           analysis
         }
         this.observations.push(observation)
 
-        // Update stuck state
-        this.updateStuckState(analysis)
+        // Update stuck state (includes inactivity check)
+        this.updateStuckState(analysis, code)
 
         // Emit analysis event
         this.emit('analysisComplete', analysis)
@@ -128,7 +151,11 @@ export class CodeAnalysisService extends EventEmitter {
     }
   }
 
-  async evaluateApproach(verbalExplanation: string, problem: CodingProblem): Promise<{
+  private normalizeCode(code: string): string {
+    return code.replace(/\s+/g, '')
+  }
+
+  async evaluateApproach(verbalExplanation: string, problem: CodingProblem, currentCode: string = ''): Promise<{
     isApproach: boolean
     isCorrect?: boolean
     isClarification: boolean
@@ -136,7 +163,24 @@ export class CodeAnalysisService extends EventEmitter {
     clarification?: string
   }> {
     try {
-      const response = await this.axios.post(`${this.serverUrl}/api/llm/evaluate-coding-approach`, {
+      const starterCode =
+        problem.starterCode ||
+        (problem.starterCodes ? problem.starterCodes[problem.language || 'cpp'] : '') ||
+        ''
+
+      const hasCurrentCode = currentCode.trim().length > 0
+      const hasStarterCode = starterCode.trim().length > 0
+
+      let includeCode = false
+      if (hasCurrentCode) {
+        if (!hasStarterCode) {
+          includeCode = true
+        } else {
+          includeCode = this.normalizeCode(currentCode) !== this.normalizeCode(starterCode)
+        }
+      }
+
+      const requestBody: Record<string, any> = {
         explanation: verbalExplanation,
         problem: {
           title: problem.title,
@@ -144,7 +188,14 @@ export class CodeAnalysisService extends EventEmitter {
           constraints: problem.hints,
           language: problem.language
         }
-      })
+      }
+
+      if (includeCode) {
+        requestBody.starterCode = starterCode
+        requestBody.currentCode = currentCode
+      }
+
+      const response = await this.axios.post(`${this.serverUrl}/api/llm/evaluate-coding-approach`, requestBody)
 
       if (response.data.success) {
         return response.data.evaluation
@@ -163,70 +214,135 @@ export class CodeAnalysisService extends EventEmitter {
     }
   }
 
-  private updateStuckState(analysis: CodeAnalysis): void {
+  private updateStuckState(analysis: CodeAnalysis, code: string): void {
     const now = Date.now()
+    const INACTIVITY_THRESHOLD = 60000 // 60 seconds
     
-    if (analysis.isStuck && !this.isStuck) {
+    // Check for inactivity (no code changes for >60 seconds)
+    const timeSinceLastChange = now - this.lastCodeChangeTime
+    const hasInactivity = this.lastCodeChangeTime > 0 && timeSinceLastChange > INACTIVITY_THRESHOLD
+    
+    // Check if code is essentially empty or just starter code
+    const normalizedCode = this.normalizeCode(code)
+    const starterCode = this.currentProblem?.starterCode || ''
+    const normalizedStarter = this.normalizeCode(starterCode)
+    const isMinimalCode = normalizedCode.length < 50 || normalizedCode === normalizedStarter
+    
+    // Consider stuck if:
+    // 1. LLM detected stuck, OR
+    // 2. No code changes for >60 seconds AND code is minimal/unchanged
+    const shouldBeStuck = analysis.isStuck || (hasInactivity && isMinimalCode)
+    
+    if (shouldBeStuck && !this.isStuck) {
       // Just got stuck
       this.isStuck = true
-      this.stuckStartTime = now
-    } else if (!analysis.isStuck && this.isStuck) {
+      // Use the earlier of: LLM stuck time or inactivity start time
+      if (analysis.isStuck && this.stuckStartTime > 0) {
+        // Keep existing stuck start time if LLM already detected it
+      } else {
+        // Start tracking from when inactivity began
+        this.stuckStartTime = this.lastCodeChangeTime > 0 
+          ? this.lastCodeChangeTime + INACTIVITY_THRESHOLD 
+          : now
+      }
+      console.log(`🎯 [CodeAnalysis] User marked as stuck - LLM: ${analysis.isStuck}, Inactivity: ${hasInactivity}, Time since change: ${Math.round(timeSinceLastChange/1000)}s`)
+    } else if (!shouldBeStuck && this.isStuck) {
       // No longer stuck
       this.isStuck = false
       this.stuckStartTime = 0
+      console.log(`✅ [CodeAnalysis] User no longer stuck`)
     }
 
     // Update time stuck
     if (this.isStuck) {
       analysis.timeStuck = now - this.stuckStartTime
+      analysis.isStuck = true // Ensure isStuck is set to true
     } else {
       analysis.timeStuck = 0
     }
   }
 
-  async getHint(problem: CodingProblem, currentCode: string, hintLevel: 1 | 2 | 3 = 1, skipAnalysis: boolean = false): Promise<string> {
-    try {
-      // Optionally analyze the current code (skip if already analyzed to avoid recursion)
-      let analysis: CodeAnalysis | null = null
-      if (!skipAnalysis) {
-        analysis = await this.analyzeCode(currentCode, problem)
-        if (analysis.suggestedHint) {
-          return analysis.suggestedHint
-        }
-      } else {
-        // Use the most recent analysis if available
-        if (this.observations.length > 0) {
-          const lastObservation = this.observations[this.observations.length - 1]
-          if (lastObservation.code === currentCode && lastObservation.analysis.suggestedHint) {
-            return lastObservation.analysis.suggestedHint
-          }
-        }
+  // Get code from 1 minute ago, or starter code if first time
+  private getPreviousCode(): string {
+    const now = Date.now()
+    const oneMinuteAgo = now - 60000
+    
+    // Find code snapshot from ~1 minute ago
+    for (let i = this.codeHistory.length - 1; i >= 0; i--) {
+      const snapshot = this.codeHistory[i]
+      if (snapshot.timestamp <= oneMinuteAgo) {
+        return snapshot.code
       }
+    }
+    
+    // If no history or first time, return starter code
+    if (this.currentProblem) {
+      return this.currentProblem.starterCode || 
+             (this.currentProblem.starterCodes?.[this.currentProblem.language || 'cpp']) || 
+             ''
+    }
+    
+    return ''
+  }
 
-      // Generate hint based on level
-      const hintContext = hintLevel === 1 
-        ? "Provide a gentle hint about the approach"
-        : hintLevel === 2
-        ? "Provide a moderate hint about the implementation"
-        : "Provide a direct hint about the solution"
+  // Check if any code change was made (without LLM) - compares current code with last known code
+  hasCodeChanged(currentCode: string): boolean {
+    const normalizedCurrent = this.normalizeCode(currentCode)
+    
+    // Compare with last known code hash
+    if (this.lastCodeHash && normalizedCurrent !== this.lastCodeHash) {
+      return true
+    }
+    
+    // If no history yet, check if current code differs from starter code
+    if (this.codeHistory.length === 0) {
+      const starterCode = this.currentProblem?.starterCode || 
+                         (this.currentProblem?.starterCodes?.[this.currentProblem.language || 'cpp']) || 
+                         ''
+      const normalizedStarter = this.normalizeCode(starterCode)
+      return normalizedCurrent !== normalizedStarter && normalizedCurrent.length > 0
+    }
+    
+    // Compare with latest code in history
+    const latestCode = this.codeHistory[this.codeHistory.length - 1].code
+    const normalizedLatest = this.normalizeCode(latestCode)
+    return normalizedCurrent !== normalizedLatest
+  }
 
-      const response = await this.axios.post(`${this.serverUrl}/api/llm/generate-response`, {
-        context: `${hintContext}. Coding problem: ${problem.description}. Current code: ${currentCode}.`,
-        conversationHistory: []
+  async getHint(problem: CodingProblem, currentCode: string, hintLevel: 1 | 2 = 1): Promise<string> {
+    try {
+      // Get code from 1 minute ago (or starter code if first time)
+      const previousCode = this.getPreviousCode()
+      const hasChanged = this.hasCodeChanged(currentCode)
+      
+      console.log(`🎯 [CodeAnalysis] Generating hint level ${hintLevel}, code changed: ${hasChanged}`)
+      
+      // Use enhanced hint endpoint that compares current code with previous code
+      const response = await this.axios.post(`${this.serverUrl}/api/llm/generate-coding-hint`, {
+        problem: {
+          title: problem.title || 'Coding Problem',
+          description: problem.description,
+          constraints: problem.constraints
+        },
+        hintLevel,
+        currentCode,
+        previousCode: previousCode || null, // Code from 1 min ago or starter code
+        hasCodeChanged: hasChanged
       })
 
-      if (response.data.success) {
-        return response.data.response
+      if (response.data.success && response.data.hint) {
+        console.log(`🎯 [CodeAnalysis] Hint level ${hintLevel} generated:`, response.data.hint)
+        return response.data.hint
       } else {
         return this.getDefaultHint(problem, hintLevel)
       }
     } catch (error) {
-      console.error('Error generating hint:', error)
+      console.error('Error generating coding hint:', error)
       return this.getDefaultHint(problem, hintLevel)
     }
   }
 
-  private getDefaultHint(problem: CodingProblem, hintLevel: 1 | 2 | 3): string {
+  private getDefaultHint(problem: CodingProblem, hintLevel: 1 | 2): string {
     const hints = problem.hints || []
     
     if (hints.length > 0) {
@@ -234,11 +350,10 @@ export class CodeAnalysisService extends EventEmitter {
       return hints[hintIndex]
     }
 
-    // Fallback hints based on level
+    // Fallback hints based on escalation level
     const fallbackHints = {
-      1: "Think about the problem step by step. What's the first thing you need to do?",
-      2: "Consider the data structures and algorithms that might be useful here.",
-      3: "Look at the test cases to understand the expected input and output format."
+      1: "Think about what data structure might help you solve this efficiently. Consider using a hashmap, stack, or queue.",
+      2: "Consider what algorithm or technique might be useful here. Think about binary search, dynamic programming, or two-pointer approaches."
     }
 
     return fallbackHints[hintLevel]
@@ -273,6 +388,20 @@ export class CodeAnalysisService extends EventEmitter {
     this.observations = []
     this.isStuck = false
     this.stuckStartTime = 0
+    this.lastCodeChangeTime = Date.now()
+    this.lastCodeHash = ''
+    this.codeHistory = []
+    
+    // Initialize with starter code as first snapshot
+    const starterCode = problem.starterCode || 
+                       (problem.starterCodes?.[problem.language || 'cpp']) || 
+                       ''
+    if (starterCode) {
+      this.codeHistory.push({
+        code: starterCode,
+        timestamp: Date.now()
+      })
+    }
   }
 
   getCurrentProblem(): CodingProblem | null {
@@ -304,6 +433,9 @@ export class CodeAnalysisService extends EventEmitter {
     this.startTime = 0
     this.isStuck = false
     this.stuckStartTime = 0
+    this.lastCodeChangeTime = 0
+    this.lastCodeHash = ''
+    this.codeHistory = []
   }
 
   // Get summary of coding session
@@ -331,6 +463,38 @@ export class CodeAnalysisService extends EventEmitter {
       stuckTime,
       averageProgress,
       issues: uniqueIssues
+    }
+  }
+
+  resetStuckTimer(): void {
+    if (this.isStuck) {
+      this.stuckStartTime = Date.now()
+    }
+    // Also reset inactivity tracking when hint is provided
+    this.lastCodeChangeTime = Date.now()
+  }
+  
+  // Check for inactivity without full analysis (for periodic checks)
+  checkInactivity(): { isStuck: boolean; timeStuck: number } {
+    const now = Date.now()
+    const INACTIVITY_THRESHOLD = 60000 // 60 seconds
+    const timeSinceLastChange = now - this.lastCodeChangeTime
+    
+    if (this.lastCodeChangeTime > 0 && timeSinceLastChange > INACTIVITY_THRESHOLD) {
+      if (!this.isStuck) {
+        this.isStuck = true
+        this.stuckStartTime = this.lastCodeChangeTime + INACTIVITY_THRESHOLD
+        console.log(`🎯 [CodeAnalysis] Inactivity detected - no changes for ${Math.round(timeSinceLastChange/1000)}s`)
+      }
+      return {
+        isStuck: true,
+        timeStuck: now - this.stuckStartTime
+      }
+    }
+    
+    return {
+      isStuck: this.isStuck,
+      timeStuck: this.isStuck ? now - this.stuckStartTime : 0
     }
   }
 }

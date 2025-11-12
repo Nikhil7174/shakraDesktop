@@ -12,6 +12,9 @@ export enum InterviewState {
   HANDLING_CLARIFICATION = 'handling_clarification',
   CODING_INTRO = 'coding_intro',
   CODING_PROBLEM = 'coding_problem',
+  CODING_APPROACH = 'coding_approach',
+  WAITING_FOR_APPROACH = 'waiting_for_approach',
+  EVALUATING_APPROACH = 'evaluating_approach',
   MONITORING_CODE = 'monitoring_code',
   PROVIDING_HINT = 'providing_hint',
   WRAP_UP = 'wrap_up',
@@ -33,6 +36,15 @@ export interface InterviewData {
   clarificationRequestCount?: number
   hintRequestCount?: number
   hintEventCount?: number
+  codingApproachRetryCount?: number
+  // Coding-specific tracking
+  codingClarificationCount?: number
+  codingHintCount?: number
+  codingApproachSpoken?: boolean
+  codingMoveOnPromptGiven?: boolean
+  previousCode?: string
+  approachPromptCount?: number
+  approachSilenceHintGiven?: boolean
 }
 
 export interface StateTransition {
@@ -62,7 +74,16 @@ export class InterviewStateMachine extends EventEmitter {
       silenceTimeoutCount: 0,
       clarificationRequestCount: 0,
       hintRequestCount: 0,
-      hintEventCount: 0
+      hintEventCount: 0,
+      codingApproachRetryCount: 0,
+      // Coding-specific tracking initialization
+      codingClarificationCount: 0,
+      codingHintCount: 0,
+      codingApproachSpoken: false,
+      codingMoveOnPromptGiven: false,
+      previousCode: '',
+      approachPromptCount: 0,
+      approachSilenceHintGiven: false
     }
     this.initializeTransitions()
   }
@@ -103,7 +124,17 @@ export class InterviewStateMachine extends EventEmitter {
       { from: InterviewState.CODING_INTRO, to: InterviewState.WRAP_UP, event: 'no_coding_problems' },
       
       // From CODING_PROBLEM
-      { from: InterviewState.CODING_PROBLEM, to: InterviewState.MONITORING_CODE, event: 'start_monitoring' },
+      { from: InterviewState.CODING_PROBLEM, to: InterviewState.CODING_APPROACH, event: 'ask_for_approach' },
+      
+      // From CODING_APPROACH
+      { from: InterviewState.CODING_APPROACH, to: InterviewState.WAITING_FOR_APPROACH, event: 'approach_asked' },
+      
+      // From WAITING_FOR_APPROACH
+      { from: InterviewState.WAITING_FOR_APPROACH, to: InterviewState.EVALUATING_APPROACH, event: 'approach_provided' },
+      
+      // From EVALUATING_APPROACH
+      { from: InterviewState.EVALUATING_APPROACH, to: InterviewState.MONITORING_CODE, event: 'approach_approved' },
+      { from: InterviewState.EVALUATING_APPROACH, to: InterviewState.WAITING_FOR_APPROACH, event: 'approach_needs_retry' },
       
       // From MONITORING_CODE
       { from: InterviewState.MONITORING_CODE, to: InterviewState.PROVIDING_HINT, event: 'provide_hint' },
@@ -225,6 +256,18 @@ export class InterviewStateMachine extends EventEmitter {
         await this.handleCodingProblem()
         break
 
+      case InterviewState.CODING_APPROACH:
+        await this.handleCodingApproach()
+        break
+
+      case InterviewState.WAITING_FOR_APPROACH:
+        this.emit('waitingForApproach')
+        break
+
+      case InterviewState.EVALUATING_APPROACH:
+        this.emit('evaluatingApproach')
+        break
+
       case InterviewState.MONITORING_CODE:
         this.emit('codeMonitoringStarted')
         break
@@ -280,10 +323,16 @@ export class InterviewStateMachine extends EventEmitter {
 
   private async handleCodingProblem() {
     this.emit('presentCodingProblem')
-    // Automatically start monitoring after a short delay
+    // Ask for approach first instead of starting monitoring
     setTimeout(() => {
-      this.transition('start_monitoring')
+      this.transition('ask_for_approach')
     }, 2000)
+  }
+
+  private async handleCodingApproach() {
+    // Reset retry count when asking for approach
+    this.resetCodingApproachRetryCount()
+    this.emit('askForApproach')
   }
 
   private async handleProvidingHint() {
@@ -375,6 +424,9 @@ export class InterviewStateMachine extends EventEmitter {
     return [
       InterviewState.CODING_INTRO,
       InterviewState.CODING_PROBLEM,
+      InterviewState.CODING_APPROACH,
+      InterviewState.WAITING_FOR_APPROACH,
+      InterviewState.EVALUATING_APPROACH,
       InterviewState.MONITORING_CODE,
       InterviewState.PROVIDING_HINT
     ].includes(this.state)
@@ -407,7 +459,15 @@ export class InterviewStateMachine extends EventEmitter {
       silenceTimeoutCount: 0,
       clarificationRequestCount: 0,
       hintRequestCount: 0,
-      hintEventCount: 0
+      hintEventCount: 0,
+      codingApproachRetryCount: 0,
+      // Coding-specific tracking reset
+      codingClarificationCount: 0,
+      codingHintCount: 0,
+      codingApproachSpoken: false,
+      codingMoveOnPromptGiven: false,
+      previousCode: '',
+      approachPromptCount: 0
     }
     this.clearSilenceTimer()
     this.resetHintLevel()
@@ -564,6 +624,145 @@ export class InterviewStateMachine extends EventEmitter {
 
   resetHintEventCount(): void {
     this.data.hintEventCount = 0
+  }
+
+  // Coding approach retry count
+  incrementCodingApproachRetryCount(): number {
+    const current = (this.data.codingApproachRetryCount || 0) + 1
+    this.data.codingApproachRetryCount = current
+    return current
+  }
+
+  getCodingApproachRetryCount(): number {
+    return this.data.codingApproachRetryCount || 0
+  }
+
+  resetCodingApproachRetryCount(): void {
+    this.data.codingApproachRetryCount = 0
+  }
+
+  // ============================================================================
+  // CODING-SPECIFIC TRACKING METHODS
+  // ============================================================================
+
+  // Coding clarification count (max 5)
+  incrementCodingClarificationCount(): number {
+    const current = (this.data.codingClarificationCount || 0) + 1
+    this.data.codingClarificationCount = current
+    return current
+  }
+
+  getCodingClarificationCount(): number {
+    return this.data.codingClarificationCount || 0
+  }
+
+  resetCodingClarificationCount(): void {
+    this.data.codingClarificationCount = 0
+  }
+
+  canAskCodingClarification(): boolean {
+    return (this.data.codingClarificationCount || 0) < 5
+  }
+
+  // Coding hint count (max 2)
+  incrementCodingHintCount(): number {
+    const current = (this.data.codingHintCount || 0) + 1
+    this.data.codingHintCount = current
+    return current
+  }
+
+  getCodingHintCount(): number {
+    return this.data.codingHintCount || 0
+  }
+
+  resetCodingHintCount(): void {
+    this.data.codingHintCount = 0
+  }
+
+  canProvideCodingHint(): boolean {
+    return (this.data.codingHintCount || 0) < 2
+  }
+
+  // Approach spoken flag
+  setCodingApproachSpoken(spoken: boolean): void {
+    this.data.codingApproachSpoken = spoken
+  }
+
+  hasCodingApproachSpoken(): boolean {
+    return this.data.codingApproachSpoken || false
+  }
+
+  resetCodingApproachSpoken(): void {
+    this.data.codingApproachSpoken = false
+  }
+
+  // Move on prompt given flag
+  setCodingMoveOnPromptGiven(given: boolean): void {
+    this.data.codingMoveOnPromptGiven = given
+  }
+
+  hasCodingMoveOnPromptGiven(): boolean {
+    return this.data.codingMoveOnPromptGiven || false
+  }
+
+  resetCodingMoveOnPromptGiven(): void {
+    this.data.codingMoveOnPromptGiven = false
+  }
+
+  // Previous code for change detection
+  setPreviousCode(code: string): void {
+    this.data.previousCode = code
+  }
+
+  getPreviousCode(): string {
+    return this.data.previousCode || ''
+  }
+
+  resetPreviousCode(): void {
+    this.data.previousCode = ''
+  }
+
+  // Approach prompt count (max 2)
+  incrementApproachPromptCount(): number {
+    const current = (this.data.approachPromptCount || 0) + 1
+    this.data.approachPromptCount = current
+    return current
+  }
+
+  getApproachPromptCount(): number {
+    return this.data.approachPromptCount || 0
+  }
+
+  resetApproachPromptCount(): void {
+    this.data.approachPromptCount = 0
+  }
+
+  canPromptForApproach(): boolean {
+    return (this.data.approachPromptCount || 0) < 2
+  }
+
+  // Approach silence hint given flag
+  setApproachSilenceHintGiven(given: boolean): void {
+    this.data.approachSilenceHintGiven = given
+  }
+
+  hasApproachSilenceHintGiven(): boolean {
+    return this.data.approachSilenceHintGiven || false
+  }
+
+  resetApproachSilenceHintGiven(): void {
+    this.data.approachSilenceHintGiven = false
+  }
+
+  // Reset all coding-specific counters (for new coding question)
+  resetCodingCounters(): void {
+    this.resetCodingClarificationCount()
+    this.resetCodingHintCount()
+    this.resetCodingApproachSpoken()
+    this.resetCodingMoveOnPromptGiven()
+    this.resetPreviousCode()
+    this.resetApproachPromptCount()
+    this.resetApproachSilenceHintGiven()
   }
 }
 
