@@ -184,7 +184,10 @@ export const useWebSocket = (sessionId?: string) => {
         break;
 
       default:
-        console.log('Unknown message type:', message.type);
+        // Ignore known message types that don't need handling
+        if (message.type !== 'session-info' && message.type !== 'stats') {
+          console.log('Unknown message type:', message.type);
+        }
     }
   }, [dispatch, sessionId]);
 

@@ -205,7 +205,6 @@ export class ErrorHandler extends EventEmitter {
           issues: ['Analysis unavailable'],
           suggestedHint: 'Please continue working on your solution.',
           hintLevel: 1,
-          timeStuck: 0,
           codeQuality: 'fair',
           testable: false
         }

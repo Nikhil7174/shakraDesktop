@@ -413,13 +413,13 @@ app.whenReady().then(async () => {
     }
   })
 
-  ipcMain.handle('submit-solution', async (_event, code: string) => {
+  ipcMain.handle('submit-solution', async (_event, code: string, isTimeout: boolean = false) => {
     try {
       if (!interviewOrchestrator) {
         throw new Error('Interview orchestrator not initialized')
       }
       
-      const result = await interviewOrchestrator.submitCodingSolution(code)
+      const result = await interviewOrchestrator.submitCodingSolution(code, isTimeout)
       return result
     } catch (error: unknown) {
       const err = error as Error
@@ -469,21 +469,81 @@ app.whenReady().then(async () => {
 
   // Generate temporary token for STT authentication
   ipcMain.handle('get-stt-token', async () => {
-    try {
-      const { AssemblyAI } = await import('assemblyai')
-      const client = new AssemblyAI({ apiKey: process.env.ASSEMBLYAI_API_KEY || '' })
-      
-      // Generate token valid for 5 minutes (300 seconds)
-      const token = await client.streaming.createTemporaryToken({ 
-        expires_in_seconds: 300 
-      })
-      
-      console.log('🎤 [STT] Generated temporary token')
-      return { success: true, token }
-    } catch (error: unknown) {
-      const err = error as Error
-      console.error('Failed to generate STT token:', err)
-      return { success: false, error: err.message }
+    const maxRetries = 3
+    const retryDelay = 2000 // 2 seconds
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const { AssemblyAI } = await import('assemblyai')
+        
+        // Check if API key is set
+        const apiKey = process.env.ASSEMBLYAI_API_KEY || ''
+        if (!apiKey) {
+          console.error('🎤 [STT] ASSEMBLYAI_API_KEY is not set')
+          return { 
+            success: false, 
+            error: 'ASSEMBLYAI_API_KEY environment variable is not configured' 
+          }
+        }
+        
+        const client = new AssemblyAI({ apiKey })
+        
+        console.log(`🎤 [STT] Attempting to generate temporary token (attempt ${attempt}/${maxRetries})...`)
+        
+        // Generate token valid for 5 minutes (300 seconds)
+        // Add timeout wrapper
+        const tokenPromise = client.streaming.createTemporaryToken({ 
+          expires_in_seconds: 300 
+        })
+        
+        // Add 15 second timeout
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Token generation timeout after 15 seconds')), 15000)
+        )
+        
+        const token = await Promise.race([tokenPromise, timeoutPromise]) as string
+        
+        console.log('🎤 [STT] Successfully generated temporary token')
+        return { success: true, token }
+      } catch (error: unknown) {
+        const err = error as Error
+        const isLastAttempt = attempt === maxRetries
+        
+        // Check if it's a network/connection error
+        const isNetworkError = err.message.includes('timeout') || 
+                              err.message.includes('ECONNREFUSED') ||
+                              err.message.includes('ENOTFOUND') ||
+                              err.message.includes('UND_ERR_CONNECT_TIMEOUT')
+        
+        if (isNetworkError && !isLastAttempt) {
+          console.warn(`🎤 [STT] Network error on attempt ${attempt}/${maxRetries}, retrying in ${retryDelay}ms...`, err.message)
+          await new Promise(resolve => setTimeout(resolve, retryDelay * attempt)) // Exponential backoff
+          continue
+        }
+        
+        // If last attempt or non-network error, return error
+        console.error(`🎤 [STT] Failed to generate token (attempt ${attempt}/${maxRetries}):`, err.message)
+        
+        // Provide user-friendly error message
+        let errorMessage = err.message
+        if (isNetworkError) {
+          errorMessage = 'Unable to connect to AssemblyAI service. Please check your internet connection and try again.'
+        } else if (err.message.includes('API key')) {
+          errorMessage = 'Invalid AssemblyAI API key. Please check your configuration.'
+        }
+        
+        return { 
+          success: false, 
+          error: errorMessage,
+          details: isLastAttempt ? err.message : undefined
+        }
+      }
+    }
+    
+    // Should never reach here, but just in case
+    return { 
+      success: false, 
+      error: 'Failed to generate STT token after multiple attempts' 
     }
   })
 

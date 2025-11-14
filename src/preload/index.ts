@@ -33,7 +33,7 @@ const interviewAPI = {
   
   // Code analysis
   analyzeCode: (codeData: any) => ipcRenderer.invoke('analyze-code', codeData),
-  submitSolution: (code: string) => ipcRenderer.invoke('submit-solution', code),
+  submitSolution: (code: string, isTimeout?: boolean) => ipcRenderer.invoke('submit-solution', code, isTimeout),
   
   // Audio permissions
   requestAudioPermissions: () => ipcRenderer.invoke('request-audio-permissions'),

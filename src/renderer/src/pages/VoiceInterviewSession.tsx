@@ -34,7 +34,9 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [codeAnalysis, setCodeAnalysis] = useState<any>(null)
   const [complexityNotes, setComplexityNotes] = useState<Record<string, { time: string; space: string }>>({})
   const [isMonitoring, setIsMonitoring] = useState(false)
+  const [currentCode, setCurrentCode] = useState<string>('')
   const [hasMicStream, setHasMicStream] = useState(false)
+  const isSubmittingTimeoutRef = useRef(false)
   const lastAudioTimeRef = useRef(0)
   const [showResumeModal, setShowResumeModal] = useState(false)
   const [unfinishedSession, setUnfinishedSession] = useState<any>(null)
@@ -167,6 +169,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       window.electronAPI.onCodingProblemChanged((problem: CodingProblem) => {
         setCurrentCodingProblem(problem)
         setIsMonitoring(true)
+        setCurrentCode('') // Reset code when problem changes
+        isSubmittingTimeoutRef.current = false // Reset submission flag for new problem
       })
 
       // Audio state changes
@@ -344,7 +348,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   }, [currentState, isListening, hasMicStream])
 
   const handleCodeChange = useCallback((code: string) => {
-    // Code changed, could trigger immediate analysis if needed
+    // Track current code for timer expiration
+    setCurrentCode(code)
     console.log('Code changed:', code.length, 'characters')
   }, [])
 
@@ -389,6 +394,47 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     }
   }, [])
 
+  const handleTimerExpire = useCallback(async () => {
+    if (!currentCodingProblem) return
+    
+    // Prevent multiple simultaneous submissions
+    if (isSubmittingTimeoutRef.current) {
+      console.log('⏰ [Interview] Timer expiration already being handled, ignoring duplicate call')
+      return
+    }
+    
+    isSubmittingTimeoutRef.current = true
+    console.log('⏰ [Interview] Coding timer expired for problem:', currentCodingProblem.title)
+    
+    // Submit the current code (or empty if no code written)
+    const codeToSubmit = currentCode.trim() || '// Timeout - no code submitted'
+    
+    try {
+      console.log('📤 [Interview] Auto-submitting solution due to timeout:', codeToSubmit.length, 'characters')
+      const result = await window.electronAPI.submitSolution(codeToSubmit, true) // Pass isTimeout = true
+      
+      if (result.success) {
+        console.log('✅ [Interview] Timeout solution submitted successfully')
+        // Reset current code for next problem
+        setCurrentCode('')
+        if (result.hasNextProblem) {
+          console.log('➡️ [Interview] Moving to next problem')
+        } else {
+          console.log('🎉 [Interview] All coding problems completed - interview ending')
+        }
+      } else {
+        console.log('❌ [Interview] Timeout submission failed:', result.feedback)
+      }
+    } catch (error) {
+      console.error('Failed to submit timeout solution:', error)
+    } finally {
+      // Reset the flag after a delay to allow state updates
+      setTimeout(() => {
+        isSubmittingTimeoutRef.current = false
+      }, 2000)
+    }
+  }, [currentCodingProblem, currentCode])
+
 
   const currentComplexity =
     currentCodingProblem && complexityNotes[currentCodingProblem.id]
@@ -405,6 +451,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
             onCodeChange={handleCodeChange}
             onAnalysisRequest={handleAnalysisRequest}
             onSubmit={handleSubmit}
+            onTimerExpire={handleTimerExpire}
             isMonitoring={monitoringMode ? isMonitoring : false}
             timeComplexity={currentComplexity.time}
             spaceComplexity={currentComplexity.space}
@@ -438,9 +485,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           <h4>Progress Analysis</h4>
           <p>Progress: {codeAnalysis.progress}%</p>
           <p>Approach: {codeAnalysis.approach}</p>
-          {codeAnalysis.isStuck && codeAnalysis.timeStuck > 60000 && (
-            <p className="stuck-indicator">You seem to be stuck. A hint might be coming!</p>
-          )}
         </div>
       )}
     </div>
@@ -456,11 +500,101 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           </div>
         )
       case 'intro':
+        const introMessage = "Welcome to your AI interview. I'll be conducting your technical interview today. We'll start with some theoretical questions, then move on to a coding problem. Please make sure your microphone is working and speak clearly."
+        
         return (
-          <div className="intro-section">
-            <h2>Welcome to Your AI Interview</h2>
-            <p>I'll be conducting your technical interview today. We'll start with some theoretical questions, then move on to a coding problem.</p>
-            <p>Please make sure your microphone is working and speak clearly.</p>
+          <div className="meeting-intro-section">
+            <div className="meeting-container">
+              {/* AI Interviewer Video Window (Left Half) */}
+              <div className={`video-window ai-video ${isSpeaking ? 'speaking-active' : ''}`}>
+                <div className="video-header">
+                  <div className="video-header-info">
+                    <div className="video-name">AI Interviewer</div>
+                    <div className="video-meta">Ready to begin</div>
+                  </div>
+                  <div className="video-status">
+                    {isSpeaking && (
+                      <div className="status-badge speaking-badge">
+                        <div className="status-dot"></div>
+                        <span>Speaking</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="video-content">
+                  <div className="video-background">
+                    <div className="person-icon ai-icon">
+                      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="12" cy="8" r="4" fill="currentColor"/>
+                        <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor"/>
+                      </svg>
+                    </div>
+                    {isSpeaking && (
+                      <div className="speaking-indicator">
+                        <div className="speaking-pulse"></div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="video-subtitles">
+                  {isSpeaking && (
+                    <div className="subtitle-text">
+                      {introMessage}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Candidate Video Window (Right Half) */}
+              <div className={`video-window candidate-video ${isListening ? 'speaking-active' : ''}`}>
+                <div className="video-header">
+                  <div className="video-header-info">
+                    <div className="video-name">You</div>
+                    <div className="video-meta">Candidate</div>
+                  </div>
+                  <div className="video-status">
+                    {isListening && !isSpeaking && (
+                      <div className="status-badge listening-badge">
+                        <div className="status-dot"></div>
+                        <span>Ready</span>
+                      </div>
+                    )}
+                    {isSpeaking && (
+                      <div className="status-badge waiting-badge">
+                        <div className="status-dot"></div>
+                        <span>AI speaking</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="video-content">
+                  <div className="video-background">
+                    <div className="person-icon candidate-icon">
+                      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="12" cy="8" r="4" fill="currentColor"/>
+                        <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor"/>
+                      </svg>
+                    </div>
+                    {isListening && (
+                      <div className="speaking-indicator">
+                        <div className="speaking-pulse"></div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="video-subtitles">
+                  {isListening && (
+                    <div className="subtitle-text listening-subtitle">
+                      🎤 Get ready - The interview will begin shortly
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           </div>
         )
 
@@ -468,6 +602,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       case 'waiting_for_answer':
       case 'evaluating_answer':
       case 'follow_up':
+      case 'handling_theoretical_hint':
+      case 'handling_clarification':
         return (
           <div className="theoretical-section">
             <QuestionDisplay 
@@ -551,6 +687,16 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     }
   }
 
+  // Handle cancel/close modal - user doesn't want to continue
+  const handleCancelModal = useCallback(() => {
+    console.log('User cancelled resume modal - closing and allowing navigation back')
+    setShowResumeModal(false)
+    setUnfinishedSession(null)
+    setHasCheckedUnfinished(true)
+    // Call onComplete to allow parent to handle navigation
+    onComplete?.({ cancelled: true })
+  }, [onComplete])
+
   return (
     <>
       <ResumeInterviewModal
@@ -563,6 +709,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         } : undefined}
         onResume={handleContinueUnfinishedInterview}
         onRestart={handleStartFreshInterview}
+        onCancel={handleCancelModal}
       />
       
       <div className="voice-interview-session">
@@ -581,22 +728,257 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         .voice-interview-session {
           display: flex;
           flex-direction: column;
+          height: 86vh;
           background: #1a1a1a;
           color: #ffffff;
         }
 
         .interview-content {
           flex: 1;
-          padding: 24px;
-          overflow-y: auto;
+          padding: 0;
+          overflow: hidden;
+          display: flex;
+          flex-direction: column;
         }
 
-        .intro-section,
+        .meeting-intro-section {
+          width: 100%;
+          height: 100%;
+          margin: 0;
+          padding: 0;
+        }
+
+        .meeting-intro-section .meeting-container {
+          display: flex;
+          width: 100%;
+          height: 100%;
+          gap: 12px;
+          padding: 12px;
+          justify-content: center;
+          align-items: center;
+          max-width: 1400px;
+          margin: 0 auto;
+        }
+
+        .meeting-intro-section .video-window {
+          flex: 0 1 45%;
+          max-width: 600px;
+          display: flex;
+          flex-direction: column;
+          background: #0a0a0a;
+          border-radius: 8px;
+          border: 3px solid #2a2a2a;
+          overflow: hidden;
+          position: relative;
+          transition: all 0.3s ease;
+          min-height: 500px;
+        }
+
+        .meeting-intro-section .video-window.speaking-active {
+          border-color: #4caf50;
+          box-shadow: 0 0 20px rgba(76, 175, 80, 0.4), 0 0 40px rgba(76, 175, 80, 0.2);
+        }
+
+        .meeting-intro-section .video-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 12px 16px;
+          background: rgba(0, 0, 0, 0.6);
+          border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+          z-index: 10;
+        }
+
+        .meeting-intro-section .video-header-info {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+
+        .meeting-intro-section .video-name {
+          font-size: 14px;
+          font-weight: 600;
+          color: #ffffff;
+        }
+
+        .meeting-intro-section .video-meta {
+          font-size: 11px;
+          color: #888888;
+          font-weight: 400;
+        }
+
+        .meeting-intro-section .video-status {
+          display: flex;
+          gap: 8px;
+        }
+
+        .meeting-intro-section .status-badge {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          padding: 4px 10px;
+          border-radius: 12px;
+          font-size: 11px;
+          font-weight: 500;
+        }
+
+        .meeting-intro-section .speaking-badge {
+          background: rgba(33, 150, 243, 0.2);
+          color: #2196f3;
+          border: 1px solid rgba(33, 150, 243, 0.4);
+        }
+
+        .meeting-intro-section .listening-badge {
+          background: rgba(76, 175, 80, 0.2);
+          color: #4caf50;
+          border: 1px solid rgba(76, 175, 80, 0.4);
+        }
+
+        .meeting-intro-section .waiting-badge {
+          background: rgba(255, 255, 255, 0.1);
+          color: #cccccc;
+          border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .meeting-intro-section .status-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: currentColor;
+          animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+          0% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.6; transform: scale(1.2); }
+          100% { opacity: 1; transform: scale(1); }
+        }
+
+        .meeting-intro-section .video-content {
+          flex: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          position: relative;
+          overflow: hidden;
+        }
+
+        .meeting-intro-section .video-background {
+          width: 100%;
+          height: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          position: absolute;
+          top: 0;
+          left: 0;
+          background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        }
+
+        .meeting-intro-section .ai-video .video-background {
+          background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        }
+
+        .meeting-intro-section .candidate-video .video-background {
+          background: linear-gradient(135deg, #2d1b3d 0%, #3d2a4d 50%, #4d3a5d 100%);
+        }
+
+        .meeting-intro-section .person-icon {
+          width: 100%;
+          height: 100%;
+          color: rgba(255, 255, 255, 0.4);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          z-index: 1;
+        }
+
+        .meeting-intro-section .person-icon svg {
+          width: 60%;
+          height: 60%;
+          max-width: 300px;
+          max-height: 300px;
+        }
+
+        .meeting-intro-section .ai-icon {
+          color: rgba(33, 150, 243, 0.5);
+        }
+
+        .meeting-intro-section .candidate-icon {
+          color: rgba(156, 39, 176, 0.5);
+        }
+
+        .meeting-intro-section .speaking-indicator {
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          width: 200px;
+          height: 200px;
+          pointer-events: none;
+          z-index: 5;
+        }
+
+        .meeting-intro-section .speaking-pulse {
+          width: 100%;
+          height: 100%;
+          border-radius: 50%;
+          border: 3px solid #4caf50;
+          animation: speakingPulse 2s infinite;
+        }
+
+        @keyframes speakingPulse {
+          0% {
+            transform: scale(0.8);
+            opacity: 1;
+          }
+          50% {
+            transform: scale(1.1);
+            opacity: 0.6;
+          }
+          100% {
+            transform: scale(0.8);
+            opacity: 1;
+          }
+        }
+
+        .meeting-intro-section .video-subtitles {
+          padding: 12px 16px;
+          background: rgba(0, 0, 0, 0.7);
+          border-top: 1px solid rgba(255, 255, 255, 0.1);
+          min-height: 60px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .meeting-intro-section .subtitle-text {
+          font-size: 14px;
+          color: #ffffff;
+          line-height: 1.5;
+          text-align: center;
+          max-width: 90%;
+          opacity: 0.9;
+        }
+
+        .meeting-intro-section .listening-subtitle {
+          color: #4caf50;
+          font-weight: 500;
+        }
+
         .coding-intro-section,
         .wrap-up-section,
         .loading-section {
           text-align: center;
           padding: 40px 20px;
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
         }
 
         .intro-section h2,
@@ -617,11 +999,18 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         }
 
         .theoretical-section {
-          margin: 0 auto;
+          width: 100%;
+          height: 100%;
+          margin: 0;
+          padding: 0;
         }
 
         .coding-section {
           margin: 0 auto;
+          padding: 24px;
+          width: 100%;
+          height: 100%;
+          overflow-y: auto;
         }
 
         .code-analysis {

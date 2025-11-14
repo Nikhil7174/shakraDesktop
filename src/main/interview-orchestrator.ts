@@ -101,6 +101,7 @@ export class InterviewOrchestrator extends EventEmitter {
   private micPaused = false
   private suppressAutoMicResume = false
   private hadTheoreticalQuestions = false // Track if session had theoretical questions
+  private currentCode: string = '' // Store latest code from editor for manual hint requests
 
   constructor() {
     super()
@@ -917,31 +918,16 @@ export class InterviewOrchestrator extends EventEmitter {
                 await this.stateMachine.transition('approach_approved')
               }
             } else {
-              // Wrong approach - provide hint and check retry count
-              const retryCount = this.stateMachine.getCodingApproachRetryCount()
-              if (retryCount === 0) {
-                // First time wrong - give hint and ask to retry
-                this.stateMachine.incrementCodingApproachRetryCount()
-                const feedback = response.feedback || "Hmm, that approach might have some issues. Think about the edge cases and constraints. Can you try explaining your approach once more?"
-                const result = await this.speakWithPolicy(feedback, {
-                  interruptible: false,
-                  bargeInPolicy: 'soft'
-                })
-                if (result.completed || result.softStopped) {
-                  // Restart 2-minute silence timer
-                  this.stateMachine.startSilenceTimer(120000)
-                  await this.stateMachine.transition('approach_needs_retry')
-                }
-              } else {
-                // Already retried once - accept and let them code anyway
-                const feedback = "I understand. Let's proceed with the implementation and see how it goes."
-                const result = await this.speakWithPolicy(feedback, {
-                  interruptible: false,
-                  bargeInPolicy: 'soft'
-                })
-                if (result.completed || result.softStopped) {
-                  await this.stateMachine.transition('approach_approved')
-                }
+              // Wrong approach - provide feedback but still let them code
+              // Code monitoring should work regardless of approach quality
+              const feedback = response.feedback || "That's an interesting approach. Let's proceed with the implementation and see how it goes."
+              const result = await this.speakWithPolicy(feedback, {
+                interruptible: false,
+                bargeInPolicy: 'soft'
+              })
+              if (result.completed || result.softStopped) {
+                // Always transition to monitoring_code - let them code and monitor
+                await this.stateMachine.transition('approach_approved')
               }
             }
           } else {
@@ -1013,10 +999,11 @@ export class InterviewOrchestrator extends EventEmitter {
         
         const hintNumber = this.stateMachine.incrementCodingHintCount()
         const hintLevel = Math.min(hintNumber, 2) as 1 | 2
-        console.log('🎯 [Interview] Providing coding hint at level:', hintLevel)
+        console.log('🎯 [Interview] Providing manual coding hint at level:', hintLevel)
         
-        // Get current code from state machine or use empty string
-        const currentCode = this.stateMachine.getPreviousCode() || ''
+        // Get current code from stored value (latest from editor) or fallback
+        const currentCode = this.currentCode || this.stateMachine.getPreviousCode() || ''
+        console.log(`🎯 [Interview] Using current code for manual hint (length: ${currentCode.length})`)
         const hintText = await this.codeAnalysis.getHint(problem, currentCode, hintLevel)
         
         const result = await this.speakWithPolicy(hintText, {
@@ -1234,66 +1221,52 @@ export class InterviewOrchestrator extends EventEmitter {
       throw new Error('No active interview session')
     }
 
+    // Store current code for manual hint requests
+    this.currentCode = codeData.code
+
     try {
       const problem = this.codeAnalysis.getCurrentProblem() || this.currentSession?.codingProblems?.find(p => p.id === codeData.problemId) || null
       if (!problem) {
         throw new Error('No coding problem context')
       }
 
-      // FIRST: Check if any code change was made (without LLM call)
-      const hasCodeChanged = this.codeAnalysis.hasCodeChanged(codeData.code || '')
+      // Check if code is meaningful (not just starter code or empty)
+      const starterCode = problem.starterCode || (problem.starterCodes?.[problem.language || 'cpp']) || ''
+      const normalizedCode = codeData.code?.trim().replace(/\s+/g, '')
+      const normalizedStarter = starterCode.trim().replace(/\s+/g, '')
+      const hasMeaningfulCode = normalizedCode.length > 0 && normalizedCode !== normalizedStarter && normalizedCode.length > 50
       
-      // Check for inactivity (no code changes for >60 seconds)
-      const inactivityCheck = this.codeAnalysis.checkInactivity()
-      
-      // If code is empty or no changes made, use inactivity check directly (skip LLM)
-      if (!codeData.code || codeData.code.trim().length === 0 || !hasCodeChanged) {
-        if (inactivityCheck.isStuck && inactivityCheck.timeStuck > 60000) {
-          if (!this.stateMachine.canProvideCodingHint()) {
-            console.log('🎯 [Interview] Candidate inactive >60s but hint limit reached, skipping auto-hint')
-          } else {
-            console.log('🎯 [Interview] Candidate inactive for more than 60 seconds, providing hint')
-            const hintNumber = this.stateMachine.incrementCodingHintCount()
-            const hintLevel = Math.min(hintNumber, 2) as 1 | 2
-            this.codeAnalysis.resetStuckTimer()
-            const hintText = await this.codeAnalysis.getHint(problem, codeData.code || '', hintLevel)
-            const result = await this.speakWithPolicy(hintText, {
-              interruptible: true,
-              bargeInPolicy: 'hard'
-            })
-            if (result.completed) {
-              this.emit('hintProvided', hintText)
-            }
-          }
-          this.codeAnalysis.resetStuckTimer()
-        }
-        
-        // Return a minimal analysis for empty/unchanged code
+      // If no meaningful code, skip LLM and return minimal analysis
+      if (!codeData.code || codeData.code.trim().length === 0 || !hasMeaningfulCode) {
+        console.log('🎯 [Interview] No meaningful code written yet, skipping analysis')
         return {
           progress: 0,
           approach: 'incomplete' as const,
-          isStuck: inactivityCheck.isStuck,
-          issues: ['No code written yet'],
-          timeStuck: inactivityCheck.timeStuck,
+          isStuck: false,
+          issues: ['No meaningful code written yet'],
           codeQuality: 'poor' as const,
           testable: false
         }
       }
 
-      // Code has changed - call LLM for analysis (with previous code context)
+      // Simple 60-second check: analyzeCode will only call LLM every 60 seconds
+      // and compare current code with stored code from 60s ago
+      console.log('🎯 [Interview] Requesting code analysis')
       const analysis = await this.codeAnalysis.analyzeCode(codeData.code, problem)
 
-      // Only provide hints if stuck for more than 60 seconds
-      if (analysis.isStuck && analysis.timeStuck > 60000) {
+      // Only provide hints if LLM detected stuck (LLM is only called every 60s, so if isStuck is true, 60s have passed)
+      const shouldProvideHint = analysis.isStuck
+      
+      console.log(`🎯 [Interview] Stuck check - LLM isStuck: ${analysis.isStuck}, Progress: ${analysis.progress}%, Should hint: ${shouldProvideHint}`)
+      
+      if (shouldProvideHint) {
         if (!this.stateMachine.canProvideCodingHint()) {
-          console.log('🎯 [Interview] Candidate stuck >60s but hint limit reached, skipping auto-hint')
+          console.log('🎯 [Interview] Candidate stuck but hint limit reached, skipping hint')
         } else {
-          console.log('🎯 [Interview] Candidate stuck for more than 60 seconds, providing hint')
+          console.log(`🎯 [Interview] Candidate stuck (detected by LLM after 60s), providing monitoring hint`)
           const hintNumber = this.stateMachine.incrementCodingHintCount()
           const hintLevel = Math.min(hintNumber, 2) as 1 | 2
-          this.codeAnalysis.resetStuckTimer()
-          // getHint will automatically include previous code (1 min ago or starter code)
-          const hintText = await this.codeAnalysis.getHint(problem, codeData.code, hintLevel)
+          const hintText = await this.codeAnalysis.getMonitoringHint(problem, codeData.code, hintLevel)
           const result = await this.speakWithPolicy(hintText, {
             interruptible: true,
             bargeInPolicy: 'hard'
@@ -1302,42 +1275,17 @@ export class InterviewOrchestrator extends EventEmitter {
             this.emit('hintProvided', hintText)
           }
         }
-        this.codeAnalysis.resetStuckTimer()
       }
 
       return analysis
 
     } catch (error) {
       console.error('Code analysis error:', error)
-      // Even on error, check for inactivity
-      const inactivityCheck = this.codeAnalysis.checkInactivity()
-      if (inactivityCheck.isStuck && inactivityCheck.timeStuck > 60000) {
-        if (!this.stateMachine.canProvideCodingHint()) {
-          console.log('🎯 [Interview] Candidate inactive >60s (error case) but hint limit reached, skipping auto-hint')
-        } else {
-          console.log('🎯 [Interview] Candidate inactive for more than 60 seconds (error case), providing hint')
-          const problem = this.codeAnalysis.getCurrentProblem() || this.currentSession?.codingProblems?.find(p => p.id === codeData.problemId) || null
-          if (problem) {
-            const hintNumber = this.stateMachine.incrementCodingHintCount()
-            const hintLevel = Math.min(hintNumber, 2) as 1 | 2
-            this.codeAnalysis.resetStuckTimer()
-            const hintText = await this.codeAnalysis.getHint(problem, codeData.code || '', hintLevel)
-            const result = await this.speakWithPolicy(hintText, {
-              interruptible: true,
-              bargeInPolicy: 'hard'
-            })
-            if (result.completed) {
-              this.emit('hintProvided', hintText)
-            }
-          }
-        }
-        this.codeAnalysis.resetStuckTimer()
-      }
       throw error
     }
   }
 
-  async submitCodingSolution(code: string): Promise<{success: boolean, feedback: string, hasNextProblem: boolean}> {
+  async submitCodingSolution(code: string, isTimeout: boolean = false): Promise<{success: boolean, feedback: string, hasNextProblem: boolean}> {
     if (!this.currentSession) {
       throw new Error('No active interview session')
     }
@@ -1348,19 +1296,43 @@ export class InterviewOrchestrator extends EventEmitter {
         throw new Error('No current coding problem')
       }
 
-      console.log('🎯 [Interview] 📝 Candidate submitted solution for:', problem.title)
+      console.log('🎯 [Interview] 📝 Candidate submitted solution for:', problem.title, isTimeout ? '(timeout)' : '')
 
       // Analyze the submitted code
       const analysis = await this.codeAnalysis.analyzeCode(code, problem)
       
-      // Provide feedback
+      console.log('🎯 [Interview] Code analysis result:', {
+        progress: analysis.progress,
+        approach: analysis.approach,
+        issues: analysis.issues,
+        codeQuality: analysis.codeQuality
+      })
+      
+      // Provide feedback - shorter for timeout
       let feedback = ''
-      if (analysis.approach === 'correct' && analysis.progress >= 80) {
-        feedback = "Great work! Your solution looks good. Let's move on."
-      } else if (analysis.progress >= 50) {
-        feedback = "You're on the right track, but there are some issues. " + (analysis.issues[0] || "Review your logic.")
+      if (isTimeout) {
+        // Brief feedback for timeout - no asking to submit
+        if (analysis.progress >= 50) {
+          feedback = "Time's up. Moving on."
+        } else {
+          feedback = "Time's up. Let's continue."
+        }
       } else {
-        feedback = "This needs more work. " + (analysis.suggestedHint || "Think about the problem requirements again.")
+        // Normal feedback for manual submission - be specific about the code
+        if (analysis.approach === 'correct' && analysis.progress >= 80) {
+          feedback = "Great work! Your solution looks solid. Let's move on."
+        } else if (analysis.progress >= 50) {
+          // Give specific feedback about what's wrong
+          const issueText = analysis.issues.length > 0 ? analysis.issues[0] : "there are some issues to address"
+          feedback = `You've made good progress. However, ${issueText.toLowerCase()}.`
+        } else if (analysis.progress > 0) {
+          // Low progress - give specific guidance
+          const issueText = analysis.issues.length > 0 ? analysis.issues[0] : "review your approach"
+          feedback = `Your code needs work. ${issueText}.`
+        } else {
+          // No meaningful progress
+          feedback = "I don't see much implementation here. Let's move on."
+        }
       }
 
       await this.speakWithPolicy(feedback, {
@@ -1377,11 +1349,14 @@ export class InterviewOrchestrator extends EventEmitter {
         const nextProblem = codingProblems[currentProblemIndex + 1]
         console.log('🎯 [Interview] Moving to next coding problem:', nextProblem.title)
 
-        const transitionMessage = "Thanks for submitting that solution. Let's move on to the next problem."
-        await this.speakWithPolicy(transitionMessage, {
-          interruptible: false,
-          bargeInPolicy: 'soft'
-        })
+        // Skip "thanks for submitting" message for timeout
+        if (!isTimeout) {
+          const transitionMessage = "Thanks for submitting that solution. Let's move on to the next problem."
+          await this.speakWithPolicy(transitionMessage, {
+            interruptible: false,
+            bargeInPolicy: 'soft'
+          })
+        }
 
         this.stateMachine.clearSilenceTimer()
         this.codeAnalysis.setCurrentProblem(nextProblem)
@@ -1512,8 +1487,8 @@ export class InterviewOrchestrator extends EventEmitter {
         // Provide escalating hint through code analysis service
         const problem = this.getCurrentCodingProblem()
         if (problem) {
-          const currentCode = this.stateMachine.getPreviousCode()
-          const hint = await this.codeAnalysis.getHint(problem, currentCode || '', hintLevel)
+          const currentCode = this.currentCode || this.stateMachine.getPreviousCode() || ''
+          const hint = await this.codeAnalysis.getHint(problem, currentCode, hintLevel)
           await this.speakWithPolicy(hint, {
             interruptible: true,
             bargeInPolicy: 'hard'
@@ -1642,10 +1617,11 @@ export class InterviewOrchestrator extends EventEmitter {
   private async handleHintProvision(): Promise<void> {
     const last = this.codeAnalysis.getObservations().slice(-1)[0]
     const problem = this.codeAnalysis.getCurrentProblem() || (this.currentSession?.codingProblems?.[0] ?? null)
-    // Only provide hints if stuck for more than 40 seconds
-    if (last && problem && last.analysis.isStuck && last.analysis.timeStuck > 40000) {
-      console.log('🎯 [Interview] Providing hint - stuck for more than 40 seconds')
-      const hintText = await this.codeAnalysis.getHint(problem, last.code, 1) // Use level 1 hint
+    // Only provide hints if stuck
+    if (last && problem && last.analysis.isStuck) {
+      console.log('🎯 [Interview] Providing hint - candidate is stuck')
+      const currentCode = this.currentCode || last.code || ''
+      const hintText = await this.codeAnalysis.getHint(problem, currentCode, 1) // Use level 1 hint
       // Coding hints are interruptible with hard stop
       const result = await this.speakWithPolicy(hintText, {
         interruptible: true,

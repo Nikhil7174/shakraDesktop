@@ -18,10 +18,42 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
 }) => {
   if (!question) {
     return (
-      <div className="question-display">
-        <div className="loading-state">
-          <div className="spinner"></div>
-          <p>Loading question...</p>
+      <div className="meeting-display">
+        <div className="meeting-container">
+          <div className="video-window ai-video">
+            <div className="video-header">
+              <div className="video-header-info">
+                <div className="video-name">AI Interviewer</div>
+                <div className="video-meta">Loading...</div>
+              </div>
+            </div>
+            <div className="video-content">
+              <div className="video-background">
+                <div className="loading-state">
+                  <div className="spinner"></div>
+                  <p>Loading question...</p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div className="video-window candidate-video">
+            <div className="video-header">
+              <div className="video-header-info">
+                <div className="video-name">You</div>
+                <div className="video-meta">Candidate</div>
+              </div>
+            </div>
+            <div className="video-content">
+              <div className="video-background">
+                <div className="person-icon candidate-icon">
+                  <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="12" cy="8" r="4" fill="currentColor"/>
+                    <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor"/>
+                  </svg>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     )
@@ -32,151 +64,219 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
   const isFollowUp = !!followUpQuestionText
 
   return (
-    <div className="question-display">
-      <div className="question-header">
-        <div className="question-number">
-          Question {progress.current} of {progress.total}
-          {isFollowUp && <span className="follow-up-badge">Follow-up</span>}
-        </div>
-        <div className="question-status">
-          {isSpeaking && (
-            <div className="status-indicator speaking">
-              <div className="pulse-dot"></div>
-              AI is speaking
+    <div className="meeting-display">
+      <div className="meeting-container">
+        {/* AI Interviewer Video Window (Left Half) */}
+        <div className={`video-window ai-video ${isSpeaking ? 'speaking-active' : ''}`}>
+          <div className="video-header">
+            <div className="video-header-info">
+              <div className="video-name">AI Interviewer</div>
+              <div className="video-meta">
+                Question {progress.current} of {progress.total}
+                {isFollowUp && <span className="follow-up-badge">Follow-up</span>}
+              </div>
             </div>
-          )}
-          {isListening && (
-            <div className="status-indicator listening">
-              <div className="pulse-dot"></div>
-              Listening for your answer
+            <div className="video-status">
+              {isSpeaking && (
+                <div className="status-badge speaking-badge">
+                  <div className="status-dot"></div>
+                  <span>Speaking</span>
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      </div>
+          </div>
 
-      <div className="question-content">
-        {isFollowUp && (
-          <div className="original-question-context">
-            <div className="context-label">Original Question:</div>
-            <div className="context-text">{question.question}</div>
+          <div className="video-content">
+            <div className="video-background">
+              <div className="person-icon ai-icon">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="12" cy="8" r="4" fill="currentColor"/>
+                  <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor"/>
+                </svg>
+              </div>
+              {isSpeaking && (
+                <div className="speaking-indicator">
+                  <div className="speaking-pulse"></div>
+                </div>
+              )}
+            </div>
           </div>
-        )}
-        <h2 className="question-text">{displayQuestion}</h2>
-      </div>
 
-      <div className="question-instructions">
-        <div className="instruction-item">
-          <div className="instruction-icon">🎤</div>
-          <div className="instruction-text">
-            <strong>Speak clearly</strong> into your microphone
+          <div className="video-subtitles">
+            <div className="subtitle-text">
+              {displayQuestion}
+            </div>
           </div>
         </div>
-        <div className="instruction-item">
-          <div className="instruction-icon">⏱️</div>
-          <div className="instruction-text">
-            <strong>Take your time</strong> to think through your answer
+
+        {/* Candidate Video Window (Right Half) */}
+        <div className={`video-window candidate-video ${isListening ? 'speaking-active' : ''}`}>
+          <div className="video-header">
+            <div className="video-header-info">
+              <div className="video-name">You</div>
+              <div className="video-meta">Candidate</div>
+            </div>
+            <div className="video-status">
+              {isListening && !isSpeaking && (
+                <div className="status-badge listening-badge">
+                  <div className="status-dot"></div>
+                  <span>Your turn</span>
+                </div>
+              )}
+              {isSpeaking && (
+                <div className="status-badge waiting-badge">
+                  <div className="status-dot"></div>
+                  <span>AI speaking</span>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-        <div className="instruction-item">
-          <div className="instruction-icon">💡</div>
-          <div className="instruction-text">
-            <strong>Be specific</strong> and provide examples when possible
+
+          <div className="video-content">
+            <div className="video-background">
+              <div className="person-icon candidate-icon">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="12" cy="8" r="4" fill="currentColor"/>
+                  <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor"/>
+                </svg>
+              </div>
+              {isListening && (
+                <div className="speaking-indicator">
+                  <div className="speaking-pulse"></div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="video-subtitles">
+            {isListening && (
+              <div className="subtitle-text listening-subtitle">
+                🎤 Your microphone is active
+              </div>
+            )}
           </div>
         </div>
       </div>
 
       <style>{`
-        .question-display {
-          max-width: 800px;
-          margin: 0 auto;
-          padding: 24px;
-          background: #2d2d30;
-          border-radius: 12px;
-          border: 1px solid #333;
+        .meeting-display {
+          width: 100%;
+          height: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
         }
 
-        .loading-state {
+        .meeting-container {
+          display: flex;
+          width: 100%;
+          height: 100%;
+          gap: 12px;
+          padding: 12px;
+          justify-content: center;
+          align-items: center;
+          max-width: 1400px;
+          margin: 0 auto;
+        }
+
+        .video-window {
+          flex: 0 1 45%;
+          max-width: 600px;
           display: flex;
           flex-direction: column;
-          align-items: center;
-          gap: 16px;
-          padding: 40px;
+          background: #0a0a0a;
+          border-radius: 8px;
+          border: 3px solid #2a2a2a;
+          overflow: hidden;
+          position: relative;
+          transition: all 0.3s ease;
+          min-height: 500px;
         }
 
-        .spinner {
-          width: 32px;
-          height: 32px;
-          border: 3px solid #333;
-          border-top: 3px solid #4caf50;
-          border-radius: 50%;
-          animation: spin 1s linear infinite;
+        .video-window.speaking-active {
+          border-color: #4caf50;
+          box-shadow: 0 0 20px rgba(76, 175, 80, 0.4), 0 0 40px rgba(76, 175, 80, 0.2);
         }
 
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-
-        .question-header {
+        .video-header {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          margin-bottom: 24px;
-          padding-bottom: 16px;
-          border-bottom: 1px solid #333;
+          padding: 12px 16px;
+          background: rgba(0, 0, 0, 0.6);
+          border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+          z-index: 10;
         }
 
-        .question-number {
+        .video-header-info {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+
+        .video-name {
           font-size: 14px;
+          font-weight: 600;
+          color: #ffffff;
+        }
+
+        .video-meta {
+          font-size: 11px;
           color: #888888;
-          font-weight: 500;
+          font-weight: 400;
           display: flex;
           align-items: center;
-          gap: 8px;
+          gap: 6px;
         }
 
         .follow-up-badge {
           display: inline-flex;
           align-items: center;
-          padding: 2px 8px;
+          padding: 2px 6px;
           background: rgba(156, 39, 176, 0.2);
           color: #ab47bc;
           border: 1px solid rgba(156, 39, 176, 0.3);
-          border-radius: 12px;
-          font-size: 11px;
+          border-radius: 6px;
+          font-size: 9px;
           font-weight: 600;
           text-transform: uppercase;
           letter-spacing: 0.5px;
         }
 
-        .question-status {
+        .video-status {
           display: flex;
-          gap: 12px;
+          gap: 8px;
         }
 
-        .status-indicator {
+        .status-badge {
           display: flex;
           align-items: center;
           gap: 6px;
-          padding: 4px 8px;
-          border-radius: 4px;
-          font-size: 12px;
+          padding: 4px 10px;
+          border-radius: 12px;
+          font-size: 11px;
           font-weight: 500;
         }
 
-        .status-indicator.speaking {
+        .speaking-badge {
           background: rgba(33, 150, 243, 0.2);
           color: #2196f3;
-          border: 1px solid rgba(33, 150, 243, 0.3);
+          border: 1px solid rgba(33, 150, 243, 0.4);
         }
 
-        .status-indicator.listening {
+        .listening-badge {
           background: rgba(76, 175, 80, 0.2);
           color: #4caf50;
-          border: 1px solid rgba(76, 175, 80, 0.3);
+          border: 1px solid rgba(76, 175, 80, 0.4);
         }
 
-        .pulse-dot {
+        .waiting-badge {
+          background: rgba(255, 255, 255, 0.1);
+          color: #cccccc;
+          border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .status-dot {
           width: 6px;
           height: 6px;
           border-radius: 50%;
@@ -186,73 +286,153 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
 
         @keyframes pulse {
           0% { opacity: 1; transform: scale(1); }
-          50% { opacity: 0.5; transform: scale(1.2); }
+          50% { opacity: 0.6; transform: scale(1.2); }
           100% { opacity: 1; transform: scale(1); }
         }
 
-        .question-content {
-          margin-bottom: 24px;
-        }
-
-        .original-question-context {
-          margin-bottom: 20px;
-          padding: 16px;
-          background: rgba(33, 150, 243, 0.1);
-          border-left: 3px solid #2196f3;
-          border-radius: 4px;
-        }
-
-        .context-label {
-          font-size: 12px;
-          color: #2196f3;
-          font-weight: 600;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-          margin-bottom: 8px;
-        }
-
-        .context-text {
-          font-size: 14px;
-          color: #b0b0b0;
-          line-height: 1.5;
-        }
-
-        .question-text {
-          font-size: 20px;
-          color: #ffffff;
-          margin: 0 0 20px 0;
-          line-height: 1.4;
-        }
-
-        .question-instructions {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-          gap: 16px;
-        }
-
-        .instruction-item {
+        .video-content {
+          flex: 1;
           display: flex;
           align-items: center;
-          gap: 12px;
-          padding: 12px;
-          background: #1a1a1a;
-          border-radius: 8px;
-          border: 1px solid #333;
+          justify-content: center;
+          position: relative;
+          overflow: hidden;
         }
 
-        .instruction-icon {
-          font-size: 20px;
-          flex-shrink: 0;
+        .video-background {
+          width: 100%;
+          height: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          position: absolute;
+          top: 0;
+          left: 0;
+          background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
         }
 
-        .instruction-text {
-          font-size: 13px;
-          color: #cccccc;
-          line-height: 1.3;
+        .ai-video .video-background {
+          background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
         }
 
-        .instruction-text strong {
+        .candidate-video .video-background {
+          background: linear-gradient(135deg, #2d1b3d 0%, #3d2a4d 50%, #4d3a5d 100%);
+        }
+
+        .person-icon {
+          width: 100%;
+          height: 100%;
+          color: rgba(255, 255, 255, 0.4);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          z-index: 1;
+        }
+
+        .person-icon svg {
+          width: 60%;
+          height: 60%;
+          max-width: 300px;
+          max-height: 300px;
+        }
+
+        .ai-icon {
+          color: rgba(33, 150, 243, 0.5);
+        }
+
+        .candidate-icon {
+          color: rgba(156, 39, 176, 0.5);
+        }
+
+        .speaking-indicator {
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          width: 200px;
+          height: 200px;
+          pointer-events: none;
+          z-index: 5;
+        }
+
+        .speaking-pulse {
+          width: 100%;
+          height: 100%;
+          border-radius: 50%;
+          border: 3px solid #4caf50;
+          animation: speakingPulse 2s infinite;
+        }
+
+        @keyframes speakingPulse {
+          0% {
+            transform: scale(0.8);
+            opacity: 1;
+          }
+          50% {
+            transform: scale(1.1);
+            opacity: 0.6;
+          }
+          100% {
+            transform: scale(0.8);
+            opacity: 1;
+          }
+        }
+
+        .video-subtitles {
+          padding: 12px 16px;
+          background: rgba(0, 0, 0, 0.7);
+          border-top: 1px solid rgba(255, 255, 255, 0.1);
+          min-height: 60px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .subtitle-text {
+          font-size: 14px;
           color: #ffffff;
+          line-height: 1.5;
+          text-align: center;
+          max-width: 90%;
+          opacity: 0.9;
+        }
+
+        .listening-subtitle {
+          color: #4caf50;
+          font-weight: 500;
+        }
+
+        .loading-state {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 16px;
+          padding: 40px;
+          height: 100%;
+        }
+
+        .spinner {
+          width: 40px;
+          height: 40px;
+          border: 3px solid rgba(255, 255, 255, 0.2);
+          border-top: 3px solid #2196f3;
+          border-radius: 50%;
+          animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+
+        .loading-state p {
+          color: #cccccc;
+          font-size: 14px;
         }
       `}</style>
     </div>

@@ -38,7 +38,15 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   const [isEditorReady, setIsEditorReady] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [selectedLanguage, setSelectedLanguage] = useState<string>(problem.language || 'cpp')
+  // Initialize timer state - only reset when problem.id changes
   const [timeRemaining, setTimeRemaining] = useState<number>(getTimeLimit(problem.difficulty))
+  
+  // Reset timer only when problem.id changes (not on every render)
+  useEffect(() => {
+    if (showTimer && !readOnly) {
+      setTimeRemaining(getTimeLimit(problem.difficulty))
+    }
+  }, [problem.id]) // Only reset when problem.id changes
 
   // Available languages
   const availableLanguages = ['javascript', 'python', 'cpp', 'java']
@@ -104,10 +112,11 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         monacoEditorRef.current = editor
         setIsEditorReady(true)
 
-        // Set up change listener
+        // Set up change listener - only track code changes, no analysis
         editor.onDidChangeModelContent(() => {
           const code = editor.getValue()
           onCodeChange?.(code)
+          // Analysis happens only every 60s via the interval below
         })
 
         // Set up cursor position tracking
@@ -136,25 +145,24 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
     }
   }, [problem.id, problem.language, selectedLanguage, readOnly])
 
-  // Start/stop monitoring
+  // Simple 60-second timer - starts when monitoring begins, sends every 60 seconds
   useEffect(() => {
     if (!isEditorReady || !isMonitoring) return
 
-    const startMonitoring = () => {
-      if (monitoringIntervalRef.current) {
-        clearInterval(monitoringIntervalRef.current)
-      }
-
-      monitoringIntervalRef.current = setInterval(() => {
-        if (monacoEditorRef.current) {
-          const code = monacoEditorRef.current.getValue()
-          // Always call analysis, even if code is empty, to detect inactivity
-          onAnalysisRequest?.(code, problem.id)
-        }
-      }, 10000) // Every 10 seconds
+    if (monitoringIntervalRef.current) {
+      clearInterval(monitoringIntervalRef.current)
     }
 
-    startMonitoring()
+    console.log('⏰ [CodeEditor] Starting 60-second timer')
+    
+    // Send code every 60 seconds
+    monitoringIntervalRef.current = setInterval(() => {
+      if (monacoEditorRef.current) {
+        const code = monacoEditorRef.current.getValue()
+        console.log('⏰ [CodeEditor] 60s interval: Sending code to LLM. Code length:', code.length)
+        onAnalysisRequest?.(code, problem.id)
+      }
+    }, 60000) // Every 60 seconds
 
     return () => {
       if (monitoringIntervalRef.current) {
@@ -164,12 +172,9 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
     }
   }, [isEditorReady, isMonitoring, problem.id, onAnalysisRequest])
 
-  // Timer countdown
+  // Timer countdown - separate from reset logic
   useEffect(() => {
     if (!showTimer || readOnly) return
-
-    // Reset timer when problem changes
-    setTimeRemaining(getTimeLimit(problem.difficulty))
 
     const startTimer = () => {
       if (timerIntervalRef.current) {
@@ -179,7 +184,12 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       timerIntervalRef.current = setInterval(() => {
         setTimeRemaining(prev => {
           if (prev <= 1) {
-            // Time's up
+            // Time's up - clear interval to prevent multiple calls
+            if (timerIntervalRef.current) {
+              clearInterval(timerIntervalRef.current)
+              timerIntervalRef.current = null
+            }
+            // Call expiration handler once
             onTimerExpire?.()
             return 0
           }
@@ -196,7 +206,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         timerIntervalRef.current = null
       }
     }
-  }, [problem.id, problem.difficulty, showTimer, readOnly, onTimerExpire])
+  }, [showTimer, readOnly, onTimerExpire]) // Timer countdown logic - doesn't reset timer
 
   // Reset selected language when problem changes
   // Preserve user's language choice if the new problem supports it, otherwise reset to problem's default
@@ -830,7 +840,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         }
         
         .complexity-input input {
-          width: 100%;
+          width: 80%;
           padding: 6px 10px;
           background: #1e1e1e;
           border: 1px solid #444;
@@ -907,13 +917,13 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
 function getTimeLimit(difficulty: string): number {
   switch (difficulty.toLowerCase()) {
     case 'easy':
-      return 900 // 15 minutes
+      return 30 // 2 minutes (reduced for testing)
     case 'medium':
       return 1500 // 25 minutes
     case 'hard':
       return 1800 // 30 minutes
     default:
-      return 1800 // Default 30 minutes
+      return 120 // Default 2 minutes (reduced for testing)
   }
 }
 

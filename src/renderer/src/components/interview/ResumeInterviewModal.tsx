@@ -51,7 +51,7 @@ export const ResumeInterviewModal: React.FC<ResumeInterviewModalProps> = ({
       onCancel={onCancel}
       width={520}
       centered
-      maskClosable={false}
+      maskClosable={!!onCancel}
     >
       <div style={{ padding: '24px 8px' }}>
         <Title level={3} style={{ marginBottom: 8, textAlign: 'center' }}>
@@ -112,6 +112,17 @@ export const ResumeInterviewModal: React.FC<ResumeInterviewModalProps> = ({
           >
             Start Fresh Interview
           </Button>
+
+          {onCancel && (
+            <Button
+              size="large"
+              onClick={onCancel}
+              block
+              style={{ height: 48, marginTop: 8 }}
+            >
+              Cancel / Go Back
+            </Button>
+          )}
 
           <Text
             type="secondary"
