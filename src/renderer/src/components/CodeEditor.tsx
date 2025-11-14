@@ -917,13 +917,13 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
 function getTimeLimit(difficulty: string): number {
   switch (difficulty.toLowerCase()) {
     case 'easy':
-      return 30 // 2 minutes (reduced for testing)
+      return 900 // 15 minutes 
     case 'medium':
       return 1500 // 25 minutes
     case 'hard':
       return 1800 // 30 minutes
     default:
-      return 120 // Default 2 minutes (reduced for testing)
+      return 1500 // Default 25 minutes
   }
 }
 

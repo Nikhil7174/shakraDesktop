@@ -495,8 +495,25 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       case 'connecting':
         return (
           <div className="loading-section">
-            <h2>Preparing Interview...</h2>
-            <p>Connecting audio and AI services. Please wait…</p>
+            <div className="glassmorphic-card">
+              <div className="loading-content">
+                <div className="spinner-container">
+                  <div className="spinner-ring"></div>
+                  <div className="spinner-ring"></div>
+                  <div className="spinner-ring"></div>
+                  <div className="spinner-center">
+                    <div className="spinner-dot"></div>
+                  </div>
+                </div>
+                <h2 className="loading-title">Preparing Interview</h2>
+                <p className="loading-subtitle">Connecting audio and AI services</p>
+                <div className="loading-dots">
+                  <span className="dot"></span>
+                  <span className="dot"></span>
+                  <span className="dot"></span>
+                </div>
+              </div>
+            </div>
           </div>
         )
       case 'intro':
@@ -639,16 +656,32 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
       case 'wrap_up':
         return (
-          <div className="wrap-up-section">
-            <h2>Interview Complete!</h2>
-            <p>Thank you for completing the interview. Your responses have been recorded and will be evaluated.</p>
-            <div className="summary">
-              <h3>Summary</h3>
-              <p>Questions answered: {evaluations.length}</p>
-              <p>Average score: {evaluations.length > 0 ? 
-                (evaluations.reduce((sum, ev) => sum + ev.score, 0) / evaluations.length).toFixed(1) : 
-                'N/A'
-              }%</p>
+          <div className="loading-section">
+            <div className="glassmorphic-card wrap-up-card">
+              <div className="wrap-up-icon">
+                <div className="wrap-up-center">
+                  <span>✓</span>
+                </div>
+              </div>
+              <h2 className="loading-title">Interview Complete</h2>
+              <p className="loading-subtitle">Great work! Your responses have been recorded.</p>
+              <div className="wrap-up-summary">
+                <div className="summary-item">
+                  <span className="summary-label">Questions answered</span>
+                  <span className="summary-value">{evaluations.length}</span>
+                </div>
+                <div className="summary-item">
+                  <span className="summary-label">Average score</span>
+                  <span className="summary-value">
+                    {evaluations.length > 0 ? 
+                      (evaluations.reduce((sum, ev) => sum + ev.score, 0) / evaluations.length).toFixed(1) : 
+                      'N/A'}%
+                  </span>
+                </div>
+              </div>
+              <div className="wrap-up-footer">
+                <p>We'll share a detailed report shortly.</p>
+              </div>
             </div>
           </div>
         )
@@ -656,8 +689,25 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       default:
         return (
           <div className="loading-section">
-            <h2>Preparing Interview...</h2>
-            <p>Please wait while we set up your interview session.</p>
+            <div className="glassmorphic-card">
+              <div className="loading-content">
+                <div className="spinner-container">
+                  <div className="spinner-ring"></div>
+                  <div className="spinner-ring"></div>
+                  <div className="spinner-ring"></div>
+                  <div className="spinner-center">
+                    <div className="spinner-dot"></div>
+                  </div>
+                </div>
+                <h2 className="loading-title">Preparing Interview</h2>
+                <p className="loading-subtitle">Please wait while we set up your interview session</p>
+                <div className="loading-dots">
+                  <span className="dot"></span>
+                  <span className="dot"></span>
+                  <span className="dot"></span>
+                </div>
+              </div>
+            </div>
           </div>
         )
     }
@@ -971,8 +1021,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         }
 
         .coding-intro-section,
-        .wrap-up-section,
-        .loading-section {
+        .wrap-up-section {
           text-align: center;
           padding: 40px 20px;
           flex: 1;
@@ -981,21 +1030,283 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           justify-content: center;
         }
 
+        .loading-section {
+          flex: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 40px 20px;
+          position: relative;
+          overflow: hidden;
+        }
+
+        .loading-section::before {
+          content: '';
+          position: absolute;
+          top: -50%;
+          left: -50%;
+          width: 200%;
+          height: 200%;
+          background: radial-gradient(circle, rgba(33, 150, 243, 0.1) 0%, transparent 70%);
+          animation: rotate 20s linear infinite;
+        }
+
+        @keyframes rotate {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+
+        .glassmorphic-card {
+          position: relative;
+          z-index: 1;
+          background: rgba(255, 255, 255, 0.05);
+          backdrop-filter: blur(20px);
+          -webkit-backdrop-filter: blur(20px);
+          border-radius: 24px;
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          padding: 60px 40px;
+          box-shadow: 
+            0 8px 32px 0 rgba(0, 0, 0, 0.37),
+            inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
+          max-width: 500px;
+          width: 100%;
+          animation: fadeInUp 0.6s ease-out;
+        }
+
+        @keyframes fadeInUp {
+          from {
+            opacity: 0;
+            transform: translateY(20px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+
+        .loading-content {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 24px;
+        }
+
+        .spinner-container {
+          position: relative;
+          width: 120px;
+          height: 120px;
+          margin-bottom: 8px;
+        }
+
+        .spinner-ring {
+          position: absolute;
+          width: 100%;
+          height: 100%;
+          border: 3px solid transparent;
+          border-top-color: #2196f3;
+          border-radius: 50%;
+          animation: spin 1.5s linear infinite;
+        }
+
+        .spinner-ring:nth-child(1) {
+          animation-delay: 0s;
+          border-top-color: #2196f3;
+        }
+
+        .spinner-ring:nth-child(2) {
+          animation-delay: 0.3s;
+          border-top-color: #4caf50;
+          width: 85%;
+          height: 85%;
+          top: 7.5%;
+          left: 7.5%;
+        }
+
+        .spinner-ring:nth-child(3) {
+          animation-delay: 0.6s;
+          border-top-color: #ab47bc;
+          width: 70%;
+          height: 70%;
+          top: 15%;
+          left: 15%;
+        }
+
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+
+        .spinner-center {
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          width: 40px;
+          height: 40px;
+          background: rgba(33, 150, 243, 0.2);
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          backdrop-filter: blur(10px);
+        }
+
+        .spinner-dot {
+          width: 12px;
+          height: 12px;
+          background: #2196f3;
+          border-radius: 50%;
+          animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+          0%, 100% {
+            transform: scale(1);
+            opacity: 1;
+          }
+          50% {
+            transform: scale(1.3);
+            opacity: 0.7;
+          }
+        }
+
+        .loading-title {
+          font-size: 28px;
+          font-weight: 600;
+          color: #ffffff;
+          margin: 0;
+          letter-spacing: 0.5px;
+          background: linear-gradient(135deg, #ffffff 0%, #b0b0b0 100%);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+        }
+
+        .loading-subtitle {
+          font-size: 16px;
+          color: rgba(255, 255, 255, 0.7);
+          margin: 0;
+          font-weight: 400;
+          letter-spacing: 0.3px;
+        }
+
+        .loading-dots {
+          display: flex;
+          gap: 8px;
+          margin-top: 8px;
+        }
+
+        .loading-dots .dot {
+          width: 8px;
+          height: 8px;
+          background: #2196f3;
+          border-radius: 50%;
+          animation: dotBounce 1.4s ease-in-out infinite;
+        }
+
+        .loading-dots .dot:nth-child(1) {
+          animation-delay: 0s;
+        }
+
+        .loading-dots .dot:nth-child(2) {
+          animation-delay: 0.2s;
+        }
+
+        .loading-dots .dot:nth-child(3) {
+          animation-delay: 0.4s;
+        }
+
+        @keyframes dotBounce {
+          0%, 80%, 100% {
+            transform: translateY(0);
+            opacity: 0.5;
+          }
+          40% {
+            transform: translateY(-10px);
+            opacity: 1;
+          }
+        }
+
         .intro-section h2,
         .coding-intro-section h2,
-        .wrap-up-section h2,
-        .loading-section h2 {
+        .wrap-up-section h2 {
           margin-bottom: 16px;
           color: #ffffff;
         }
 
         .intro-section p,
         .coding-intro-section p,
-        .wrap-up-section p,
-        .loading-section p {
+        .wrap-up-section p {
           margin-bottom: 12px;
           color: #cccccc;
           line-height: 1.5;
+        }
+
+        .wrap-up-card {
+          text-align: center;
+          gap: 24px;
+        }
+
+        .wrap-up-icon {
+          width: 110px;
+          height: 110px;
+          margin: 0 auto 8px auto;
+          border-radius: 50%;
+          background: radial-gradient(circle at top, rgba(76, 175, 80, 0.4), rgba(76, 175, 80, 0.15));
+          border: 1px solid rgba(76, 175, 80, 0.4);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 0 0 20px rgba(76, 175, 80, 0.25), inset 0 0 30px rgba(76, 175, 80, 0.15);
+        }
+
+        .wrap-up-center {
+          width: 70px;
+          height: 70px;
+          border-radius: 50%;
+          background: rgba(76, 175, 80, 0.25);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #4caf50;
+          font-size: 32px;
+          font-weight: 600;
+          border: 1px solid rgba(76, 175, 80, 0.4);
+        }
+
+        .wrap-up-summary {
+          display: flex;
+          gap: 24px;
+          margin: 20px 0;
+          padding: 16px;
+          background: rgba(255, 255, 255, 0.04);
+          border-radius: 16px;
+          border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .summary-item {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+
+        .summary-label {
+          font-size: 13px;
+          text-transform: uppercase;
+          letter-spacing: 1px;
+          color: rgba(255, 255, 255, 0.6);
+        }
+
+        .summary-value {
+          font-size: 24px;
+          font-weight: 600;
+          color: #ffffff;
+        }
+
+        .wrap-up-footer {
+          font-size: 15px;
+          color: rgba(255, 255, 255, 0.8);
         }
 
         .theoretical-section {
