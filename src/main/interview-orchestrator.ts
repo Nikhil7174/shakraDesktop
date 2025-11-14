@@ -1656,6 +1656,9 @@ export class InterviewOrchestrator extends EventEmitter {
       
       this.emit('interviewCompleted', this.currentSession)
       this.cleanupListeners()
+      
+      // Clear the session after completion to prevent welcome back modal
+      this.clearSession()
     }
   }
 

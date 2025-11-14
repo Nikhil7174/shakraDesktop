@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { useSelector } from 'react-redux'
 import { CodeEditor } from '../components/CodeEditor'
 import { AudioVisualizer } from '../components/AudioVisualizer'
 import { QuestionDisplay } from '../components/QuestionDisplay'
 import { ResumeInterviewModal } from '../components/interview/ResumeInterviewModal'
 import { CodingProblem, Question } from '../../../shared/types'
+import type { RootState } from '../store'
 
 interface VoiceInterviewSessionProps {
   interviewId: string
@@ -11,7 +13,9 @@ interface VoiceInterviewSessionProps {
   codingProblems: CodingProblem[]
   resumeFromIndex?: number
   skipIntro?: boolean
+  interviewLinkId?: number
   onComplete?: (results: any) => void
+  onSaveResults?: (summary: any) => Promise<void>
 }
 
 export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
@@ -20,7 +24,9 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   codingProblems,
   resumeFromIndex,
   skipIntro,
-  onComplete
+  interviewLinkId,
+  onComplete,
+  onSaveResults
 }) => {
   const [currentState, setCurrentState] = useState<string>('connecting')
   const [currentQuestion, setCurrentQuestion] = useState<Question | null>(null)
@@ -44,6 +50,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [userChoseResume, setUserChoseResume] = useState(false)
   
   const codeEditorRef = useRef<any>(null)
+  const resumeData = useSelector((state: RootState) => state.interview.resumeData)
+  const { user } = useSelector((state: RootState) => state.auth)
   const audioContextRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const animationFrameRef = useRef<number | null>(null)
@@ -195,13 +203,76 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       })
 
       // Interview completion
-      window.electronAPI.onInterviewCompleted((results: any) => {
+      window.electronAPI.onInterviewCompleted(async (results: any) => {
+        // Save results if onSaveResults is provided
+        if (onSaveResults && interviewLinkId) {
+          try {
+            // Create summary similar to InterviewCompletionModal
+            const totalQuestions = questions.length + codingProblems.length
+            const theoreticalScore = evaluations.length > 0 
+              ? evaluations.reduce((sum, ev) => sum + (ev.score || 0), 0) / evaluations.length 
+              : 0
+            
+            const summary = {
+              sessionId: interviewId,
+              interviewLinkId: interviewLinkId,
+              candidateId: results?.candidateId || 'unknown',
+              candidateName: resumeData?.name || user?.fullName || 'Unknown',
+              candidateEmail: user?.email || resumeData?.email || 'unknown@example.com',
+              candidatePhone: resumeData?.phone || '',
+              completedAt: new Date().toISOString(),
+              startTime: results?.startTime || new Date().toISOString(),
+              endTime: new Date().toISOString(),
+              duration: results?.duration || 0,
+              score: Math.round(theoreticalScore),
+              totalQuestions: totalQuestions,
+              correctAnswers: evaluations.filter(ev => ev.score >= 70).length,
+              timeSpent: results?.timeSpent || 0,
+              strengths: theoreticalScore >= 80 ? ['Excellent technical knowledge'] : ['Good understanding'],
+              areasForImprovement: theoreticalScore < 60 ? ['Review fundamentals'] : ['Continue practicing'],
+              overallFeedback: `Interview completed with ${Math.round(theoreticalScore)}% average score.`,
+              detailedAnswers: evaluations.map(ev => ({
+                questionId: ev.questionId || '',
+                question: ev.question || '',
+                userAnswer: ev.answer || '',
+                correctAnswer: '',
+                isCorrect: ev.score >= 70,
+                timeTaken: ev.timeTaken || 0
+              })),
+              questionAnalysis: {
+                easyQuestions: questions.filter(q => (q as any).difficulty === 'easy').length,
+                mediumQuestions: questions.filter(q => (q as any).difficulty === 'medium').length,
+                hardQuestions: questions.filter(q => (q as any).difficulty === 'hard').length,
+                correctByDifficulty: {
+                  easy: 0,
+                  medium: 0,
+                  hard: 0
+                }
+              }
+            }
+            
+            console.log('💾 Saving interview results:', summary)
+            await onSaveResults(summary)
+            console.log('✅ Interview results saved successfully')
+          } catch (error) {
+            console.error('❌ Failed to save interview results:', error)
+          }
+        }
+        
+        // Clear unfinished interview in main process
+        try {
+          await window.electronAPI?.clearUnfinishedInterview()
+          console.log('✅ Cleared unfinished interview in main process')
+        } catch (error) {
+          console.error('Failed to clear unfinished interview:', error)
+        }
+        
         onComplete?.(results)
       })
     }
 
     setupEventListeners()
-  }, [onComplete])
+  }, [onComplete, onSaveResults, interviewLinkId, interviewId, questions, codingProblems, evaluations, resumeData, user])
 
   // Set up audio visualization
   useEffect(() => {

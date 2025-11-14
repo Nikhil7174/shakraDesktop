@@ -299,20 +299,30 @@ export const InterviewChat: React.FC = () => {
     }
   }, [dispatch, clearAllSessions, resetPageVisibilityTracking]);
 
-  const handleInterviewComplete = useCallback(() => {
+  const handleInterviewComplete = useCallback(async () => {
     console.log('Interview completed - clearing all data and redirecting');
 
     try {
+      // Clear unfinished interview in main process (electron)
+      try {
+        await window.electronAPI?.clearUnfinishedInterview();
+        console.log('✅ Cleared unfinished interview in main process');
+      } catch (error) {
+        console.error('Failed to clear unfinished interview in main process:', error);
+      }
+
       // Clear all session data using unified method
       clearAllSessions();
 
       // Clear Redux state
       dispatch(resetInterview());
 
-      // Redirect to home page
-      navigate('/');
+      // Redirect to candidate dashboard (user is authenticated, so go directly there)
+      navigate('/candidate/dashboard', { replace: true });
     } catch (error) {
       console.error('Failed to complete interview:', error);
+      // Fallback to home page if dashboard navigation fails
+      navigate('/', { replace: true });
     }
   }, [navigate, dispatch, clearAllSessions]);
 
@@ -469,7 +479,9 @@ export const InterviewChat: React.FC = () => {
               codingProblems={codingProblems as any}
               resumeFromIndex={(currentSession as any)?.answers?.length || 0}
               skipIntro={resumeRequested && ((currentSession as any)?.answers?.length || 0) > 0}
+              interviewLinkId={currentSession.interviewLinkId}
               onComplete={handleInterviewComplete}
+              onSaveResults={saveResults}
             />
           );
         }
