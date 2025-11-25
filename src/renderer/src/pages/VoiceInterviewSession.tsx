@@ -814,24 +814,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
                 </div>
               </div>
               <h2 className="loading-title">Interview Complete</h2>
-              <p className="loading-subtitle">Great work! Your responses have been recorded.</p>
-              <div className="wrap-up-summary">
-                <div className="summary-item">
-                  <span className="summary-label">Questions answered</span>
-                  <span className="summary-value">{evaluations.length}</span>
-                </div>
-                <div className="summary-item">
-                  <span className="summary-label">Average score</span>
-                  <span className="summary-value">
-                    {evaluations.length > 0 ? 
-                      (evaluations.reduce((sum, ev) => sum + ev.score, 0) / evaluations.length).toFixed(1) : 
-                      'N/A'}%
-                  </span>
-                </div>
-              </div>
-              <div className="wrap-up-footer">
-                <p>We'll share a detailed report shortly.</p>
-              </div>
+              <p className="loading-subtitle">Thank you for completing the interview. Your responses have been recorded.</p>
             </div>
           </div>
         )
@@ -1350,40 +1333,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           border: 1px solid rgba(76, 175, 80, 0.4);
         }
 
-        .wrap-up-summary {
-          display: flex;
-          gap: 24px;
-          margin: 20px 0;
-          padding: 16px;
-          background: rgba(255, 255, 255, 0.04);
-          border-radius: 16px;
-          border: 1px solid rgba(255, 255, 255, 0.08);
-        }
-
-        .summary-item {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-
-        .summary-label {
-          font-size: 13px;
-          text-transform: uppercase;
-          letter-spacing: 1px;
-          color: rgba(255, 255, 255, 0.6);
-        }
-
-        .summary-value {
-          font-size: 24px;
-          font-weight: 600;
-          color: #ffffff;
-        }
-
-        .wrap-up-footer {
-          font-size: 15px;
-          color: rgba(255, 255, 255, 0.8);
-        }
 
         .theoretical-section {
           width: 100%;

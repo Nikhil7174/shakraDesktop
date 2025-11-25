@@ -2942,9 +2942,9 @@ export class InterviewOrchestrator extends EventEmitter {
     }
   }
 
-  private async speakWrapUp(data: any): Promise<void> {
-    const summary = this.codeAnalysis.getSessionSummary()
-    const wrapUpText = `Thanks for submitting your solution. That wraps up the coding section. I'll share a brief summary now. Your theoretical score was ${data.finalScore?.toFixed(1) || 'N/A'}%. The coding section took ${Math.round(summary.totalTime / 1000)} seconds. Great work!`
+  private async speakWrapUp(_data: any): Promise<void> {
+    // Minimal ending statement - no scores or stats
+    const wrapUpText = "Thank you for completing the interview. Your responses have been recorded."
     // Wrap-up is interruptible with hard stop
     await this.speakWithPolicy(wrapUpText, {
       interruptible: true,
