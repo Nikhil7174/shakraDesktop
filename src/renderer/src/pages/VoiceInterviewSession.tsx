@@ -815,7 +815,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
                 </div>
               </div>
               <h2 className="loading-title">Interview Complete</h2>
-              <p className="loading-subtitle">Thank you for completing the interview. Your responses have been recorded.</p>
+              <p className="loading-subtitle">Thanks for the great conversation. We’ll review everything and update you shortly.</p>
             </div>
           </div>
         )
