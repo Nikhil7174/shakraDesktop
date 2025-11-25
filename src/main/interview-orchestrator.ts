@@ -344,7 +344,8 @@ export class InterviewOrchestrator extends EventEmitter {
     })
 
     this.stateMachine.on('introStarted', async () => {
-      const result = await this.speakWithPolicy("Hello! ", {
+      const introText = "Hello! Welcome to your technical interview. I'll be conducting your interview today. Lets start with some theoretical questions."
+      const result = await this.speakWithPolicy(introText, {
         interruptible: true,
         bargeInPolicy: 'hard'
       })
@@ -1408,8 +1409,10 @@ export class InterviewOrchestrator extends EventEmitter {
       this.syncConversationHistoryFromServices()
       
       // Evaluate the approach with current code
+      // Check if this is the first approach before evaluation
+      const isFirstApproach = !this.stateMachine.hasCodingApproachSpoken()
       try {
-        const response = await this.codeAnalysis.evaluateApproach(text, problem, currentCode)
+        const response = await this.codeAnalysis.evaluateApproach(text, problem, currentCode, isFirstApproach)
         
         console.log('🎯 [Interview] 💡 Approach evaluation:', response)
         
@@ -2864,14 +2867,10 @@ export class InterviewOrchestrator extends EventEmitter {
     console.log('🎯 [Interview] Intro messages for problem', problem.id, ':', introMessages.length)
     
     // Present the problem - details are shown in editor
-    const intro = "Here's the coding problem. You can see the details on your screen."
-    const reminder = "While you work through it, please plan to note the time and space complexity of your final solution as well."
+    // Combine intro, approach prompt, and reminder into one statement
+    const intro = "Here's the coding problem. You can see the details on your screen. Before you start coding, please explain your approach to solving this problem. Also feel free to ask any clarifying questions if you need to understand the requirements better. While you work through it, please plan to note the time and space complexity of your final solution as well."
     
     await this.speakWithPolicy(intro, {
-      interruptible: false,
-      bargeInPolicy: 'soft'
-    })
-    await this.speakWithPolicy(reminder, {
       interruptible: false,
       bargeInPolicy: 'soft'
     })
@@ -2881,23 +2880,16 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private async askForCodingApproach(): Promise<void> {
+    // Approach prompt is now included in speakCodingProblem, so just transition
+    // This method is kept for state machine compatibility but doesn't speak anything
     const problem = this.getCurrentCodingProblem()
     if (!problem) {
       console.log('🎯 [Interview] No coding problem to ask approach for')
       return
     }
     
-    // Ask for approach and encourage clarifying questions
-    const approachPrompt = "Before you start coding, please explain your approach to solving this problem. Also feel free to ask any clarifying questions if you need to understand the requirements better."
-    const result = await this.speakWithPolicy(approachPrompt, {
-      interruptible: false,
-      bargeInPolicy: 'soft'
-    })
-    
-    // Transition to waiting for approach
-    if (result.completed || result.softStopped) {
-      await this.stateMachine.transition('approach_asked')
-    }
+    // Transition to waiting for approach (approach prompt was already spoken in speakCodingProblem)
+    await this.stateMachine.transition('approach_asked')
   }
 
   private async handleHintProvision(): Promise<void> {

@@ -276,7 +276,7 @@ export class CodeAnalysisService extends EventEmitter {
     return code.replace(/\s+/g, '')
   }
 
-  async evaluateApproach(verbalExplanation: string, problem: CodingProblem, currentCode: string = ''): Promise<{
+  async evaluateApproach(verbalExplanation: string, problem: CodingProblem, currentCode: string = '', isFirstApproach: boolean = false): Promise<{
     isApproach: boolean
     isCorrect?: boolean
     isClarification: boolean
@@ -308,7 +308,8 @@ export class CodeAnalysisService extends EventEmitter {
           description: problem.description,
           constraints: problem.hints,
           language: problem.language
-        }
+        },
+        isFirstApproach: isFirstApproach
       }
 
       if (includeCode) {
