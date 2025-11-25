@@ -524,22 +524,16 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const handleSubmit = useCallback(async (code: string, timeComplexity?: string, spaceComplexity?: string) => {
     try {
       console.log('📤 [Interview] Submitting solution:', code.length, 'characters')
-      console.log('📤 [Interview] TC/SC from props:', { timeComplexity, spaceComplexity })
-      console.log('📤 [Interview] Current problem:', currentCodingProblem?.id)
-      console.log('📤 [Interview] Complexity notes:', complexityNotes)
-      
-      // Get complexity from current problem's notes (preferred) or from props
+      // Get complexity from current problem's notes
       const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
         ? complexityNotes[currentCodingProblem.id]
         : { time: timeComplexity || '', space: spaceComplexity || '' }
       
-      console.log('📤 [Interview] Final complexity being sent:', complexity)
-      
       const result = await window.electronAPI.submitSolution(
         code, 
         false, 
-        complexity.time && complexity.time.trim() ? complexity.time.trim() : undefined, 
-        complexity.space && complexity.space.trim() ? complexity.space.trim() : undefined
+        complexity.time || undefined, 
+        complexity.space || undefined
       )
 
       if (result.success) {
@@ -560,7 +554,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       console.error('Failed to submit solution:', error)
       alert('Failed to submit solution. Please try again.')
     }
-  }, [currentCodingProblem, complexityNotes])
+  }, [])
 
   const handleTimerExpire = useCallback(async () => {
     if (!currentCodingProblem) return
@@ -791,14 +785,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
       case 'coding_intro':
         return (
-          <div className="loading-section">
-            <div className="glassmorphic-card">
-              <div className="loading-content">
-                <h2 className="loading-title">Moving to Coding Section</h2>
-                <p className="loading-subtitle">Now we'll work on a programming problem. Take your time and think through the solution step by step.</p>
-                <p className="loading-subtitle" style={{ marginTop: '12px' }}>As you implement, jot down the time and space complexity in the boxes beneath the editor so you can discuss them later.</p>
-              </div>
-            </div>
+          <div className="coding-intro-section">
+            <h2>Moving to Coding Section</h2>
+            <p>Now we'll work on a programming problem. Take your time and think through the solution step by step.</p>
+            <p>As you implement, jot down the time and space complexity in the boxes beneath the editor so you can discuss them later.</p>
           </div>
         )
 
@@ -861,11 +851,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
                 </div>
                 <h2 className="loading-title">Preparing Interview</h2>
                 <p className="loading-subtitle">Please wait while we set up your interview session</p>
-                <div className="loading-dots">
-                  <span className="dot"></span>
-                  <span className="dot"></span>
-                  <span className="dot"></span>
-                </div>
               </div>
             </div>
           </div>
@@ -1122,39 +1107,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           color: rgba(156, 39, 176, 0.5);
         }
 
-        .meeting-intro-section .speaking-indicator {
-          position: absolute;
-          top: 50%;
-          left: 50%;
-          transform: translate(-50%, -50%);
-          width: 200px;
-          height: 200px;
-          pointer-events: none;
-          z-index: 5;
-        }
-
-        .meeting-intro-section .speaking-pulse {
-          width: 100%;
-          height: 100%;
-          border-radius: 50%;
-          border: 3px solid #4caf50;
-          animation: speakingPulse 2s infinite;
-        }
-
-        @keyframes speakingPulse {
-          0% {
-            transform: scale(0.8);
-            opacity: 1;
-          }
-          50% {
-            transform: scale(1.1);
-            opacity: 0.6;
-          }
-          100% {
-            transform: scale(0.8);
-            opacity: 1;
-          }
-        }
 
         .meeting-intro-section .video-subtitles {
           padding: 12px 16px;
@@ -1350,42 +1302,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           letter-spacing: 0.3px;
         }
 
-        .loading-dots {
-          display: flex;
-          gap: 8px;
-          margin-top: 8px;
-        }
-
-        .loading-dots .dot {
-          width: 8px;
-          height: 8px;
-          background: #2196f3;
-          border-radius: 50%;
-          animation: dotBounce 1.4s ease-in-out infinite;
-        }
-
-        .loading-dots .dot:nth-child(1) {
-          animation-delay: 0s;
-        }
-
-        .loading-dots .dot:nth-child(2) {
-          animation-delay: 0.2s;
-        }
-
-        .loading-dots .dot:nth-child(3) {
-          animation-delay: 0.4s;
-        }
-
-        @keyframes dotBounce {
-          0%, 80%, 100% {
-            transform: translateY(0);
-            opacity: 0.5;
-          }
-          40% {
-            transform: translateY(-10px);
-            opacity: 1;
-          }
-        }
 
         .intro-section h2,
         .coding-intro-section h2,
@@ -1481,8 +1397,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           padding: 24px;
           width: 100%;
           height: 100%;
-          overflow-y: auto;
         }
+
 
         .stuck-indicator {
           color: #ff9800 !important;

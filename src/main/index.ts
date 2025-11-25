@@ -266,6 +266,16 @@ app.whenReady().then(async () => {
       }
     })
 
+    interviewOrchestrator.on('micPauseStateChanged', (isListening: boolean) => {
+      try {
+        console.log('🎤 [Main] Mic pause state changed, listening:', isListening)
+        mainWindow?.webContents.send('listening-state-change', isListening)
+      } catch (e: unknown) {
+        const err = e as Error
+        console.error('Failed to forward mic pause state change:', err.message)
+      }
+    })
+
     // Forward interview state changes to control listening
     interviewOrchestrator.on('stateChanged', (payload: any) => {
       try {

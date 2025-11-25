@@ -63,6 +63,14 @@ interface SpeakResult {
   interrupted: boolean
 }
 
+type ResponseKind = 'hint' | 'clarification' | 'answer' | 'prompt' | 'system'
+
+interface SpeechContext {
+  kind: ResponseKind
+  priority: 'manual' | 'auto'
+  source?: string
+}
+
 // Helper: Split text into sentences (currently unused, kept for potential future use)
 // function splitSentences(text: string): string[] {
 //   const sentences = text.match(/[^.!?]+[.!?]+\s*/g) ?? [text]
@@ -102,8 +110,16 @@ export class InterviewOrchestrator extends EventEmitter {
   private softStopRequested = false
   private micPaused = false
   private suppressAutoMicResume = false
+  private autoHintInProgress = false // Track if auto-hint is currently being generated
+  private userSpeaking = false
+  private liveTranscriptTimeout: NodeJS.Timeout | null = null
   private hadTheoreticalQuestions = false // Track if session had theoretical questions
   private currentCode: string = '' // Store latest code from editor for manual hint requests
+  private manualResponseInFlight: { kind: ResponseKind; source: string; startedAt: number } | null = null
+  private currentSpeechContext: SpeechContext | null = null
+  // Track hint/clarification requests and user speech for auto-hint conditions (reset every 60s interval)
+  private currentIntervalHasHintClarification: boolean = false // Track if any hint/clarification requested in current 60s interval
+  private currentIntervalHasSubstantialSpeech: boolean = false // Track if any substantial speech (>70 chars) in current 60s interval
   // Centralized conversation history manager
   // Maintains full conversation history throughout the interview
   private fullConversationHistory: ConversationMessage[] = []
@@ -544,6 +560,7 @@ export class InterviewOrchestrator extends EventEmitter {
   private setupSTTListeners(): void {
     // STT listeners
     this.stt.on('transcript', async (transcript) => {
+      this.markUserSpeakingActivity()
       // Clear silence timer as soon as user starts speaking (interim or final)
       const currentState = this.stateMachine.getState()
       if (currentState === InterviewState.WAITING_FOR_ANSWER || 
@@ -589,7 +606,7 @@ export class InterviewOrchestrator extends EventEmitter {
     // TTS listeners
     this.tts.on('playbackStarted', () => {
       console.log('🎯 [Interview] TTS started - pausing mic')
-      this.micPaused = true
+      this.setMicPaused(true, 'tts-playback-started')
       this.emit('speakingStarted')
     })
 
@@ -600,12 +617,32 @@ export class InterviewOrchestrator extends EventEmitter {
       } else {
         // Add grace period before resuming mic to avoid echo tail
         setTimeout(() => {
-          this.micPaused = false
+          this.setMicPaused(false, 'tts-playback-completed')
           console.log('🎯 [Interview] Mic resumed')
         }, 100)
       }
       this.emit('speakingCompleted')
     })
+  }
+
+  private markUserSpeakingActivity(): void {
+    this.userSpeaking = true
+    if (this.liveTranscriptTimeout) {
+      clearTimeout(this.liveTranscriptTimeout)
+    }
+    this.liveTranscriptTimeout = setTimeout(() => {
+      this.userSpeaking = false
+      this.liveTranscriptTimeout = null
+    }, 1500)
+  }
+
+  private setMicPaused(paused: boolean, source: string): void {
+    if (this.micPaused === paused) {
+      return
+    }
+    this.micPaused = paused
+    console.log(`🎯 [Interview] Mic ${paused ? 'paused' : 'resumed'} (${source})`)
+    this.emit('micPauseStateChanged', !paused)
   }
 
   private setupCodeAnalysisListeners(): void {
@@ -796,25 +833,33 @@ export class InterviewOrchestrator extends EventEmitter {
       return
     }
 
-    // Implement barge-in: stop TTS if candidate starts speaking
-    if (this.speechGate.isSpeaking()) {
-      console.log('🎯 [Interview] 🛑 Barge-in detected!')
-      if (this.currentSpeakOptions) {
-        if (this.currentSpeakOptions.bargeInPolicy === 'soft') {
-          console.log('🎯 [Interview] Soft stop requested (finish current sentence)')
-          this.softStopRequested = true
+    // Ignore transcripts that arrive during auto-hint generation (they're likely from speech that started before mic was paused)
+    if (this.autoHintInProgress) {
+      console.log('🎯 [Interview] ⚠️ Ignoring transcript during auto-hint generation:', text)
+      return
+    }
+
+    this.setMicPaused(true, 'llm-processing')
+    try {
+      // Implement barge-in: stop TTS if candidate starts speaking
+      if (this.speechGate.isSpeaking()) {
+        console.log('🎯 [Interview] 🛑 Barge-in detected!')
+        if (this.currentSpeakOptions) {
+          if (this.currentSpeakOptions.bargeInPolicy === 'soft') {
+            console.log('🎯 [Interview] Soft stop requested (finish current sentence)')
+            this.softStopRequested = true
+          } else {
+            console.log('🎯 [Interview] Hard stop requested (stop immediately)')
+            await this.speechGate.stop()
+          }
         } else {
-          console.log('🎯 [Interview] Hard stop requested (stop immediately)')
+          // Default to hard stop if no options set
           await this.speechGate.stop()
         }
-      } else {
-        // Default to hard stop if no options set
-        await this.speechGate.stop()
+        this.stateMachine.clearSilenceTimer()
       }
-      this.stateMachine.clearSilenceTimer()
-    }
-    
-    if (currentState === InterviewState.WAITING_FOR_ANSWER || currentState === InterviewState.THEORETICAL_QUESTION) {
+      
+      if (currentState === InterviewState.WAITING_FOR_ANSWER || currentState === InterviewState.THEORETICAL_QUESTION) {
       console.log('🎯 [Interview] ✅ Processing transcript with LLM:', text)
       // Clear silence timer since candidate is speaking
       this.stateMachine.clearSilenceTimer()
@@ -872,10 +917,14 @@ export class InterviewOrchestrator extends EventEmitter {
           // Sync to centralized history
           this.syncConversationHistoryFromServices()
           
-          const result = await this.speakWithPolicy(hintText, {
-            interruptible: true,
-            bargeInPolicy: 'hard'
-          })
+          const result = await this.speakWithPolicy(
+            hintText,
+            {
+              interruptible: true,
+              bargeInPolicy: 'hard'
+            },
+            { kind: 'hint', priority: 'auto', source: 'monitoring_auto_hint' }
+          )
           if (result.completed) {
             await this.stateMachine.transition('hint_provided')
             this.emit('hintProvided', hintText)
@@ -1221,112 +1270,130 @@ export class InterviewOrchestrator extends EventEmitter {
       // Handle hint requests during approach phase
       if (intent.intent === 'hint_request') {
         console.log('🎯 [Interview] ✨ Handling hint request during approach phase')
-        
-        if (!this.stateMachine.canProvideCodingHint()) {
-          console.log('🎯 [Interview] Coding hint limit reached, informing candidate')
-          const limitMessage = "I've provided the maximum number of hints. Please continue with your approach."
-          
-          // IMPORTANT: Record limit message in conversation history
-          if (problem) {
-            this.codeAnalysis.addConversationMessage('assistant', limitMessage, {
-              type: 'feedback',
-              codingProblemId: problem.id,
-              section: 'coding'
-            } as any)
-            this.syncConversationHistoryFromServices()
+        await this.withManualResponse('hint', 'approach_manual_hint', async () => {
+          if (!this.stateMachine.canProvideCodingHint()) {
+            console.log('🎯 [Interview] Coding hint limit reached, informing candidate')
+            const limitMessage = "I've provided the maximum number of hints. Please continue with your approach."
+            
+            // IMPORTANT: Record limit message in conversation history
+            if (problem) {
+              this.codeAnalysis.addConversationMessage('assistant', limitMessage, {
+                type: 'feedback',
+                codingProblemId: problem.id,
+                section: 'coding'
+              } as any)
+              this.syncConversationHistoryFromServices()
+            }
+            
+            await this.speakWithPolicy(
+              limitMessage,
+              {
+                interruptible: false,
+                bargeInPolicy: 'soft'
+              },
+              { kind: 'hint', priority: 'manual', source: 'approach_manual_hint_limit' }
+            )
+            this.stateMachine.startSilenceTimer(120000)
+            return
           }
           
-          await this.speakWithPolicy(limitMessage, {
-            interruptible: false,
-            bargeInPolicy: 'soft'
-          })
-          this.stateMachine.startSilenceTimer(120000)
-          return
-        }
-        
-        const hintNumber = this.stateMachine.incrementCodingHintCount()
-        const hintLevel = Math.min(hintNumber, 2) as 1 | 2
-        console.log('🎯 [Interview] Providing manual coding hint at level:', hintLevel)
-        
-        // IMPORTANT: Add user's hint request to conversation history FIRST
-        this.codeAnalysis.addHintRequest(text) // This adds the user's request as a user message with type 'hint'
-        console.log('🎯 [Interview] Added user hint request to conversation history')
-        
-        // Use approach-phase hint method (no code context) for approach phase
-        const hint = await this.codeAnalysis.getApproachHint(problem, hintLevel)
-        
-        // Add hint response to conversation history
-        this.codeAnalysis.addHint(hint, hintLevel)
-        // Sync to centralized history
-        this.syncConversationHistoryFromServices()
-        
-        const result = await this.speakWithPolicy(hint, {
-          interruptible: true,
-          bargeInPolicy: 'hard'
+          const hintNumber = this.stateMachine.incrementCodingHintCount()
+          const hintLevel = Math.min(hintNumber, 2) as 1 | 2
+          console.log('🎯 [Interview] Providing manual coding hint at level:', hintLevel)
+          
+          // IMPORTANT: Add user's hint request to conversation history FIRST
+          this.codeAnalysis.addHintRequest(text) // This adds the user's request as a user message with type 'hint'
+          console.log('🎯 [Interview] Added user hint request to conversation history')
+          
+          // Use approach-phase hint method (no code context) for approach phase
+          const hint = await this.codeAnalysis.getApproachHint(problem, hintLevel)
+          
+          // Add hint response to conversation history
+          this.codeAnalysis.addHint(hint, hintLevel)
+          // Sync to centralized history
+          this.syncConversationHistoryFromServices()
+          
+          const result = await this.speakWithPolicy(
+            hint,
+            {
+              interruptible: true,
+              bargeInPolicy: 'hard'
+            },
+            { kind: 'hint', priority: 'manual', source: 'approach_manual_hint' }
+          )
+          if (result.completed) {
+            this.emit('hintProvided', hint)
+            // Restart 2-minute silence timer and wait for approach again
+            this.stateMachine.startSilenceTimer(120000)
+            await this.stateMachine.transition('approach_needs_retry')
+          }
         })
-        if (result.completed) {
-          this.emit('hintProvided', hint)
-          // Restart 2-minute silence timer and wait for approach again
-          this.stateMachine.startSilenceTimer(120000)
-          await this.stateMachine.transition('approach_needs_retry')
-        }
         return
       }
       
       // Handle clarification requests during approach phase
       if (intent.intent === 'clarification_request') {
         console.log('🎯 [Interview] ✨ Handling clarification request during approach phase')
-        
-        if (!this.stateMachine.canAskCodingClarification()) {
-          console.log('🎯 [Interview] Coding clarification limit reached')
-          const limitMessage = "I've provided the maximum number of clarifications. Please proceed with the information you have."
-          
-          // IMPORTANT: Record limit message in conversation history
-          if (problem) {
-            this.codeAnalysis.addConversationMessage('assistant', limitMessage, {
-              type: 'feedback',
-              codingProblemId: problem.id,
-              section: 'coding'
-            } as any)
-            this.syncConversationHistoryFromServices()
+        await this.withManualResponse('clarification', 'approach_manual_clarification', async () => {
+          if (!this.stateMachine.canAskCodingClarification()) {
+            console.log('🎯 [Interview] Coding clarification limit reached')
+            const limitMessage = "I've provided the maximum number of clarifications. Please proceed with the information you have."
+            
+            // IMPORTANT: Record limit message in conversation history
+            if (problem) {
+              this.codeAnalysis.addConversationMessage('assistant', limitMessage, {
+                type: 'feedback',
+                codingProblemId: problem.id,
+                section: 'coding'
+              } as any)
+              this.syncConversationHistoryFromServices()
+            }
+            
+            await this.speakWithPolicy(
+              limitMessage,
+              {
+                interruptible: false,
+                bargeInPolicy: 'soft'
+              },
+              { kind: 'clarification', priority: 'manual', source: 'approach_manual_clarification_limit' }
+            )
+            this.stateMachine.startSilenceTimer(120000)
+            return
           }
           
-          await this.speakWithPolicy(limitMessage, {
-            interruptible: false,
-            bargeInPolicy: 'soft'
-          })
-          this.stateMachine.startSilenceTimer(120000)
-          return
-        }
-        
-        this.stateMachine.incrementCodingClarificationCount()
-        
-        // IMPORTANT: Add user's clarification request to conversation history FIRST
-        this.codeAnalysis.addClarificationRequest(text) // This adds the user's request as a user message with type 'clarification'
-        console.log('🎯 [Interview] Added user clarification request to conversation history')
-        
-        // Call LLM service to generate clarification
-        const clarification = await this.llm.generateCodingClarification(
-          problem,
-          text,
-          this.stateMachine.getCodingClarificationCount(),
-          currentCode
-        )
-        
-        // Add clarification response to conversation history
-        this.codeAnalysis.addClarification(clarification)
-        // Sync to centralized history
-        this.syncConversationHistoryFromServices()
-        
-        const result = await this.speakWithPolicy(clarification, {
-          interruptible: false,
-          bargeInPolicy: 'soft'
+          this.stateMachine.incrementCodingClarificationCount()
+          
+          // IMPORTANT: Add user's clarification request to conversation history FIRST
+          this.codeAnalysis.addClarificationRequest(text) // This adds the user's request as a user message with type 'clarification'
+          console.log('🎯 [Interview] Added user clarification request to conversation history')
+          
+          // Call LLM service to generate clarification
+          const clarification = await this.llm.generateCodingClarification(
+            problem,
+            text,
+            this.stateMachine.getCodingClarificationCount(),
+            currentCode
+          )
+          
+          // Add clarification response to conversation history
+          this.codeAnalysis.addClarification(clarification)
+          // Sync to centralized history
+          this.syncConversationHistoryFromServices()
+          
+          const result = await this.speakWithPolicy(
+            clarification,
+            {
+              interruptible: false,
+              bargeInPolicy: 'soft'
+            },
+            { kind: 'clarification', priority: 'manual', source: 'approach_manual_clarification' }
+          )
+          if (result.completed || result.softStopped) {
+            // Restart 2-minute silence timer and wait for approach again
+            this.stateMachine.startSilenceTimer(120000)
+            await this.stateMachine.transition('approach_needs_retry')
+          }
         })
-        if (result.completed || result.softStopped) {
-          // Restart 2-minute silence timer and wait for approach again
-          this.stateMachine.startSilenceTimer(120000)
-          await this.stateMachine.transition('approach_needs_retry')
-        }
         return
       }
       
@@ -1555,67 +1622,89 @@ export class InterviewOrchestrator extends EventEmitter {
       const intent = await this.llm.detectIntent(text)
       console.log('🎯 [Interview] Detected intent during coding:', intent)
       
+      // Track hint/clarification requests immediately when intent is detected (for current 60s interval)
+      if (intent.intent === 'hint_request' || intent.intent === 'clarification_request') {
+        this.currentIntervalHasHintClarification = true
+        console.log(`🎯 [Interview] Tracked ${intent.intent} request in current 60s interval`)
+      }
+      
+      // Track user transcript length (for substantial speech >70 chars) in current 60s interval
+      const transcriptLength = text.trim().length
+      if (transcriptLength > 70) {
+        this.currentIntervalHasSubstantialSpeech = true
+        console.log(`🎯 [Interview] Tracked substantial user speech (${transcriptLength} chars) in current 60s interval`)
+      }
+      
       // Handle hint requests during coding
       if (intent.intent === 'hint_request') {
         console.log('🎯 [Interview] ✨ Handling hint request during coding phase')
-        
-        if (!this.stateMachine.canProvideCodingHint()) {
-          console.log('🎯 [Interview] Coding hint limit reached, informing candidate')
-          const limitMessage = "I've provided the maximum number of hints. Please continue with your implementation."
-          
-          // IMPORTANT: Record limit message in conversation history
-          const problem = this.getCurrentCodingProblem()
-          if (problem) {
-            this.codeAnalysis.addConversationMessage('assistant', limitMessage, {
-              type: 'feedback',
-              codingProblemId: problem.id,
-              section: 'coding'
-            } as any)
-            this.syncConversationHistoryFromServices()
+        await this.withManualResponse('hint', 'coding_manual_hint', async () => {
+          if (!this.stateMachine.canProvideCodingHint()) {
+            console.log('🎯 [Interview] Coding hint limit reached, informing candidate')
+            const limitMessage = "I've provided the maximum number of hints. Please continue with your implementation."
+            
+            // IMPORTANT: Record limit message in conversation history
+            const problem = this.getCurrentCodingProblem()
+            if (problem) {
+              this.codeAnalysis.addConversationMessage('assistant', limitMessage, {
+                type: 'feedback',
+                codingProblemId: problem.id,
+                section: 'coding'
+              } as any)
+              this.syncConversationHistoryFromServices()
+            }
+            
+            await this.speakWithPolicy(
+              limitMessage,
+              {
+                interruptible: false,
+                bargeInPolicy: 'soft'
+              },
+              { kind: 'hint', priority: 'manual', source: 'coding_manual_hint_limit' }
+            )
+            this.stateMachine.startSilenceTimer(120000)
+            return
           }
           
-          await this.speakWithPolicy(limitMessage, {
-            interruptible: false,
-            bargeInPolicy: 'soft'
-          })
+          const problem = this.getCurrentCodingProblem()
+          if (!problem) {
+            console.log('🎯 [Interview] No coding problem available for hint')
+            this.stateMachine.startSilenceTimer(120000)
+            return
+          }
+          
+          const hintNumber = this.stateMachine.incrementCodingHintCount()
+          const hintLevel = Math.min(hintNumber, 2) as 1 | 2
+          console.log('🎯 [Interview] Providing manual coding hint at level:', hintLevel)
+          
+          // IMPORTANT: Add user's hint request to conversation history FIRST
+          this.codeAnalysis.addHintRequest(text) // This adds the user's request as a user message with type 'hint'
+          console.log('🎯 [Interview] Added user hint request to conversation history')
+          
+          // Get current code from stored value (latest from editor) or fallback
+          const currentCode = this.currentCode || this.stateMachine.getPreviousCode() || ''
+          console.log(`🎯 [Interview] Using current code for manual hint (length: ${currentCode.length})`)
+          const hintText = await this.codeAnalysis.getHint(problem, currentCode, hintLevel)
+          // Add hint response to conversation history
+          this.codeAnalysis.addHint(hintText, hintLevel)
+          // Sync to centralized history
+          this.syncConversationHistoryFromServices()
+          
+          const result = await this.speakWithPolicy(
+            hintText,
+            {
+              interruptible: true,
+              bargeInPolicy: 'hard'
+            },
+            { kind: 'hint', priority: 'manual', source: 'coding_manual_hint' }
+          )
+          
+          if (result.completed) {
+            this.emit('hintProvided', hintText)
+          }
+          
           this.stateMachine.startSilenceTimer(120000)
-          return
-        }
-        
-        const problem = this.getCurrentCodingProblem()
-        if (!problem) {
-          console.log('🎯 [Interview] No coding problem available for hint')
-          this.stateMachine.startSilenceTimer(120000)
-          return
-        }
-        
-        const hintNumber = this.stateMachine.incrementCodingHintCount()
-        const hintLevel = Math.min(hintNumber, 2) as 1 | 2
-        console.log('🎯 [Interview] Providing manual coding hint at level:', hintLevel)
-        
-        // IMPORTANT: Add user's hint request to conversation history FIRST
-        this.codeAnalysis.addHintRequest(text) // This adds the user's request as a user message with type 'hint'
-        console.log('🎯 [Interview] Added user hint request to conversation history')
-        
-        // Get current code from stored value (latest from editor) or fallback
-        const currentCode = this.currentCode || this.stateMachine.getPreviousCode() || ''
-        console.log(`🎯 [Interview] Using current code for manual hint (length: ${currentCode.length})`)
-        const hintText = await this.codeAnalysis.getHint(problem, currentCode, hintLevel)
-        // Add hint response to conversation history
-        this.codeAnalysis.addHint(hintText, hintLevel)
-        // Sync to centralized history
-        this.syncConversationHistoryFromServices()
-        
-        const result = await this.speakWithPolicy(hintText, {
-          interruptible: true,
-          bargeInPolicy: 'hard'
         })
-        
-        if (result.completed) {
-          this.emit('hintProvided', hintText)
-        }
-        
-        this.stateMachine.startSilenceTimer(120000)
         return
       }
       
@@ -1623,64 +1712,76 @@ export class InterviewOrchestrator extends EventEmitter {
       if (intent.intent === 'clarification_request') {
         console.log('🎯 [Interview] ✨ Handling clarification request during coding phase')
         
-        if (!this.stateMachine.canAskCodingClarification()) {
-          console.log('🎯 [Interview] Coding clarification limit reached')
-          const limitMessage = "I've provided the maximum number of clarifications. Please proceed with the information you have."
-          
-          // IMPORTANT: Record limit message in conversation history
-          const problem = this.getCurrentCodingProblem()
-          if (problem) {
-            this.codeAnalysis.addConversationMessage('assistant', limitMessage, {
-              type: 'feedback',
-              codingProblemId: problem.id,
-              section: 'coding'
-            } as any)
-            this.syncConversationHistoryFromServices()
+        await this.withManualResponse('clarification', 'coding_manual_clarification', async () => {
+          if (!this.stateMachine.canAskCodingClarification()) {
+            console.log('🎯 [Interview] Coding clarification limit reached')
+            const limitMessage = "I've provided the maximum number of clarifications. Please proceed with the information you have."
+            
+            // IMPORTANT: Record limit message in conversation history
+            const problem = this.getCurrentCodingProblem()
+            if (problem) {
+              this.codeAnalysis.addConversationMessage('assistant', limitMessage, {
+                type: 'feedback',
+                codingProblemId: problem.id,
+                section: 'coding'
+              } as any)
+              this.syncConversationHistoryFromServices()
+            }
+            
+            await this.speakWithPolicy(
+              limitMessage,
+              {
+                interruptible: false,
+                bargeInPolicy: 'soft'
+              },
+              { kind: 'clarification', priority: 'manual', source: 'coding_manual_clarification_limit' }
+            )
+            this.stateMachine.startSilenceTimer(120000)
+            return
           }
           
-          await this.speakWithPolicy(limitMessage, {
-            interruptible: false,
-            bargeInPolicy: 'soft'
-          })
-          this.stateMachine.startSilenceTimer(120000)
-          return
-        }
-        
-        const problem = this.getCurrentCodingProblem()
-        if (!problem) {
-          console.log('🎯 [Interview] No coding problem available for clarification')
-          this.stateMachine.startSilenceTimer(120000)
-          return
-        }
-        
-        this.stateMachine.incrementCodingClarificationCount()
-        
-        // IMPORTANT: Add user's clarification request to conversation history FIRST
-        this.codeAnalysis.addClarificationRequest(text) // This adds the user's request as a user message with type 'clarification'
-        console.log('🎯 [Interview] Added user clarification request to conversation history')
-        
-        // Get current code from state machine or use empty string
-        const currentCode = this.stateMachine.getPreviousCode() || ''
-        
-        // Call LLM service to generate clarification
-        const clarification = await this.llm.generateCodingClarification(
-          problem,
-          text,
-          this.stateMachine.getCodingClarificationCount(),
-          currentCode
-        )
-        
-        // Add clarification response to conversation history
-        this.codeAnalysis.addClarification(clarification)
-        // Sync to centralized history
-        this.syncConversationHistoryFromServices()
-        
-        await this.speakWithPolicy(clarification, {
-          interruptible: true,
-          bargeInPolicy: 'hard'
+          const problem = this.getCurrentCodingProblem()
+          if (!problem) {
+            console.log('🎯 [Interview] No coding problem available for clarification')
+            this.stateMachine.startSilenceTimer(120000)
+            return
+          }
+          
+          this.stateMachine.incrementCodingClarificationCount()
+          
+          // IMPORTANT: Add user's clarification request to conversation history FIRST
+          this.codeAnalysis.addClarificationRequest(text) // This adds the user's request as a user message with type 'clarification'
+          console.log('🎯 [Interview] Added user clarification request to conversation history')
+          
+          // Get current code from state machine or use empty string
+          const currentCode = this.stateMachine.getPreviousCode() || ''
+          
+          // Call LLM service to generate clarification
+          const clarification = await this.llm.generateCodingClarification(
+            problem,
+            text,
+            this.stateMachine.getCodingClarificationCount(),
+            currentCode
+          )
+          
+          // Add clarification response to conversation history
+          this.codeAnalysis.addClarification(clarification)
+          // Sync to centralized history
+          this.syncConversationHistoryFromServices()
+          
+          const result = await this.speakWithPolicy(
+            clarification,
+            {
+              interruptible: true,
+              bargeInPolicy: 'hard'
+            },
+            { kind: 'clarification', priority: 'manual', source: 'coding_manual_clarification' }
+          )
+          
+          if (result.completed || result.softStopped) {
+            this.stateMachine.startSilenceTimer(120000)
+          }
         })
-        
-        this.stateMachine.startSilenceTimer(120000)
         return
       }
       
@@ -1721,6 +1822,11 @@ export class InterviewOrchestrator extends EventEmitter {
       this.stateMachine.startSilenceTimer(120000)
     } else {
       console.log('🎯 [Interview] ⚠️ Not in listening state, ignoring transcript. Current state:', currentState)
+    }
+    } finally {
+      if (!this.speechGate.isSpeaking()) {
+        this.setMicPaused(false, 'llm-processing')
+      }
     }
   }
 
@@ -1892,29 +1998,55 @@ export class InterviewOrchestrator extends EventEmitter {
         return analysis
       }
 
-      const shouldProvideHint = analysis.isStuck
+      // Check additional conditions for auto-hint:
+      // 1. No hint/clarification requests in current 60s interval
+      // 2. No substantial user speech (>70 chars) in current 60s interval
+      const shouldProvideHint = analysis.isStuck && !this.currentIntervalHasHintClarification && !this.currentIntervalHasSubstantialSpeech
       
-      console.log(`🎯 [Interview] Stuck check - LLM isStuck: ${analysis.isStuck}, Progress: ${analysis.progress}%, Should hint: ${shouldProvideHint}`)
+      console.log(`🎯 [Interview] Stuck check - LLM isStuck: ${analysis.isStuck}, Progress: ${analysis.progress}%`)
+      console.log(`🎯 [Interview] Auto-hint conditions - Has hint/clarification in interval: ${this.currentIntervalHasHintClarification}, Has substantial speech (>70 chars): ${this.currentIntervalHasSubstantialSpeech}`)
+      console.log(`🎯 [Interview] Should provide auto-hint: ${shouldProvideHint}`)
+      
+      // Reset tracking flags for next 60s interval (after checking current interval)
+      this.currentIntervalHasHintClarification = false
+      this.currentIntervalHasSubstantialSpeech = false
+      console.log(`🎯 [Interview] Reset tracking flags for next 60s interval`)
       
       if (shouldProvideHint) {
-        if (!this.stateMachine.canProvideCodingHint()) {
-          console.log('🎯 [Interview] Candidate stuck but hint limit reached, skipping hint')
-        } else {
-          console.log(`🎯 [Interview] Candidate stuck (detected by LLM after 60s), providing monitoring hint`)
-          const hintNumber = this.stateMachine.incrementCodingHintCount()
-          const hintLevel = Math.min(hintNumber, 2) as 1 | 2
-          const hintText = await this.codeAnalysis.getHint(problem, codeData.code, hintLevel)
-          // Add hint to conversation history
-          this.codeAnalysis.addHint(hintText, hintLevel)
-          // Sync to centralized history
-          this.syncConversationHistoryFromServices()
-          
-          const result = await this.speakWithPolicy(hintText, {
-            interruptible: true,
-            bargeInPolicy: 'hard'
-          })
-          if (result.completed) {
-            this.emit('hintProvided', hintText)
+        if (this.userSpeaking) {
+          console.log('🎯 [Interview] User currently speaking during stuck detection - deferring monitoring hint until next interval')
+          return analysis
+        }
+        this.setMicPaused(true, 'auto-hint-llm-processing')
+        this.autoHintInProgress = true
+        try {
+          if (this.shouldSkipAutoResponse('monitoring_auto_hint')) {
+            return analysis
+          }
+          if (!this.stateMachine.canProvideCodingHint()) {
+            console.log('🎯 [Interview] Candidate stuck but hint limit reached, skipping hint')
+          } else {
+            console.log(`🎯 [Interview] Candidate stuck (detected by LLM after 60s), providing monitoring hint`)
+            const hintNumber = this.stateMachine.incrementCodingHintCount()
+            const hintLevel = Math.min(hintNumber, 2) as 1 | 2
+            const hintText = await this.codeAnalysis.getHint(problem, codeData.code, hintLevel)
+            // Add hint to conversation history
+            this.codeAnalysis.addHint(hintText, hintLevel)
+            // Sync to centralized history
+            this.syncConversationHistoryFromServices()
+            
+            const result = await this.speakWithPolicy(hintText, {
+              interruptible: true,
+              bargeInPolicy: 'hard'
+            })
+            if (result.completed) {
+              this.emit('hintProvided', hintText)
+            }
+          }
+        } finally {
+          this.autoHintInProgress = false
+          if (!this.speechGate.isSpeaking()) {
+            this.setMicPaused(false, 'auto-hint-llm-processing')
           }
         }
       }
@@ -2316,13 +2448,18 @@ export class InterviewOrchestrator extends EventEmitter {
     }
   }
 
-  private async speakWithPolicy(text: string, opts: SpeakOptions): Promise<SpeakResult> {
+  private async speakWithPolicy(
+    text: string,
+    opts: SpeakOptions,
+    context: SpeechContext = { kind: 'system', priority: 'auto', source: 'general' }
+  ): Promise<SpeakResult> {
+    this.currentSpeechContext = context
     try {
       this.currentSpeakOptions = opts
       this.softStopRequested = false
       // Suppress automatic mic resume between sentences; resume once after the whole batch
       this.suppressAutoMicResume = true
-      this.micPaused = true
+      this.setMicPaused(true, 'speech-batch')
       this.emit('speakingStarted')
 
       // Always send entire text as one TTS call to avoid delays between sentences
@@ -2336,7 +2473,7 @@ export class InterviewOrchestrator extends EventEmitter {
 
       // Manually resume mic once at the end of batch (if not interrupted early)
       setTimeout(() => {
-        this.micPaused = false
+        this.setMicPaused(false, 'speech-batch')
         console.log('🎯 [Interview] Mic resumed (batch complete)')
       }, 100)
 
@@ -2353,15 +2490,21 @@ export class InterviewOrchestrator extends EventEmitter {
       this.currentSpeakOptions = undefined
       this.suppressAutoMicResume = false
       return { completed: false, softStopped: false, interrupted: true }
+    } finally {
+      this.currentSpeechContext = null
     }
   }
 
   private async speakQuestion(question: string): Promise<void> {
     // Question stems use soft barge-in (must-deliver)
-    const result = await this.speakWithPolicy(question, {
-      interruptible: false,
-      bargeInPolicy: 'soft'
-    })
+    const result = await this.speakWithPolicy(
+      question,
+      {
+        interruptible: false,
+        bargeInPolicy: 'soft'
+      },
+      { kind: 'prompt', priority: 'auto', source: 'theoretical_question' }
+    )
 
     // Only transition to waiting_for_answer if completed or soft-stopped
     if (result.completed || result.softStopped) {
@@ -2373,9 +2516,74 @@ export class InterviewOrchestrator extends EventEmitter {
     }
   }
 
+  private async withManualResponse<T>(kind: ResponseKind, source: string, handler: () => Promise<T>): Promise<T> {
+    await this.interruptAutoSpeech(`manual ${kind} requested (${source})`)
+    this.startManualResponse(kind, source)
+    try {
+      return await handler()
+    } finally {
+      this.finishManualResponse(kind, source)
+    }
+  }
+
+  private startManualResponse(kind: ResponseKind, source: string): void {
+    this.manualResponseInFlight = { kind, source, startedAt: Date.now() }
+    console.log(`🎯 [Interview] Manual ${kind} response started (${source})`)
+  }
+
+  private finishManualResponse(kind: ResponseKind, source: string): void {
+    if (this.manualResponseInFlight && this.manualResponseInFlight.kind === kind && this.manualResponseInFlight.source === source) {
+      console.log(`🎯 [Interview] Manual ${kind} response finished (${source})`)
+      this.manualResponseInFlight = null
+    }
+  }
+
+  private isManualResponseActive(): boolean {
+    return !!this.manualResponseInFlight
+  }
+
+  private async interruptAutoSpeech(reason: string): Promise<void> {
+    if (this.currentSpeechContext?.priority === 'auto' && this.speechGate?.isSpeaking()) {
+      console.log(`🎯 [Interview] Stopping auto speech due to ${reason}`)
+      try {
+        await this.speechGate.stop()
+      } catch (error) {
+        console.warn('⚠️ [Interview] Failed to stop auto speech:', error)
+      }
+    }
+  }
+
+  private shouldSkipAutoResponse(trigger: string): boolean {
+    if (this.isManualResponseActive()) {
+      console.log(`🎯 [Interview] Skipping auto response (${trigger}) - manual ${this.manualResponseInFlight?.kind} in progress`)
+      return true
+    }
+    return false
+  }
+
+  private getSilenceTimerDuration(state: InterviewState): number {
+    switch (state) {
+      case InterviewState.MONITORING_CODE:
+        return 60000
+      case InterviewState.THEORETICAL_QUESTION:
+      case InterviewState.WAITING_FOR_ANSWER:
+        return 40000
+      case InterviewState.WAITING_FOR_APPROACH:
+      default:
+        return 120000
+    }
+  }
+
   private async handleSilenceTimeout(): Promise<void> {
     const currentState = this.stateMachine.getState()
     console.log('🎯 [Interview] Silence timeout (2 mins) detected in state:', currentState)
+    
+    if (this.isManualResponseActive()) {
+      const delay = this.getSilenceTimerDuration(currentState)
+      console.log('🎯 [Interview] Manual response active - deferring silence handler for', delay, 'ms')
+      this.stateMachine.startSilenceTimer(delay)
+      return
+    }
     
     // Handle silence timeout during coding approach waiting
     if (currentState === InterviewState.WAITING_FOR_APPROACH) {
@@ -2411,10 +2619,19 @@ export class InterviewOrchestrator extends EventEmitter {
           this.syncConversationHistoryFromServices()
         }
         
-        await this.speakWithPolicy(reminder, {
-          interruptible: true,
-          bargeInPolicy: 'hard'
-        })
+        if (this.shouldSkipAutoResponse('approach_silence_prompt')) {
+          this.stateMachine.startSilenceTimer(120000)
+          return
+        }
+        
+        await this.speakWithPolicy(
+          reminder,
+          {
+            interruptible: true,
+            bargeInPolicy: 'hard'
+          },
+          { kind: 'prompt', priority: 'auto', source: 'approach_silence_prompt' }
+        )
         // Restart the 2-minute timer
         this.stateMachine.startSilenceTimer(120000)
         return
@@ -2425,36 +2642,55 @@ export class InterviewOrchestrator extends EventEmitter {
         const hintLevel = (codingHintCount + 1) as 1 | 2
         console.log('🎯 [Interview] Silence detected - providing escalating hint level', hintLevel)
         
-        // Increment hint count
-        this.stateMachine.incrementCodingHintCount()
-        
-        // Provide escalating hint through code analysis service
-        const problem = this.getCurrentCodingProblem()
-        if (problem) {
-          // For approach phase, use approach hint (no code context)
-          // For monitoring phase, use regular hint (with code context)
-          const currentState = this.stateMachine.getState()
-          const isApproachPhase = currentState === InterviewState.WAITING_FOR_APPROACH
-          const hint = isApproachPhase 
-            ? await this.codeAnalysis.getApproachHint(problem, hintLevel)
-            : await this.codeAnalysis.getHint(problem, this.currentCode || this.stateMachine.getPreviousCode() || '', hintLevel)
-          // Add automatic timeout hint to conversation history with metadata
-          // Note: addHint doesn't support metadata, so we'll add it directly
-          this.codeAnalysis.addConversationMessage('assistant', hint, {
-            type: 'hint',
-            hintLevel: hintLevel,
-            // Mark as automatic timeout hint (using any to allow additional metadata)
-            isAutomatic: true,
-            source: 'timeout'
-          } as any)
-          // Sync to centralized history
-          this.syncConversationHistoryFromServices()
+        // Pause mic immediately when we decide to provide hint (before any checks)
+        this.setMicPaused(true, 'auto-hint-llm-processing')
+        this.autoHintInProgress = true
+        try {
+          // Increment hint count
+          this.stateMachine.incrementCodingHintCount()
           
-          await this.speakWithPolicy(hint, {
-            interruptible: true,
-            bargeInPolicy: 'hard'
-          })
-          this.emit('hintProvided', hint)
+          // Provide escalating hint through code analysis service
+          const problem = this.getCurrentCodingProblem()
+          if (problem) {
+            // For approach phase, use approach hint (no code context)
+            // For monitoring phase, use regular hint (with code context)
+            const currentState = this.stateMachine.getState()
+            const isApproachPhase = currentState === InterviewState.WAITING_FOR_APPROACH
+            const hint = isApproachPhase 
+              ? await this.codeAnalysis.getApproachHint(problem, hintLevel)
+              : await this.codeAnalysis.getHint(problem, this.currentCode || this.stateMachine.getPreviousCode() || '', hintLevel)
+            if (this.shouldSkipAutoResponse('silence_hint')) {
+              this.stateMachine.startSilenceTimer(120000)
+              return
+            }
+            // Add automatic timeout hint to conversation history with metadata
+            // Note: addHint doesn't support metadata, so we'll add it directly
+            this.codeAnalysis.addConversationMessage('assistant', hint, {
+              type: 'hint',
+              hintLevel: hintLevel,
+              // Mark as automatic timeout hint (using any to allow additional metadata)
+              isAutomatic: true,
+              source: 'timeout'
+            } as any)
+            // Sync to centralized history
+            this.syncConversationHistoryFromServices()
+            
+            await this.speakWithPolicy(
+              hint,
+              {
+                interruptible: true,
+                bargeInPolicy: 'hard'
+              },
+              { kind: 'hint', priority: 'auto', source: 'approach_silence_hint' }
+            )
+            this.emit('hintProvided', hint)
+          }
+        } finally {
+          this.autoHintInProgress = false
+          // Resume mic if not speaking (speakWithPolicy will handle mic during TTS)
+          if (!this.speechGate.isSpeaking()) {
+            this.setMicPaused(false, 'auto-hint-llm-processing')
+          }
         }
         
         // Restart the 2-minute timer
@@ -2480,10 +2716,19 @@ export class InterviewOrchestrator extends EventEmitter {
           this.syncConversationHistoryFromServices()
         }
         
-        await this.speakWithPolicy(moveOnPrompt, {
-          interruptible: true,
-          bargeInPolicy: 'hard'
-        })
+        if (this.shouldSkipAutoResponse('approach_move_on_prompt')) {
+          this.stateMachine.startSilenceTimer(120000)
+          return
+        }
+        
+        await this.speakWithPolicy(
+          moveOnPrompt,
+          {
+            interruptible: true,
+            bargeInPolicy: 'hard'
+          },
+          { kind: 'prompt', priority: 'auto', source: 'approach_move_on_prompt' }
+        )
         this.stateMachine.startSilenceTimer(120000)
         return
       }
@@ -2510,37 +2755,62 @@ export class InterviewOrchestrator extends EventEmitter {
             // First silence: provide a hint (automatic timeout hint)
             const hintLevel = this.stateMachine.getHintLevel()
             console.log('🎯 [Interview] First hint event (silence) - providing automatic timeout hint at level:', hintLevel)
-            const hintText = await this.llm.generateTheoreticalHint(currentQuestion, hintLevel)
+            // Pause mic immediately when we decide to provide hint (before LLM work)
+            this.setMicPaused(true, 'auto-hint-llm-processing')
+            this.autoHintInProgress = true
+            try {
+              const hintText = await this.llm.generateTheoreticalHint(currentQuestion, hintLevel)
             
-            // IMPORTANT: Add automatic timeout hint to conversation history with metadata
-            this.llm.addConversationMessage('assistant', hintText, {
-              type: 'hint',
-              questionId: currentQuestion.id,
-              hintLevel: hintLevel,
-              section: 'theoretical',
-              // Mark as automatic timeout hint (using any to allow additional metadata)
-              isAutomatic: true,
-              source: 'timeout'
-            } as any)
-            // Sync to centralized history
-            this.syncConversationHistoryFromServices()
-            
-            const result = await this.speakWithPolicy(hintText, {
-              interruptible: true,
-              bargeInPolicy: 'hard'
-            })
-            if (result.completed) {
-              this.emit('hintProvided', hintText)
-              // Increment hint level for potential subsequent hint
-              this.stateMachine.incrementHintLevel()
-              // Restart timer for potential second silence
-              this.stateMachine.startSilenceTimer(40000)
+              if (this.shouldSkipAutoResponse('theoretical_silence_hint')) {
+                this.stateMachine.startSilenceTimer(40000)
+                return
+              }
+              
+              // IMPORTANT: Add automatic timeout hint to conversation history with metadata
+              this.llm.addConversationMessage('assistant', hintText, {
+                type: 'hint',
+                questionId: currentQuestion.id,
+                hintLevel: hintLevel,
+                section: 'theoretical',
+                // Mark as automatic timeout hint (using any to allow additional metadata)
+                isAutomatic: true,
+                source: 'timeout'
+              } as any)
+              // Sync to centralized history
+              this.syncConversationHistoryFromServices()
+              
+              const result = await this.speakWithPolicy(
+                hintText,
+                {
+                  interruptible: true,
+                  bargeInPolicy: 'hard'
+                },
+                { kind: 'hint', priority: 'auto', source: 'theoretical_silence_hint' }
+              )
+              if (result.completed) {
+                this.emit('hintProvided', hintText)
+                // Increment hint level for potential subsequent hint
+                this.stateMachine.incrementHintLevel()
+                // Restart timer for potential second silence
+                this.stateMachine.startSilenceTimer(40000)
+              }
+            } finally {
+              this.autoHintInProgress = false
+              // Resume mic if not speaking (speakWithPolicy will handle mic during TTS)
+              if (!this.speechGate.isSpeaking()) {
+                this.setMicPaused(false, 'auto-hint-llm-processing')
+              }
             }
           } else {
             // Second hint-related event: provide answer and move on (no second hint)
             const answerText = currentQuestion.expectedAnswer || 'Here is the concise answer based on best practices.'
             const finalPrompt = `Here's the answer: ${answerText}. Let's move to the next question.`
             console.log('🎯 [Interview] Second hint event (silence) - providing answer and moving to next question')
+            
+            if (this.shouldSkipAutoResponse('theoretical_silence_answer')) {
+              this.stateMachine.startSilenceTimer(40000)
+              return
+            }
             
             // IMPORTANT: Record the answer in conversation history
             this.llm.addConversationMessage('assistant', finalPrompt, {
@@ -2552,10 +2822,14 @@ export class InterviewOrchestrator extends EventEmitter {
             // Sync to centralized history
             this.syncConversationHistoryFromServices()
             
-            await this.speakWithPolicy(finalPrompt, {
-              interruptible: false,
-              bargeInPolicy: 'soft'
-            })
+            await this.speakWithPolicy(
+              finalPrompt,
+              {
+                interruptible: false,
+                bargeInPolicy: 'soft'
+              },
+              { kind: 'answer', priority: 'auto', source: 'theoretical_silence_answer' }
+            )
             // Do not restart silence timer; progress to next
             await this.forceMoveToNextQuestion()
           }
@@ -2627,33 +2901,51 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private async handleHintProvision(): Promise<void> {
-    const last = this.codeAnalysis.getObservations().slice(-1)[0]
-    const problem = this.codeAnalysis.getCurrentProblem() || (this.currentSession?.codingProblems?.[0] ?? null)
-    // Only provide hints if stuck
-    if (last && problem && last.analysis.isStuck) {
-      console.log('🎯 [Interview] Providing hint - candidate is stuck')
-      const currentCode = this.currentCode || last.code || ''
-      const hintText = await this.codeAnalysis.getHint(problem, currentCode, 1) // Use level 1 hint
-      // Add automatic stuck detection hint to conversation history with metadata
-      // Note: addHint doesn't support metadata, so we'll add it directly
-      this.codeAnalysis.addConversationMessage('assistant', hintText, {
-        type: 'hint',
-        hintLevel: 1,
-        // Mark as automatic stuck detection hint (using any to allow additional metadata)
-        isAutomatic: true,
-        source: 'stuck_detection'
-      } as any)
-      // Sync to centralized history
-      this.syncConversationHistoryFromServices()
-      
-      // Coding hints are interruptible with hard stop
-      const result = await this.speakWithPolicy(hintText, {
-        interruptible: true,
-        bargeInPolicy: 'hard'
-      })
-      if (result.completed) {
-        await this.stateMachine.transition('hint_provided')
-        this.emit('hintProvided', hintText)
+    // Pause mic immediately when hint provision starts (before any checks)
+    this.setMicPaused(true, 'auto-hint-llm-processing')
+    this.autoHintInProgress = true
+    try {
+      const last = this.codeAnalysis.getObservations().slice(-1)[0]
+      const problem = this.codeAnalysis.getCurrentProblem() || (this.currentSession?.codingProblems?.[0] ?? null)
+      // Only provide hints if stuck
+      if (last && problem && last.analysis.isStuck) {
+        if (this.shouldSkipAutoResponse('analysis_observation_hint')) {
+          return
+        }
+        console.log('🎯 [Interview] Providing hint - candidate is stuck')
+        const currentCode = this.currentCode || last.code || ''
+        const hintText = await this.codeAnalysis.getHint(problem, currentCode, 1) // Use level 1 hint
+        // Add automatic stuck detection hint to conversation history with metadata
+        // Note: addHint doesn't support metadata, so we'll add it directly
+        this.codeAnalysis.addConversationMessage('assistant', hintText, {
+          type: 'hint',
+          hintLevel: 1,
+          // Mark as automatic stuck detection hint (using any to allow additional metadata)
+          isAutomatic: true,
+          source: 'stuck_detection'
+        } as any)
+        // Sync to centralized history
+        this.syncConversationHistoryFromServices()
+        
+        // Coding hints are interruptible with hard stop
+        const result = await this.speakWithPolicy(
+          hintText,
+          {
+            interruptible: true,
+            bargeInPolicy: 'hard'
+          },
+          { kind: 'hint', priority: 'auto', source: 'analysis_observation_hint' }
+        )
+        if (result.completed) {
+          await this.stateMachine.transition('hint_provided')
+          this.emit('hintProvided', hintText)
+        }
+      }
+    } finally {
+      this.autoHintInProgress = false
+      // Resume mic if not speaking (speakWithPolicy will handle mic during TTS)
+      if (!this.speechGate.isSpeaking()) {
+        this.setMicPaused(false, 'auto-hint-llm-processing')
       }
     }
   }
