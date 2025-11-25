@@ -547,12 +547,13 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         }
       } else {
         console.log('❌ [Interview] Solution needs improvement:', result.feedback)
-        // Show feedback to user - they can improve and resubmit
-        alert(result.feedback || 'Your solution needs some improvements. Please review and try again.')
+        // Feedback is already spoken by the orchestrator, no need for alert popup
+        // Just log and continue - the interview will proceed automatically
       }
     } catch (error) {
       console.error('Failed to submit solution:', error)
-      alert('Failed to submit solution. Please try again.')
+      // Don't show blocking alert - error is already logged
+      // The interview flow will handle errors gracefully
     }
   }, [])
 

@@ -489,12 +489,26 @@ export class InterviewOrchestrator extends EventEmitter {
           this.currentProblemId = problem.id
         }
         
-        // Emit to renderer first so UI updates
+        // Do minimal setup first (must be done before speaking for proper tagging)
+        this.stateMachine.resetCodingCounters()
+        this.codeAnalysis.setCurrentProblem(problem)
+        
+        // Start TTS generation immediately (don't await - let it generate in background)
+        const intro = "Here's the coding problem. You can see the details on your screen. Before you start coding, please explain your approach to solving this problem. Also feel free to ask any clarifying questions if you need to understand the requirements better. While you work through it, please plan to note the time and space complexity of your final solution as well."
+        const speakPromise = this.speakWithPolicy(intro, {
+          interruptible: false,
+          bargeInPolicy: 'soft'
+        })
+        
+        // Emit to renderer immediately (timer starts right away)
         this.emit('presentCodingProblem', problem)
         console.log('🎯 [Interview] Emitted presentCodingProblem event to renderer')
         
-        // Then speak the problem
-        await this.speakCodingProblem(problem)
+        // Sync conversation history in parallel (non-blocking)
+        this.syncConversationHistoryFromServices()
+        
+        // Wait for speech to complete
+        await speakPromise
       } else {
         console.error('❌ [Interview] No coding problem found when presenting!')
         console.error('❌ [Interview] CodeAnalysis problem:', this.codeAnalysis.getCurrentProblem()?.id)
@@ -2293,7 +2307,7 @@ export class InterviewOrchestrator extends EventEmitter {
         }
         
         // Now set to CODING_PROBLEM - this will trigger handleCodingProblem which:
-        // 1. Emits 'presentCodingProblem' event (which calls speakCodingProblem)
+        // 1. Emits 'presentCodingProblem' event (which starts speaking immediately)
         // 2. After 2s, transitions to 'ask_for_approach'
         console.log('🎯 [Interview] Setting state to CODING_PROBLEM - will present problem automatically')
         await this.stateMachine.setState(targetState)
@@ -2843,44 +2857,8 @@ export class InterviewOrchestrator extends EventEmitter {
     }
   }
 
-  private async speakCodingProblem(problem: CodingProblem): Promise<void> {
-    // Reset all coding-specific counters for new coding question
-    this.stateMachine.resetCodingCounters()
-    console.log('🎯 [Interview] ♻️ Reset coding counters for new problem')
-    
-    // IMPORTANT: Set currentProblemId BEFORE setCurrentProblem so messages are tagged correctly
-    // This ensures that when codeAnalysis.setCurrentProblem adds the intro message,
-    // it gets tagged with the correct codingProblemId
-    this.currentProblemId = problem.id
-    console.log('🎯 [Interview] Set currentProblemId to:', problem.id, 'before setting problem in codeAnalysis')
-    
-    this.codeAnalysis.setCurrentProblem(problem)
-    
-    // Sync the intro message to centralized history
-    // This ensures the intro message gets the correct codingProblemId
-    this.syncConversationHistoryFromServices()
-    
-    // Verify the intro message was added with correct problem ID
-    const introMessages = this.fullConversationHistory.filter(
-      m => m.metadata.codingProblemId === problem.id && m.metadata.type === 'question'
-    )
-    console.log('🎯 [Interview] Intro messages for problem', problem.id, ':', introMessages.length)
-    
-    // Present the problem - details are shown in editor
-    // Combine intro, approach prompt, and reminder into one statement
-    const intro = "Here's the coding problem. You can see the details on your screen. Before you start coding, please explain your approach to solving this problem. Also feel free to ask any clarifying questions if you need to understand the requirements better. While you work through it, please plan to note the time and space complexity of your final solution as well."
-    
-    await this.speakWithPolicy(intro, {
-      interruptible: false,
-      bargeInPolicy: 'soft'
-    })
-    
-    // Note: The state machine will automatically transition to CODING_APPROACH
-    // after a delay (handled in handleCodingProblem)
-  }
-
   private async askForCodingApproach(): Promise<void> {
-    // Approach prompt is now included in speakCodingProblem, so just transition
+    // Approach prompt is now included in the presentCodingProblem handler, so just transition
     // This method is kept for state machine compatibility but doesn't speak anything
     const problem = this.getCurrentCodingProblem()
     if (!problem) {

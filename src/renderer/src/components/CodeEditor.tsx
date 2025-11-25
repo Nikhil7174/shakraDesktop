@@ -441,7 +441,8 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
     // Read code directly from editor (like we always do)
     const code = monacoEditorRef.current.getValue()
     if (!code.trim()) {
-      alert('Please write some code before submitting!')
+      // Don't show blocking alert - just return silently
+      // The user can still submit empty code if they want (orchestrator will handle feedback)
       return
     }
 
@@ -460,7 +461,8 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       await onSubmit(code, timeComplexityValue, spaceComplexityValue)
     } catch (error) {
       console.error('Error submitting solution:', error)
-      alert('Failed to submit solution. Please try again.')
+      // Don't show blocking alert - error is already logged
+      // The interview flow will handle errors gracefully
     } finally {
       setIsSubmitting(false)
     }
