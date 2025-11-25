@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 import axios from 'axios'
 import http from 'http'
 import https from 'https'
+import { ConversationMessage } from '../../shared/types'
 
 export interface CodingProblem {
   id: string
@@ -86,11 +87,113 @@ export class CodeAnalysisService extends EventEmitter {
   private lastStoredCode: string = ''
   private lastStoredTime: number = 0
   private lastCodeHash: string = ''
+  // Conversation history for coding section
+  private conversationHistory: ConversationMessage[] = []
+  private hintLevel: 1 | 2 = 1
+  private finalCode?: string
+  private timeComplexity?: string
+  private spaceComplexity?: string
 
   constructor(serverUrl: string) {
     super()
     this.serverUrl = serverUrl
     this.axios = axiosInstance  // Use shared instance with connection reuse
+  }
+
+  // Helper method to add messages with metadata for coding section
+  // Made public to allow external code to add messages with custom metadata
+  addConversationMessage(
+    role: 'user' | 'assistant' | 'system',
+    content: string,
+    metadata: ConversationMessage['metadata']
+  ): void {
+    this.conversationHistory.push({
+      role,
+      content,
+      timestamp: Date.now(),
+      metadata: {
+        ...metadata,
+        section: 'coding',
+        codingProblemId: this.currentProblem?.id
+      }
+    })
+  }
+
+  // Add verbal explanation/approach from candidate
+  addVerbalExplanation(explanation: string): void {
+    this.addConversationMessage('user', explanation, {
+      type: 'answer'
+    })
+  }
+
+  // Add user's hint request to conversation history
+  addHintRequest(requestText: string): void {
+    this.addConversationMessage('user', requestText, {
+      type: 'hint'
+    })
+  }
+
+  // Add hint provided during coding
+  addHint(hintText: string, hintLevel: 1 | 2 = 1): void {
+    this.hintLevel = hintLevel
+    this.addConversationMessage('assistant', hintText, {
+      type: 'hint',
+      hintLevel
+    })
+  }
+
+  // Add user's clarification request to conversation history
+  addClarificationRequest(requestText: string): void {
+    this.addConversationMessage('user', requestText, {
+      type: 'clarification'
+    })
+  }
+
+  // Add clarification provided during coding
+  addClarification(clarificationText: string): void {
+    this.addConversationMessage('assistant', clarificationText, {
+      type: 'clarification'
+    })
+  }
+
+  // Add code analysis update
+  addCodeAnalysis(analysis: CodeAnalysis): void {
+    this.addConversationMessage('system', `Code analysis: ${analysis.progress}% progress, ${analysis.approach} approach`, {
+      type: 'code_analysis'
+    })
+  }
+
+  // Store final code submission
+  setFinalCode(code: string, timeComplexity?: string, spaceComplexity?: string): void {
+    this.finalCode = code
+    this.timeComplexity = timeComplexity
+    this.spaceComplexity = spaceComplexity
+    
+    // Add code submission to conversation history with code and complexities in metadata
+    this.addConversationMessage('user', 'Code submitted', {
+      type: 'code_submission',
+      code: code,
+      timeComplexity: timeComplexity,
+      spaceComplexity: spaceComplexity
+    } as any)
+  }
+
+  // Get conversation history for current problem
+  getConversationHistory(): ConversationMessage[] {
+    return [...this.conversationHistory]
+  }
+
+  // Get final code and complexity
+  getFinalSubmission(): {
+    code?: string
+    timeComplexity?: string
+    spaceComplexity?: string
+  } {
+    return {
+      code: this.finalCode,
+      timeComplexity: this.timeComplexity,
+      spaceComplexity: this.spaceComplexity
+    }
   }
 
   async analyzeCode(code: string, problem: CodingProblem, forceAnalysis: boolean = false): Promise<CodeAnalysis> {
@@ -148,6 +251,11 @@ export class CodeAnalysisService extends EventEmitter {
           analysis
         }
         this.observations.push(observation)
+
+        // Add to conversation history
+        if (!forceAnalysis) {
+          this.addCodeAnalysis(analysis)
+        }
 
         // Emit analysis event
         this.emit('analysisComplete', analysis)
@@ -227,10 +335,40 @@ export class CodeAnalysisService extends EventEmitter {
     }
   }
 
-  async getMonitoringHint(problem: CodingProblem, currentCode: string, hintLevel: 1 | 2 = 1): Promise<string> {
+  async getApproachHint(problem: CodingProblem, hintLevel: 1 | 2 = 1): Promise<string> {
     try {
+      // For approach phase - only send problem info, NO code at all
+      console.log(`🎯 [CodeAnalysis] Generating approach-phase hint level ${hintLevel} (no code context)`)
+      
+      const response = await this.axios.post(`${this.serverUrl}/api/llm/generate-coding-approach-hint`, {
+        problem: {
+          title: problem.title || 'Coding Problem',
+          description: problem.description,
+          constraints: problem.constraints
+        },
+        hintLevel
+      })
+
+      if (response.data.success && response.data.hint) {
+        console.log(`🎯 [CodeAnalysis] Approach-phase hint level ${hintLevel} generated:`, response.data.hint)
+        this.addHint(response.data.hint, hintLevel)
+        return response.data.hint
+      } else {
+        return this.getDefaultHint(problem, hintLevel)
+      }
+    } catch (error) {
+      console.error('Error generating approach-phase hint:', error)
+      return this.getDefaultHint(problem, hintLevel)
+    }
+  }
+
+  async getHint(problem: CodingProblem, currentCode: string, hintLevel: 1 | 2 = 1): Promise<string> {
+    try {
+      // For monitoring phase - use monitoring hint endpoint (with code context)
+      // This is used for manual hint requests during code monitoring phase
+      console.log(`🎯 [CodeAnalysis] Generating monitoring-phase hint level ${hintLevel} (with code context)`)
+      
       // First, analyze the current code to understand its state (force analysis for hints)
-      console.log(`🎯 [CodeAnalysis] Analyzing code for monitoring hint level ${hintLevel}`)
       const codeAnalysis = await this.analyzeCode(currentCode, problem, true) // Force analysis for hint generation
       
       // Check if code is complete - if so, provide encouragement instead of hint
@@ -248,7 +386,7 @@ export class CodeAnalysisService extends EventEmitter {
       
       console.log(`🎯 [CodeAnalysis] Code state - Progress: ${codeAnalysis.progress}%, Approach: ${codeAnalysis.approach}, Issues: ${codeAnalysis.issues.length}`)
       
-      // Use monitoring-specific hint endpoint
+      // Use monitoring hint endpoint (for code monitoring phase)
       const response = await this.axios.post(`${this.serverUrl}/api/llm/generate-monitoring-hint`, {
         problem: {
           title: problem.title || 'Coding Problem',
@@ -269,54 +407,8 @@ export class CodeAnalysisService extends EventEmitter {
       })
 
       if (response.data.success && response.data.hint) {
-        console.log(`🎯 [CodeAnalysis] Monitoring hint level ${hintLevel} generated:`, response.data.hint)
-        return response.data.hint
-      } else {
-        return this.getDefaultHint(problem, hintLevel)
-      }
-    } catch (error) {
-      console.error('Error generating monitoring hint:', error)
-      return this.getDefaultHint(problem, hintLevel)
-    }
-  }
-
-  async getHint(problem: CodingProblem, currentCode: string, hintLevel: 1 | 2 = 1): Promise<string> {
-    try {
-      // First, analyze the current code to understand its state (force analysis for hints)
-      console.log(`🎯 [CodeAnalysis] Analyzing current code before generating manual hint level ${hintLevel}`)
-      const codeAnalysis = await this.analyzeCode(currentCode, problem, true) // Force analysis for hint generation
-      
-      // Use stored code as previous (or starter code if none stored)
-      const previousCode = this.lastStoredCode || 
-                          (problem.starterCode || 
-                           (problem.starterCodes?.[problem.language || 'cpp']) || 
-                           '')
-      const hasChanged = this.normalizeCode(currentCode) !== this.normalizeCode(previousCode)
-      
-      console.log(`🎯 [CodeAnalysis] Code state - Progress: ${codeAnalysis.progress}%, Approach: ${codeAnalysis.approach}, Issues: ${codeAnalysis.issues.length}`)
-      
-      // Use general hint endpoint for manual requests
-      const response = await this.axios.post(`${this.serverUrl}/api/llm/generate-coding-hint`, {
-        problem: {
-          title: problem.title || 'Coding Problem',
-          description: problem.description,
-          constraints: problem.constraints
-        },
-        hintLevel,
-        currentCode,
-        previousCode: previousCode || null,
-        hasCodeChanged: hasChanged,
-        // Include code analysis for contextual hints
-        codeAnalysis: {
-          progress: codeAnalysis.progress,
-          approach: codeAnalysis.approach,
-          issues: codeAnalysis.issues,
-          codeQuality: codeAnalysis.codeQuality
-        }
-      })
-
-      if (response.data.success && response.data.hint) {
         console.log(`🎯 [CodeAnalysis] Manual hint level ${hintLevel} generated:`, response.data.hint)
+        this.addHint(response.data.hint, hintLevel)
         return response.data.hint
       } else {
         return this.getDefaultHint(problem, hintLevel)
@@ -375,7 +467,19 @@ export class CodeAnalysisService extends EventEmitter {
     this.lastStoredCode = ''
     this.lastStoredTime = 0
     this.lastCodeHash = ''
-    console.log('🎯 [CodeAnalysis] Problem set - reset stuck detection')
+    // Reset conversation history for new problem
+    this.conversationHistory = []
+    this.finalCode = undefined
+    this.timeComplexity = undefined
+    this.spaceComplexity = undefined
+    this.hintLevel = 1
+    
+    // Add problem introduction to conversation
+    this.addConversationMessage('assistant', `Let's work on: ${problem.title}. ${problem.description}`, {
+      type: 'question'
+    })
+    
+    console.log('🎯 [CodeAnalysis] Problem set - reset stuck detection and conversation history')
   }
 
   getCurrentProblem(): CodingProblem | null {
@@ -402,6 +506,11 @@ export class CodeAnalysisService extends EventEmitter {
     this.lastStoredCode = ''
     this.lastStoredTime = 0
     this.lastCodeHash = ''
+    this.conversationHistory = []
+    this.finalCode = undefined
+    this.timeComplexity = undefined
+    this.spaceComplexity = undefined
+    this.hintLevel = 1
   }
 
   // Get summary of coding session

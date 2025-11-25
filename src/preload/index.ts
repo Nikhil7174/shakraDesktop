@@ -33,7 +33,8 @@ const interviewAPI = {
   
   // Code analysis
   analyzeCode: (codeData: any) => ipcRenderer.invoke('analyze-code', codeData),
-  submitSolution: (code: string, isTimeout?: boolean) => ipcRenderer.invoke('submit-solution', code, isTimeout),
+  submitSolution: (code: string, isTimeout?: boolean, timeComplexity?: string, spaceComplexity?: string) => 
+    ipcRenderer.invoke('submit-solution', code, isTimeout, timeComplexity, spaceComplexity),
   
   // Audio permissions
   requestAudioPermissions: () => ipcRenderer.invoke('request-audio-permissions'),
@@ -45,6 +46,9 @@ const interviewAPI = {
   // Unfinished interview management
   checkUnfinishedInterview: () => ipcRenderer.invoke('check-unfinished-interview'),
   clearUnfinishedInterview: () => ipcRenderer.invoke('clear-unfinished-interview'),
+  
+  // Payload management
+  markPayloadSent: () => ipcRenderer.invoke('mark-payload-sent'),
   
   // Event listeners
   onAudioCaptureRequired: (callback: () => void) => {
@@ -88,6 +92,10 @@ const interviewAPI = {
   
   onInterviewCompleted: (callback: (results: any) => void) => {
     ipcRenderer.on('interview-completed', (_event, results) => callback(results))
+  },
+  
+  onFinalEvaluationReady: (callback: (payload: any) => void) => {
+    ipcRenderer.on('final-evaluation-ready', (_event, payload) => callback(payload))
   },
   
   onAudioData: (callback: (data: Uint8Array) => void) => {

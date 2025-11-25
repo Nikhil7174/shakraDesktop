@@ -87,7 +87,10 @@ export class STTService extends EventEmitter {
 
       // Handle partial transcripts (interim results)
       this.transcriber.on('transcript', (transcript: any) => {
-        if (!transcript.text) return
+        if (!transcript.text) {
+          console.log('🎤 [STT] Received transcript event but no text:', transcript)
+          return
+        }
         
         console.log('🎤 [STT] Partial transcript:', transcript.text)
         
@@ -103,7 +106,10 @@ export class STTService extends EventEmitter {
 
       // Handle turn events (both partial and final)
       this.transcriber.on('turn', (turn: any) => {
-        if (!turn.transcript || turn.transcript.trim().length === 0) return
+        if (!turn.transcript || turn.transcript.trim().length === 0) {
+          console.log('🎤 [STT] Turn event has no transcript text')
+          return
+        }
         
         console.log('🎤 [STT] Turn transcript:', turn.transcript, 'End of turn:', turn.end_of_turn)
         
@@ -124,7 +130,8 @@ export class STTService extends EventEmitter {
       })
 
       this.transcriber.on('error', (error: any) => {
-        console.error('🎤 [STT] Error:', error)
+        console.error('🎤 [STT] Error event:', error)
+        console.error('🎤 [STT] Error details:', JSON.stringify(error, null, 2))
         this.isConnected = false
         this.attemptReconnect()
         this.emit('error', error)
@@ -178,13 +185,17 @@ export class STTService extends EventEmitter {
 
   streamAudio(audioChunk: Buffer): void {
     if (!this.isConnected || !this.transcriber) {
-      console.warn('🎤 [STT] Not connected, dropping audio chunk')
+      console.warn('🎤 [STT] Not connected, dropping audio chunk. isConnected:', this.isConnected, 'transcriber:', !!this.transcriber)
       return
     }
 
     try {
       // Send audio directly without delay or filtering
       this.transcriber.sendAudio(audioChunk)
+      // Log occasionally to verify audio is being sent (every 50 chunks = ~2.5 seconds)
+      if (Math.random() < 0.02) {
+        console.log('🎤 [STT] Audio chunk sent, size:', audioChunk.length, 'bytes')
+      }
     } catch (error) {
       console.error('🎤 [STT] Error sending audio:', error)
       this.isConnected = false

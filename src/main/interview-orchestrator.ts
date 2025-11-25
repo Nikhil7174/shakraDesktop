@@ -4,6 +4,8 @@ import { LLMService, createLLMService, Question, Evaluation } from './services/l
 import { TTSService, createTTSService, TTSConfig } from './services/tts-service'
 import { InterviewStateMachine, InterviewState } from './services/state-machine'
 import { CodeAnalysisService, createCodeAnalysisService, CodingProblem } from './services/code-analysis-service'
+import { FinalEvaluationPayload, ConversationMessage } from '../shared/types'
+import { createFinalEvaluationPayload } from './utils/final-evaluation'
 
 // SpeechGate: Promise-based TTS wrapper for sequencing
 class SpeechGate {
@@ -102,11 +104,197 @@ export class InterviewOrchestrator extends EventEmitter {
   private suppressAutoMicResume = false
   private hadTheoreticalQuestions = false // Track if session had theoretical questions
   private currentCode: string = '' // Store latest code from editor for manual hint requests
+  // Centralized conversation history manager
+  // Maintains full conversation history throughout the interview
+  private fullConversationHistory: ConversationMessage[] = []
+  
+  // Track coding conversations per problem (for structured access)
+  private codingProblemConversations: Array<{
+    problemId: string
+    problem: CodingProblem
+    conversation: ConversationMessage[]
+    finalCode?: string
+    timeComplexity?: string
+    spaceComplexity?: string
+    codeAnalysisHistory: any[]
+    submittedAt?: Date
+    evaluation?: {
+      score: number
+      feedback: string
+      testResults?: Array<{
+        passed: boolean
+        input: string
+        expectedOutput: string
+        actualOutput: string
+      }>
+    }
+  }> = []
+  private allEvaluations: Evaluation[] = []
+  
+  // Track current problem/question for organizing conversations
+  private currentProblemId: string | null = null
+  private currentQuestionId: string | null = null
+  
+  // Track if final evaluation payload has been sent to prevent premature clearing
+  private payloadSent: boolean = false
 
   constructor() {
     super()
     this.stateMachine = new InterviewStateMachine()
     this.setupStateMachineListeners()
+  }
+
+  /**
+   * Centralized method to add messages to conversation history
+   * This maintains a single source of truth for all conversation messages
+   */
+  private addToConversationHistory(
+    role: 'user' | 'assistant' | 'system',
+    content: string,
+    metadata: ConversationMessage['metadata']
+  ): void {
+    const message: ConversationMessage = {
+      role,
+      content,
+      timestamp: Date.now(),
+      metadata: {
+        ...metadata,
+        questionId: metadata.questionId || this.currentQuestionId || undefined,
+        codingProblemId: metadata.codingProblemId || this.currentProblemId || undefined,
+        section: metadata.section || (this.currentProblemId ? 'coding' : 'theoretical')
+      }
+    }
+    
+    this.fullConversationHistory.push(message)
+    console.log(`💬 [ConversationHistory] Added ${role} message (${metadata.type || 'unknown'}), total: ${this.fullConversationHistory.length}`)
+  }
+
+  /**
+   * Get full conversation history (chronological)
+   */
+  getFullConversationHistory(): ConversationMessage[] {
+    return [...this.fullConversationHistory]
+  }
+
+  /**
+   * Get conversation history for a specific problem
+   */
+  getProblemConversationHistory(problemId: string): ConversationMessage[] {
+    return this.fullConversationHistory.filter(
+      msg => msg.metadata.codingProblemId === problemId
+    )
+  }
+
+  /**
+   * Get conversation history for a specific question
+   */
+  getQuestionConversationHistory(questionId: string): ConversationMessage[] {
+    return this.fullConversationHistory.filter(
+      msg => msg.metadata.questionId === questionId
+    )
+  }
+
+  /**
+   * Sync conversation history from services to centralized store
+   * This ensures we capture all messages even if services reset their history
+   */
+  private syncConversationHistoryFromServices(): void {
+    // Sync from LLM service (theoretical questions)
+    const llmHistory = this.llm.getConversationHistory()
+    llmHistory.forEach(msg => {
+      // Check if message already exists (by timestamp and content)
+      const exists = this.fullConversationHistory.some(
+        existing => existing.timestamp === msg.timestamp && 
+                   existing.content === msg.content &&
+                   existing.role === msg.role
+      )
+      if (!exists) {
+        this.fullConversationHistory.push(msg)
+        // Update current question ID if this is a question message
+        if (msg.metadata.questionId) {
+          this.currentQuestionId = msg.metadata.questionId
+        }
+      }
+    })
+
+    // Sync from CodeAnalysis service (coding problems)
+    const codeAnalysisHistory = this.codeAnalysis.getConversationHistory()
+    const currentProblemInCodeAnalysis = this.codeAnalysis.getCurrentProblem()
+    const finalSubmission = this.codeAnalysis.getFinalSubmission()
+    
+    codeAnalysisHistory.forEach(msg => {
+      // Check if message already exists
+      const existingIndex = this.fullConversationHistory.findIndex(
+        existing => existing.timestamp === msg.timestamp && 
+                   existing.content === msg.content &&
+                   existing.role === msg.role
+      )
+      
+      if (existingIndex === -1) {
+        // New message - add it
+        // If message doesn't have codingProblemId but we have a current problem, add it
+        if (!msg.metadata.codingProblemId && currentProblemInCodeAnalysis) {
+          console.log('🔧 [ConversationHistory] Adding missing codingProblemId to message:', msg.metadata.type, 'for problem:', currentProblemInCodeAnalysis.id)
+          msg.metadata.codingProblemId = currentProblemInCodeAnalysis.id
+        }
+        
+        // If message still doesn't have codingProblemId but we're tracking one, use that
+        if (!msg.metadata.codingProblemId && this.currentProblemId) {
+          console.log('🔧 [ConversationHistory] Using tracked currentProblemId for message:', this.currentProblemId)
+          msg.metadata.codingProblemId = this.currentProblemId
+        }
+        
+        // For code submission messages, ensure TC/SC is in metadata
+        if (msg.metadata.type === 'code_submission') {
+          const metadata = msg.metadata as any
+          // If TC/SC is missing from metadata but we have it in finalSubmission, add it
+          if (!metadata.timeComplexity && finalSubmission.timeComplexity) {
+            console.log('🔧 [ConversationHistory] Adding missing timeComplexity to code submission message')
+            metadata.timeComplexity = finalSubmission.timeComplexity
+          }
+          if (!metadata.spaceComplexity && finalSubmission.spaceComplexity) {
+            console.log('🔧 [ConversationHistory] Adding missing spaceComplexity to code submission message')
+            metadata.spaceComplexity = finalSubmission.spaceComplexity
+          }
+        }
+        
+        this.fullConversationHistory.push(msg)
+        // Update current problem ID if this is a problem message
+        if (msg.metadata.codingProblemId) {
+          this.currentProblemId = msg.metadata.codingProblemId
+        }
+      } else {
+        // Message already exists - update metadata if needed (especially for code submissions)
+        const existing = this.fullConversationHistory[existingIndex]
+        if (existing.metadata.type === 'code_submission' && msg.metadata.type === 'code_submission') {
+          const existingMetadata = existing.metadata as any
+          const newMetadata = msg.metadata as any
+          
+          // Update TC/SC if missing in existing but present in new
+          if (!existingMetadata.timeComplexity && newMetadata.timeComplexity) {
+            console.log('🔧 [ConversationHistory] Updating existing message with timeComplexity')
+            existingMetadata.timeComplexity = newMetadata.timeComplexity
+          }
+          if (!existingMetadata.spaceComplexity && newMetadata.spaceComplexity) {
+            console.log('🔧 [ConversationHistory] Updating existing message with spaceComplexity')
+            existingMetadata.spaceComplexity = newMetadata.spaceComplexity
+          }
+          
+          // Also check finalSubmission as fallback
+          if (!existingMetadata.timeComplexity && finalSubmission.timeComplexity) {
+            console.log('🔧 [ConversationHistory] Adding timeComplexity from finalSubmission to existing message')
+            existingMetadata.timeComplexity = finalSubmission.timeComplexity
+          }
+          if (!existingMetadata.spaceComplexity && finalSubmission.spaceComplexity) {
+            console.log('🔧 [ConversationHistory] Adding spaceComplexity from finalSubmission to existing message')
+            existingMetadata.spaceComplexity = finalSubmission.spaceComplexity
+          }
+        }
+      }
+    })
+
+    // Sort by timestamp to maintain chronological order
+    this.fullConversationHistory.sort((a, b) => a.timestamp - b.timestamp)
   }
 
   async initialize(config: InterviewConfig): Promise<void> {
@@ -155,12 +343,38 @@ export class InterviewOrchestrator extends EventEmitter {
       // Emit progress update when asking a NEW question (not follow-up)
       const progress = this.stateMachine.getProgress()
       this.emit('progressUpdate', progress)
+      
+      // IMPORTANT: Add question to LLM conversation history
+      this.llm.addConversationMessage('assistant', question.question, {
+        type: 'question',
+        questionId: question.id,
+        section: 'theoretical'
+      })
+      // Update current question ID
+      this.currentQuestionId = question.id
+      // Sync to centralized history
+      this.syncConversationHistoryFromServices()
+      
       await this.speakQuestion(question.question)
     })
 
     this.stateMachine.on('askFollowUp', async (followUp: string) => {
       this.emit('askFollowUp', followUp)
       console.log('🎯 [Interview] Speaking follow-up question:', followUp.substring(0, 50))
+      
+      // IMPORTANT: Add follow-up question to LLM conversation history
+      const currentQuestion = this.llm.getCurrentQuestion()
+      if (currentQuestion) {
+        // Add follow-up question as assistant message with type 'followup'
+        this.llm.addConversationMessage('assistant', followUp, {
+          type: 'followup',
+          questionId: currentQuestion.id,
+          section: 'theoretical'
+        })
+        console.log('🎯 [Interview] Added follow-up question to conversation history for question:', currentQuestion.id)
+        // Sync to centralized history
+        this.syncConversationHistoryFromServices()
+      }
       
       // Reset hint and clarification counts for the follow-up question
       // Follow-up questions should start fresh with their own counts
@@ -240,10 +454,34 @@ export class InterviewOrchestrator extends EventEmitter {
     })
 
     this.stateMachine.on('presentCodingProblem', async () => {
-      const problem = this.getCurrentCodingProblem()
+      // Get the current problem - use codeAnalysis first (most up-to-date), then fallback to session
+      let problem = this.codeAnalysis.getCurrentProblem()
+      if (!problem) {
+        console.warn('⚠️ [Interview] Problem not found in codeAnalysis, trying session...')
+        problem = this.getCurrentCodingProblem()
+      }
+      
+      console.log('🎯 [Interview] presentCodingProblem event triggered')
+      console.log('🎯 [Interview] Problem from codeAnalysis:', problem?.id, problem?.title)
+      console.log('🎯 [Interview] Current problem ID tracked:', this.currentProblemId)
+      
       if (problem) {
+        // Ensure currentProblemId matches
+        if (this.currentProblemId !== problem.id) {
+          console.log('🎯 [Interview] Updating currentProblemId to match problem:', problem.id)
+          this.currentProblemId = problem.id
+        }
+        
+        // Emit to renderer first so UI updates
         this.emit('presentCodingProblem', problem)
+        console.log('🎯 [Interview] Emitted presentCodingProblem event to renderer')
+        
+        // Then speak the problem
         await this.speakCodingProblem(problem)
+      } else {
+        console.error('❌ [Interview] No coding problem found when presenting!')
+        console.error('❌ [Interview] CodeAnalysis problem:', this.codeAnalysis.getCurrentProblem()?.id)
+        console.error('❌ [Interview] Session problems:', this.currentSession?.codingProblems?.length)
       }
     })
 
@@ -264,8 +502,8 @@ export class InterviewOrchestrator extends EventEmitter {
 
     this.stateMachine.on('codeMonitoringStarted', () => {
       console.log('🎯 [Interview] Code monitoring started - can begin coding')
-      // Start 2-minute silence timer for code monitoring phase
-      this.stateMachine.startSilenceTimer(120000) // 120 seconds = 2 minutes
+      // Start 1-minute silence timer for code monitoring phase
+      this.stateMachine.startSilenceTimer(60000) // 60 seconds = 1 minute
     })
 
     this.stateMachine.on('provideHint', () => {
@@ -396,13 +634,62 @@ export class InterviewOrchestrator extends EventEmitter {
 
   clearSession(): void {
     console.log('🎯 [Interview] Clearing session')
+    
+    // IMPORTANT: Don't clear conversations if payload hasn't been sent yet
+    // This prevents data loss if clearSession() is called prematurely
+    if (!this.payloadSent && (this.codingProblemConversations.length > 0 || this.fullConversationHistory.length > 0)) {
+      console.log('🎯 [Interview] ⚠️ Blocking session clear - payload not sent yet (coding:', this.codingProblemConversations.length, ', history:', this.fullConversationHistory.length, ')')
+      console.log('🎯 [Interview] Only clearing non-critical state, preserving conversations')
+      // Only clear non-critical state, preserve conversations
+      this.currentSession = null
+      this.stateMachine.reset()
+      this.currentProblemId = null
+      this.currentQuestionId = null
+      this.llm.reset()
+      // Stop any ongoing TTS
+      if (this.speechGate) {
+        this.speechGate.stop()
+      }
+      return // Exit early, don't clear conversations
+    }
+    
+    // If payload has been sent, safe to clear everything
     this.currentSession = null
     this.stateMachine.reset()
+    this.codingProblemConversations = []
+    this.allEvaluations = []
+    this.fullConversationHistory = []
+    this.currentProblemId = null
+    this.currentQuestionId = null
     this.llm.reset()
+    this.payloadSent = false // Reset flag for next interview
     // Stop any ongoing TTS
     if (this.speechGate) {
       this.speechGate.stop()
     }
+    console.log('🎯 [Interview] Session fully cleared (payload was sent)')
+  }
+  
+  /**
+   * Mark payload as sent - allows clearSession() to fully clear conversations
+   * This should be called from the renderer after successful submission
+   */
+  markPayloadSent(): void {
+    console.log('🎯 [Interview] Marking payload as sent - conversations can now be cleared')
+    this.payloadSent = true
+  }
+  
+  /**
+   * Clear conversation data after payload is successfully sent
+   * This should be called from the renderer after successful submission
+   * @deprecated Use markPayloadSent() instead - clearSession() will handle clearing
+   */
+  clearConversationData(): void {
+    console.log('🎯 [Interview] Clearing conversation data after payload sent')
+    this.payloadSent = true
+    this.codingProblemConversations = []
+    this.allEvaluations = []
+    this.fullConversationHistory = []
   }
 
   async startInterview(session: InterviewSession & { resumeFromIndex?: number; skipIntro?: boolean }): Promise<void> {
@@ -410,6 +697,13 @@ export class InterviewOrchestrator extends EventEmitter {
       throw new Error('Orchestrator not initialized')
     }
 
+    // Initialize conversation history for new interview
+    this.fullConversationHistory = []
+    this.codingProblemConversations = []
+    this.currentProblemId = null
+    this.currentQuestionId = null
+    this.payloadSent = false // Reset payload sent flag for new interview
+    
     this.currentSession = session
     this.llm.setQuestions(session.questions)
     this.stateMachine.setQuestions(session.questions, session.maxTheoreticalQuestions || 10)
@@ -540,6 +834,18 @@ export class InterviewOrchestrator extends EventEmitter {
       // Handle hint requests with unified escalation (combined with silence timeouts)
       if (intent.intent === 'hint_request') {
         console.log('🎯 [Interview] ✨ Handling hint request')
+        
+        // IMPORTANT: Add user's hint request to conversation history FIRST
+        const currentQuestion = this.llm.getCurrentQuestion()
+        if (currentQuestion) {
+          this.llm.addConversationMessage('user', text, {
+            type: 'hint',
+            questionId: currentQuestion.id,
+            section: 'theoretical'
+          })
+          this.syncConversationHistoryFromServices()
+        }
+        
         const hintEvents = this.stateMachine.incrementHintEventCount()
         console.log('🎯 [Interview] Combined hint event count:', hintEvents)
 
@@ -555,6 +861,17 @@ export class InterviewOrchestrator extends EventEmitter {
           console.log('🎯 [Interview] Providing hint at level:', hintLevel)
           // Use generateTheoreticalHint to respect hint level (same as silence timeout)
           const hintText = await this.llm.generateTheoreticalHint(questionForHint, hintLevel)
+          
+          // IMPORTANT: Add hint response to LLM conversation history
+          this.llm.addConversationMessage('assistant', hintText, {
+            type: 'hint',
+            questionId: questionForHint.id,
+            hintLevel: hintLevel as 1 | 2,
+            section: 'theoretical'
+          })
+          // Sync to centralized history
+          this.syncConversationHistoryFromServices()
+          
           const result = await this.speakWithPolicy(hintText, {
             interruptible: true,
             bargeInPolicy: 'hard'
@@ -588,6 +905,17 @@ export class InterviewOrchestrator extends EventEmitter {
         }
         
         console.log('🎯 [Interview] Second hint event - providing answer (isFollowUp:', isFollowUp, ')')
+        
+        // IMPORTANT: Record the answer in conversation history
+        this.llm.addConversationMessage('assistant', answerContext, {
+          type: 'answer',
+          questionId: questionForHint.id,
+          section: 'theoretical',
+          hintLevel: 2 // Second hint escalation
+        } as any)
+        // Sync to centralized history
+        this.syncConversationHistoryFromServices()
+        
         await this.speakWithPolicy(answerContext, {
           interruptible: false,
           bargeInPolicy: 'soft'
@@ -599,6 +927,18 @@ export class InterviewOrchestrator extends EventEmitter {
       // Handle clarification requests with escalation
       if (intent.intent === 'clarification_request') {
         console.log('🎯 [Interview] ❓ Handling clarification request')
+        
+        // IMPORTANT: Add user's clarification request to conversation history FIRST
+        const currentQuestion = this.llm.getCurrentQuestion()
+        if (currentQuestion) {
+          this.llm.addConversationMessage('user', text, {
+            type: 'clarification',
+            questionId: currentQuestion.id,
+            section: 'theoretical'
+          })
+          this.syncConversationHistoryFromServices()
+        }
+        
         const clarifyCount = this.stateMachine.incrementClarificationRequestCount()
         console.log('🎯 [Interview] Clarification request count:', clarifyCount)
 
@@ -640,6 +980,16 @@ export class InterviewOrchestrator extends EventEmitter {
           }
           
           console.log('🎯 [Interview] Second clarification (isFollowUp:', isFollowUp, ') - speaking answer:', finalPrompt.substring(0, 100))
+          
+          // IMPORTANT: Record the answer in conversation history
+          this.llm.addConversationMessage('assistant', finalPrompt, {
+            type: 'answer',
+            questionId: questionForAnswer.id,
+            section: 'theoretical'
+          } as any)
+          // Sync to centralized history
+          this.syncConversationHistoryFromServices()
+          
           await this.speakWithPolicy(finalPrompt, {
             interruptible: false,
             bargeInPolicy: 'soft'
@@ -663,6 +1013,17 @@ export class InterviewOrchestrator extends EventEmitter {
         })
         
         if (currentEvaluation && originalQuestion) {
+          // IMPORTANT: Add user's follow-up answer to conversation history FIRST
+          // This ensures the follow-up answer is captured before evaluation
+          this.llm.addConversationMessage('user', text, {
+            type: 'answer',
+            questionId: originalQuestion.id,
+            section: 'theoretical'
+          })
+          console.log('🎯 [Interview] Added follow-up answer to conversation history for question:', originalQuestion.id)
+          // Sync to centralized history
+          this.syncConversationHistoryFromServices()
+          
           response = await this.llm.evaluateFollowUpAnswer(
             originalQuestion,
             currentEvaluation.candidateAnswer,
@@ -698,6 +1059,18 @@ export class InterviewOrchestrator extends EventEmitter {
 
         if (chitChatCount === 2) {
           const nudge = "Let's focus on the question. Please share your answer. You can also ask for a hint, or say 'I don't know' if you're unsure."
+          
+          // IMPORTANT: Record nudge in conversation history
+          const currentQuestion = this.llm.getCurrentQuestion()
+          if (currentQuestion) {
+            this.llm.addConversationMessage('assistant', nudge, {
+              type: 'feedback',
+              questionId: currentQuestion.id,
+              section: 'theoretical'
+            } as any)
+            this.syncConversationHistoryFromServices()
+          }
+          
           await this.speakWithPolicy(nudge, {
             interruptible: true,
             bargeInPolicy: 'hard'
@@ -713,6 +1086,15 @@ export class InterviewOrchestrator extends EventEmitter {
           if (currentQuestion) {
             const answerText = currentQuestion.expectedAnswer || 'Let me provide a concise answer based on best practices.'
             const finalPrompt = `Here's a concise answer: ${answerText}. Let's move to the next question.`
+            
+            // IMPORTANT: Record the answer in conversation history
+            this.llm.addConversationMessage('assistant', finalPrompt, {
+              type: 'answer',
+              questionId: currentQuestion.id,
+              section: 'theoretical'
+            } as any)
+            this.syncConversationHistoryFromServices()
+            
             await this.speakWithPolicy(finalPrompt, {
               interruptible: false,
               bargeInPolicy: 'soft'
@@ -756,6 +1138,27 @@ export class InterviewOrchestrator extends EventEmitter {
         }
       } else if (response.action === 'hint' && response.text) {
         console.log('🎯 [Interview] 💡 Providing hint:', response.text)
+        
+        // If we're in a coding problem context, add hint to codeAnalysis conversation history
+        const currentProblem = this.getCurrentCodingProblem()
+        if (currentProblem) {
+          // IMPORTANT: Add user's hint request to conversation history FIRST
+          // The user's request text is the 'text' parameter from handleTranscript
+          // We need to add it here before adding the hint response
+          // Note: 'text' is available in the handleTranscript scope, so we can use it
+          this.codeAnalysis.addHintRequest(text) // This adds the user's request as a user message with type 'hint'
+          console.log('🎯 [Interview] Added user hint request to conversation history')
+          
+          console.log('🎯 [Interview] Adding hint to coding problem conversation history')
+          // Determine hint level (default to 1 if not specified)
+          const hintLevel = (response as any).hintLevel || 1
+          
+          // Add hint response to conversation history
+          this.codeAnalysis.addHint(response.text, hintLevel as 1 | 2)
+          // Sync to centralized history
+          this.syncConversationHistoryFromServices()
+        }
+        
         // First transition to hint handling state
         await this.stateMachine.transition('hint_requested')
         
@@ -769,6 +1172,16 @@ export class InterviewOrchestrator extends EventEmitter {
         }
       } else if (response.action === 'clarification' && response.text) {
         console.log('🎯 [Interview] ❓ Providing clarification:', response.text)
+        
+        // If we're in a coding problem context, add clarification to codeAnalysis conversation history
+        const currentProblem = this.getCurrentCodingProblem()
+        if (currentProblem) {
+          console.log('🎯 [Interview] Adding clarification to coding problem conversation history')
+          this.codeAnalysis.addClarification(response.text)
+          // Sync to centralized history
+          this.syncConversationHistoryFromServices()
+        }
+        
         // First transition to clarification handling state
         await this.stateMachine.transition('clarification_requested')
         
@@ -799,9 +1212,133 @@ export class InterviewOrchestrator extends EventEmitter {
       const currentCode = this.stateMachine.getPreviousCode()
       const isWritingCode = currentCode && currentCode.trim().length > 0
       
+      // First, detect intent to check if this is a hint/clarification request
+      // This should be done BEFORE calling evaluateApproach to properly handle hint requests
+      console.log('🎯 [Interview] Detecting intent for approach phase transcript:', text)
+      const intent = await this.llm.detectIntent(text)
+      console.log('🎯 [Interview] Detected intent during approach phase:', intent)
+      
+      // Handle hint requests during approach phase
+      if (intent.intent === 'hint_request') {
+        console.log('🎯 [Interview] ✨ Handling hint request during approach phase')
+        
+        if (!this.stateMachine.canProvideCodingHint()) {
+          console.log('🎯 [Interview] Coding hint limit reached, informing candidate')
+          const limitMessage = "I've provided the maximum number of hints. Please continue with your approach."
+          
+          // IMPORTANT: Record limit message in conversation history
+          if (problem) {
+            this.codeAnalysis.addConversationMessage('assistant', limitMessage, {
+              type: 'feedback',
+              codingProblemId: problem.id,
+              section: 'coding'
+            } as any)
+            this.syncConversationHistoryFromServices()
+          }
+          
+          await this.speakWithPolicy(limitMessage, {
+            interruptible: false,
+            bargeInPolicy: 'soft'
+          })
+          this.stateMachine.startSilenceTimer(120000)
+          return
+        }
+        
+        const hintNumber = this.stateMachine.incrementCodingHintCount()
+        const hintLevel = Math.min(hintNumber, 2) as 1 | 2
+        console.log('🎯 [Interview] Providing manual coding hint at level:', hintLevel)
+        
+        // IMPORTANT: Add user's hint request to conversation history FIRST
+        this.codeAnalysis.addHintRequest(text) // This adds the user's request as a user message with type 'hint'
+        console.log('🎯 [Interview] Added user hint request to conversation history')
+        
+        // Use approach-phase hint method (no code context) for approach phase
+        const hint = await this.codeAnalysis.getApproachHint(problem, hintLevel)
+        
+        // Add hint response to conversation history
+        this.codeAnalysis.addHint(hint, hintLevel)
+        // Sync to centralized history
+        this.syncConversationHistoryFromServices()
+        
+        const result = await this.speakWithPolicy(hint, {
+          interruptible: true,
+          bargeInPolicy: 'hard'
+        })
+        if (result.completed) {
+          this.emit('hintProvided', hint)
+          // Restart 2-minute silence timer and wait for approach again
+          this.stateMachine.startSilenceTimer(120000)
+          await this.stateMachine.transition('approach_needs_retry')
+        }
+        return
+      }
+      
+      // Handle clarification requests during approach phase
+      if (intent.intent === 'clarification_request') {
+        console.log('🎯 [Interview] ✨ Handling clarification request during approach phase')
+        
+        if (!this.stateMachine.canAskCodingClarification()) {
+          console.log('🎯 [Interview] Coding clarification limit reached')
+          const limitMessage = "I've provided the maximum number of clarifications. Please proceed with the information you have."
+          
+          // IMPORTANT: Record limit message in conversation history
+          if (problem) {
+            this.codeAnalysis.addConversationMessage('assistant', limitMessage, {
+              type: 'feedback',
+              codingProblemId: problem.id,
+              section: 'coding'
+            } as any)
+            this.syncConversationHistoryFromServices()
+          }
+          
+          await this.speakWithPolicy(limitMessage, {
+            interruptible: false,
+            bargeInPolicy: 'soft'
+          })
+          this.stateMachine.startSilenceTimer(120000)
+          return
+        }
+        
+        this.stateMachine.incrementCodingClarificationCount()
+        
+        // IMPORTANT: Add user's clarification request to conversation history FIRST
+        this.codeAnalysis.addClarificationRequest(text) // This adds the user's request as a user message with type 'clarification'
+        console.log('🎯 [Interview] Added user clarification request to conversation history')
+        
+        // Call LLM service to generate clarification
+        const clarification = await this.llm.generateCodingClarification(
+          problem,
+          text,
+          this.stateMachine.getCodingClarificationCount(),
+          currentCode
+        )
+        
+        // Add clarification response to conversation history
+        this.codeAnalysis.addClarification(clarification)
+        // Sync to centralized history
+        this.syncConversationHistoryFromServices()
+        
+        const result = await this.speakWithPolicy(clarification, {
+          interruptible: false,
+          bargeInPolicy: 'soft'
+        })
+        if (result.completed || result.softStopped) {
+          // Restart 2-minute silence timer and wait for approach again
+          this.stateMachine.startSilenceTimer(120000)
+          await this.stateMachine.transition('approach_needs_retry')
+        }
+        return
+      }
+      
+      // For other intents (answer/approach), proceed with normal approach evaluation
       // Transition to evaluating approach FIRST (before length check)
       // This allows sentiment analysis to detect hints/clarifications even for short text
       await this.stateMachine.transition('approach_provided')
+      
+      // Add verbal explanation to conversation history
+      this.codeAnalysis.addVerbalExplanation(text)
+      // Sync to centralized history
+      this.syncConversationHistoryFromServices()
       
       // Evaluate the approach with current code
       try {
@@ -819,7 +1356,16 @@ export class InterviewOrchestrator extends EventEmitter {
           
           // Always respond to clarifications/hints, even if short
           if (response.isClarification) {
+            // IMPORTANT: Add user's clarification request to conversation history FIRST
+            this.codeAnalysis.addClarificationRequest(text) // This adds the user's request as a user message with type 'clarification'
+            console.log('🎯 [Interview] Added user clarification request to conversation history')
+            
             const clarification = response.clarification || response.feedback || "Let me clarify that for you."
+            // Add clarification response to conversation history
+            this.codeAnalysis.addClarification(clarification)
+            // Sync to centralized history
+            this.syncConversationHistoryFromServices()
+            
             await this.speakWithPolicy(clarification, {
               interruptible: true,
               bargeInPolicy: 'hard'
@@ -867,7 +1413,16 @@ export class InterviewOrchestrator extends EventEmitter {
           
           // Always respond to clarifications/hints, even if short
           if (response.isClarification) {
+            // IMPORTANT: Add user's clarification request to conversation history FIRST
+            this.codeAnalysis.addClarificationRequest(text) // This adds the user's request as a user message with type 'clarification'
+            console.log('🎯 [Interview] Added user clarification request to conversation history')
+            
             const clarification = response.clarification || response.feedback || "Let me clarify that for you."
+            // Add clarification response to conversation history
+            this.codeAnalysis.addClarification(clarification)
+            // Sync to centralized history
+            this.syncConversationHistoryFromServices()
+            
             const result = await this.speakWithPolicy(clarification, {
               interruptible: false,
               bargeInPolicy: 'soft'
@@ -938,6 +1493,18 @@ export class InterviewOrchestrator extends EventEmitter {
               // First time asking - can ask once
               this.stateMachine.incrementApproachPromptCount()
               const acknowledgement = "I'd like to hear your approach to solving this problem. How do you plan to tackle it?"
+              
+              // IMPORTANT: Record approach prompt in conversation history
+              const problem = this.getCurrentCodingProblem()
+              if (problem) {
+                this.codeAnalysis.addConversationMessage('assistant', acknowledgement, {
+                  type: 'feedback',
+                  codingProblemId: problem.id,
+                  section: 'coding'
+                } as any)
+                this.syncConversationHistoryFromServices()
+              }
+              
               const result = await this.speakWithPolicy(acknowledgement, {
                 interruptible: false,
                 bargeInPolicy: 'soft'
@@ -959,6 +1526,18 @@ export class InterviewOrchestrator extends EventEmitter {
         console.error('🎯 [Interview] Error evaluating approach:', error)
         // Fallback - accept and move forward
         const feedback = "I understand. Let's proceed with the implementation."
+        
+        // IMPORTANT: Record fallback feedback in conversation history
+        const problem = this.getCurrentCodingProblem()
+        if (problem) {
+          this.codeAnalysis.addConversationMessage('assistant', feedback, {
+            type: 'feedback',
+            codingProblemId: problem.id,
+            section: 'coding'
+          } as any)
+          this.syncConversationHistoryFromServices()
+        }
+        
         const result = await this.speakWithPolicy(feedback, {
           interruptible: false,
           bargeInPolicy: 'soft'
@@ -982,10 +1561,23 @@ export class InterviewOrchestrator extends EventEmitter {
         
         if (!this.stateMachine.canProvideCodingHint()) {
           console.log('🎯 [Interview] Coding hint limit reached, informing candidate')
-          await this.speakWithPolicy(
-            "I've provided the maximum number of hints. Please continue with your implementation.",
-            { interruptible: false, bargeInPolicy: 'soft' }
-          )
+          const limitMessage = "I've provided the maximum number of hints. Please continue with your implementation."
+          
+          // IMPORTANT: Record limit message in conversation history
+          const problem = this.getCurrentCodingProblem()
+          if (problem) {
+            this.codeAnalysis.addConversationMessage('assistant', limitMessage, {
+              type: 'feedback',
+              codingProblemId: problem.id,
+              section: 'coding'
+            } as any)
+            this.syncConversationHistoryFromServices()
+          }
+          
+          await this.speakWithPolicy(limitMessage, {
+            interruptible: false,
+            bargeInPolicy: 'soft'
+          })
           this.stateMachine.startSilenceTimer(120000)
           return
         }
@@ -1001,10 +1593,18 @@ export class InterviewOrchestrator extends EventEmitter {
         const hintLevel = Math.min(hintNumber, 2) as 1 | 2
         console.log('🎯 [Interview] Providing manual coding hint at level:', hintLevel)
         
+        // IMPORTANT: Add user's hint request to conversation history FIRST
+        this.codeAnalysis.addHintRequest(text) // This adds the user's request as a user message with type 'hint'
+        console.log('🎯 [Interview] Added user hint request to conversation history')
+        
         // Get current code from stored value (latest from editor) or fallback
         const currentCode = this.currentCode || this.stateMachine.getPreviousCode() || ''
         console.log(`🎯 [Interview] Using current code for manual hint (length: ${currentCode.length})`)
         const hintText = await this.codeAnalysis.getHint(problem, currentCode, hintLevel)
+        // Add hint response to conversation history
+        this.codeAnalysis.addHint(hintText, hintLevel)
+        // Sync to centralized history
+        this.syncConversationHistoryFromServices()
         
         const result = await this.speakWithPolicy(hintText, {
           interruptible: true,
@@ -1025,10 +1625,23 @@ export class InterviewOrchestrator extends EventEmitter {
         
         if (!this.stateMachine.canAskCodingClarification()) {
           console.log('🎯 [Interview] Coding clarification limit reached')
-          await this.speakWithPolicy(
-            "I've provided the maximum number of clarifications. Please proceed with the information you have.",
-            { interruptible: false, bargeInPolicy: 'soft' }
-          )
+          const limitMessage = "I've provided the maximum number of clarifications. Please proceed with the information you have."
+          
+          // IMPORTANT: Record limit message in conversation history
+          const problem = this.getCurrentCodingProblem()
+          if (problem) {
+            this.codeAnalysis.addConversationMessage('assistant', limitMessage, {
+              type: 'feedback',
+              codingProblemId: problem.id,
+              section: 'coding'
+            } as any)
+            this.syncConversationHistoryFromServices()
+          }
+          
+          await this.speakWithPolicy(limitMessage, {
+            interruptible: false,
+            bargeInPolicy: 'soft'
+          })
           this.stateMachine.startSilenceTimer(120000)
           return
         }
@@ -1042,6 +1655,10 @@ export class InterviewOrchestrator extends EventEmitter {
         
         this.stateMachine.incrementCodingClarificationCount()
         
+        // IMPORTANT: Add user's clarification request to conversation history FIRST
+        this.codeAnalysis.addClarificationRequest(text) // This adds the user's request as a user message with type 'clarification'
+        console.log('🎯 [Interview] Added user clarification request to conversation history')
+        
         // Get current code from state machine or use empty string
         const currentCode = this.stateMachine.getPreviousCode() || ''
         
@@ -1052,6 +1669,11 @@ export class InterviewOrchestrator extends EventEmitter {
           this.stateMachine.getCodingClarificationCount(),
           currentCode
         )
+        
+        // Add clarification response to conversation history
+        this.codeAnalysis.addClarification(clarification)
+        // Sync to centralized history
+        this.syncConversationHistoryFromServices()
         
         await this.speakWithPolicy(clarification, {
           interruptible: true,
@@ -1066,8 +1688,29 @@ export class InterviewOrchestrator extends EventEmitter {
       const trimmed = text.trim()
       if (trimmed.length < 80) {
         console.log('🎯 [Interview] Short utterance during coding (< 80 chars) - no acknowledgement')
+        // IMPORTANT: Still record short utterances in conversation history
+        const problem = this.getCurrentCodingProblem()
+        if (problem) {
+          this.codeAnalysis.addConversationMessage('user', text, {
+            type: 'answer',
+            codingProblemId: problem.id,
+            section: 'coding'
+          })
+          this.syncConversationHistoryFromServices()
+        }
         this.stateMachine.startSilenceTimer(120000)
         return
+      }
+
+      // IMPORTANT: Record user's speech in conversation history
+      const problem = this.getCurrentCodingProblem()
+      if (problem) {
+        this.codeAnalysis.addConversationMessage('user', text, {
+          type: 'answer',
+          codingProblemId: problem.id,
+          section: 'coding'
+        })
+        this.syncConversationHistoryFromServices()
       }
 
       const acknowledgement = "I understand. Keep working on your solution."
@@ -1090,6 +1733,9 @@ export class InterviewOrchestrator extends EventEmitter {
       if (currentStateBeforeEval === InterviewState.WAITING_FOR_ANSWER) {
         await this.stateMachine.transition('candidate_finished_speaking')
       }
+      
+      // Track evaluation for final payload
+      this.allEvaluations.push(evaluation)
       
       // Add evaluation to state machine
       this.stateMachine.addEvaluation(evaluation)
@@ -1230,31 +1876,22 @@ export class InterviewOrchestrator extends EventEmitter {
         throw new Error('No coding problem context')
       }
 
-      // Check if code is meaningful (not just starter code or empty)
-      const starterCode = problem.starterCode || (problem.starterCodes?.[problem.language || 'cpp']) || ''
-      const normalizedCode = codeData.code?.trim().replace(/\s+/g, '')
-      const normalizedStarter = starterCode.trim().replace(/\s+/g, '')
-      const hasMeaningfulCode = normalizedCode.length > 0 && normalizedCode !== normalizedStarter && normalizedCode.length > 50
-      
-      // If no meaningful code, skip LLM and return minimal analysis
-      if (!codeData.code || codeData.code.trim().length === 0 || !hasMeaningfulCode) {
-        console.log('🎯 [Interview] No meaningful code written yet, skipping analysis')
-        return {
-          progress: 0,
-          approach: 'incomplete' as const,
-          isStuck: false,
-          issues: ['No meaningful code written yet'],
-          codeQuality: 'poor' as const,
-          testable: false
-        }
-      }
-
-      // Simple 60-second check: analyzeCode will only call LLM every 60 seconds
-      // and compare current code with stored code from 60s ago
-      console.log('🎯 [Interview] Requesting code analysis')
-      const analysis = await this.codeAnalysis.analyzeCode(codeData.code, problem)
+      // Always analyze code regardless of whether it's meaningful or not
+      // The 60-second timer from frontend ensures we check every 60 seconds
+      console.log('🎯 [Interview] Requesting code analysis (code length:', codeData.code?.length || 0, ')')
+      const analysis = await this.codeAnalysis.analyzeCode(codeData.code || '', problem)
 
       // Only provide hints if LLM detected stuck (LLM is only called every 60s, so if isStuck is true, 60s have passed)
+      // IMPORTANT: Only provide automatic hints when actually in MONITORING_CODE state
+      // Don't provide hints during approach phase (WAITING_FOR_APPROACH, CODING_APPROACH, etc.)
+      const currentState = this.stateMachine.getState()
+      const isMonitoringCode = currentState === InterviewState.MONITORING_CODE
+      
+      if (!isMonitoringCode) {
+        console.log(`🎯 [Interview] Skipping automatic hint - not in MONITORING_CODE state (current: ${currentState})`)
+        return analysis
+      }
+
       const shouldProvideHint = analysis.isStuck
       
       console.log(`🎯 [Interview] Stuck check - LLM isStuck: ${analysis.isStuck}, Progress: ${analysis.progress}%, Should hint: ${shouldProvideHint}`)
@@ -1266,7 +1903,12 @@ export class InterviewOrchestrator extends EventEmitter {
           console.log(`🎯 [Interview] Candidate stuck (detected by LLM after 60s), providing monitoring hint`)
           const hintNumber = this.stateMachine.incrementCodingHintCount()
           const hintLevel = Math.min(hintNumber, 2) as 1 | 2
-          const hintText = await this.codeAnalysis.getMonitoringHint(problem, codeData.code, hintLevel)
+          const hintText = await this.codeAnalysis.getHint(problem, codeData.code, hintLevel)
+          // Add hint to conversation history
+          this.codeAnalysis.addHint(hintText, hintLevel)
+          // Sync to centralized history
+          this.syncConversationHistoryFromServices()
+          
           const result = await this.speakWithPolicy(hintText, {
             interruptible: true,
             bargeInPolicy: 'hard'
@@ -1285,10 +1927,18 @@ export class InterviewOrchestrator extends EventEmitter {
     }
   }
 
-  async submitCodingSolution(code: string, isTimeout: boolean = false): Promise<{success: boolean, feedback: string, hasNextProblem: boolean}> {
+  async submitCodingSolution(
+    code: string,
+    isTimeout: boolean = false,
+    timeComplexity?: string,
+    spaceComplexity?: string
+  ): Promise<{success: boolean, feedback: string, hasNextProblem: boolean}> {
     if (!this.currentSession) {
       throw new Error('No active interview session')
     }
+
+    const currentState = this.stateMachine.getState()
+    console.log('🎯 [Interview] submitCodingSolution called, current state:', currentState)
 
     try {
       const problem = this.codeAnalysis.getCurrentProblem()
@@ -1297,9 +1947,45 @@ export class InterviewOrchestrator extends EventEmitter {
       }
 
       console.log('🎯 [Interview] 📝 Candidate submitted solution for:', problem.title, isTimeout ? '(timeout)' : '')
+      console.log('🎯 [Interview] 📊 TC/SC received:', {
+        timeComplexity: timeComplexity || 'NOT PROVIDED',
+        spaceComplexity: spaceComplexity || 'NOT PROVIDED',
+        timeComplexityType: typeof timeComplexity,
+        spaceComplexityType: typeof spaceComplexity,
+        timeComplexityLength: timeComplexity?.length || 0,
+        spaceComplexityLength: spaceComplexity?.length || 0
+      })
+
+      // Store final code and complexity in CodeAnalysisService
+      this.codeAnalysis.setFinalCode(code, timeComplexity, spaceComplexity)
+      
+      // Verify what was stored
+      const storedSubmission = this.codeAnalysis.getFinalSubmission()
+      console.log('🎯 [Interview] 📊 TC/SC stored in service:', {
+        timeComplexity: storedSubmission.timeComplexity || 'NOT STORED',
+        spaceComplexity: storedSubmission.spaceComplexity || 'NOT STORED'
+      })
+      
+      // Sync to centralized history
+      this.syncConversationHistoryFromServices()
+      
+      // Check if message was created with TC/SC
+      const codeAnalysisHistory = this.codeAnalysis.getConversationHistory()
+      const codeSubmissionMsg = codeAnalysisHistory.find(msg => msg.metadata.type === 'code_submission')
+      if (codeSubmissionMsg) {
+        const metadata = codeSubmissionMsg.metadata as any
+        console.log('🎯 [Interview] 📊 Code submission message metadata:', {
+          hasTimeComplexity: !!metadata.timeComplexity,
+          hasSpaceComplexity: !!metadata.spaceComplexity,
+          timeComplexity: metadata.timeComplexity || 'MISSING',
+          spaceComplexity: metadata.spaceComplexity || 'MISSING'
+        })
+      }
 
       // Analyze the submitted code
       const analysis = await this.codeAnalysis.analyzeCode(code, problem)
+      // Sync again after analysis (analysis adds a message)
+      this.syncConversationHistoryFromServices()
       
       console.log('🎯 [Interview] Code analysis result:', {
         progress: analysis.progress,
@@ -1344,10 +2030,15 @@ export class InterviewOrchestrator extends EventEmitter {
       const codingProblems = this.currentSession.codingProblems || []
       const currentProblemIndex = codingProblems.findIndex(p => p.id === problem.id)
       const hasNextProblem = currentProblemIndex >= 0 && currentProblemIndex < codingProblems.length - 1
+      console.log('🎯 [Interview] Checking for next problem:')
+      console.log('🎯 [Interview]   Current problem index:', currentProblemIndex)
+      console.log('🎯 [Interview]   Total problems:', codingProblems.length)
+      console.log('🎯 [Interview]   Has next problem:', hasNextProblem)
 
       if (hasNextProblem) {
         const nextProblem = codingProblems[currentProblemIndex + 1]
         console.log('🎯 [Interview] Moving to next coding problem:', nextProblem.title)
+        console.log('🎯 [Interview] Current problem being stored:', problem.title, 'ID:', problem.id)
 
         // Skip "thanks for submitting" message for timeout
         if (!isTimeout) {
@@ -1359,8 +2050,124 @@ export class InterviewOrchestrator extends EventEmitter {
         }
 
         this.stateMachine.clearSilenceTimer()
+        
+        // Sync conversation history from services before storing
+        // IMPORTANT: Do this BEFORE we set the next problem, otherwise codeAnalysis history gets cleared
+        console.log('🎯 [Interview] Syncing conversation history before storing problem:', problem.id)
+        this.syncConversationHistoryFromServices()
+        
+        // Log centralized history state before filtering
+        console.log('🎯 [Interview] Full centralized history before filtering:', this.fullConversationHistory.length, 'messages')
+        console.log('🎯 [Interview] Messages with codingProblemId:', this.fullConversationHistory.filter(m => m.metadata.codingProblemId).length)
+        console.log('🎯 [Interview] Messages for problem', problem.id, ':', this.fullConversationHistory.filter(m => m.metadata.codingProblemId === problem.id).length)
+        
+        // Store coding conversation for current problem before moving to next
+        // Use centralized conversation history instead of codeAnalysis history
+        const problemConversationHistory = this.getProblemConversationHistory(problem.id)
+        console.log('🎯 [Interview] Storing conversation for problem:', problem.id, problem.title)
+        console.log('🎯 [Interview] Conversation history from centralized store:', problemConversationHistory.length)
+        console.log('🎯 [Interview] Existing conversations before storing:', this.codingProblemConversations.length)
+        
+        // Log what messages we're storing
+        if (problemConversationHistory.length > 0) {
+          console.log('🎯 [Interview] Messages being stored:')
+          problemConversationHistory.forEach((msg, idx) => {
+            const metadata = msg.metadata as any
+            let logLine = `  [${idx + 1}] ${msg.role} (${msg.metadata.type}) - ${msg.content.substring(0, 60)}...`
+            if (msg.metadata.type === 'code_submission') {
+              if (metadata.timeComplexity || metadata.spaceComplexity) {
+                logLine += ` [TC: ${metadata.timeComplexity || 'N/A'}, SC: ${metadata.spaceComplexity || 'N/A'}]`
+              } else {
+                logLine += ` [TC/SC: MISSING in metadata]`
+              }
+            }
+            console.log(logLine)
+          })
+        } else {
+          console.warn('⚠️ [Interview] WARNING: No conversation history found for problem:', problem.id)
+          console.warn('⚠️ [Interview] This might mean messages were not properly tagged with codingProblemId')
+        }
+        
+        const finalSubmission = this.codeAnalysis.getFinalSubmission()
+        console.log('🎯 [Interview] Final submission TC/SC:', {
+          timeComplexity: finalSubmission.timeComplexity || 'NOT SET',
+          spaceComplexity: finalSubmission.spaceComplexity || 'NOT SET'
+        })
+        
+        // Ensure code submission message in conversation has TC/SC if we have it
+        const codeSubmissionMsg = problemConversationHistory.find(
+          msg => msg.metadata.type === 'code_submission'
+        )
+        if (codeSubmissionMsg) {
+          const metadata = codeSubmissionMsg.metadata as any
+          if (!metadata.timeComplexity && finalSubmission.timeComplexity) {
+            console.log('🔧 [Interview] Adding TC/SC to code submission message in conversation')
+            metadata.timeComplexity = finalSubmission.timeComplexity
+          }
+          if (!metadata.spaceComplexity && finalSubmission.spaceComplexity) {
+            metadata.spaceComplexity = finalSubmission.spaceComplexity
+          }
+        }
+        
+        const problemConversation = {
+          problemId: problem.id,
+          problem,
+          conversation: problemConversationHistory, // Use centralized history
+          finalCode: finalSubmission.code,
+          timeComplexity: finalSubmission.timeComplexity,
+          spaceComplexity: finalSubmission.spaceComplexity,
+          codeAnalysisHistory: this.codeAnalysis.getObservations().map(obs => obs.analysis),
+          submittedAt: new Date(),
+          evaluation: {
+            score: analysis.progress,
+            feedback,
+            testResults: [] // TODO: Add test results if available
+          }
+        }
+        this.codingProblemConversations.push(problemConversation)
+        console.log('🎯 [Interview] ✅ Stored conversation for problem:', problem.id, 'Title:', problem.title)
+        console.log('🎯 [Interview] Total conversations after storing:', this.codingProblemConversations.length)
+        console.log('🎯 [Interview] Stored conversation has', problemConversation.conversation.length, 'messages')
+        
+        // Set the next problem and reset code analysis for it
+        console.log('🎯 [Interview] Moving to next problem:', nextProblem.id, nextProblem.title)
+        this.currentProblemId = nextProblem.id // Update current problem ID for conversation tracking
+        
+        // Verify the problem is set correctly
+        console.log('🎯 [Interview] Setting problem in code analysis...')
         this.codeAnalysis.setCurrentProblem(nextProblem)
-        await this.stateMachine.setState(InterviewState.CODING_PROBLEM)
+        
+        // Verify problem was set
+        const verifyProblem = this.codeAnalysis.getCurrentProblem()
+        console.log('🎯 [Interview] Problem verification - ID:', verifyProblem?.id, 'Title:', verifyProblem?.title)
+        if (!verifyProblem || verifyProblem.id !== nextProblem.id) {
+          console.error('❌ [Interview] Problem not set correctly! Expected:', nextProblem.id, 'Got:', verifyProblem?.id)
+        }
+        
+        // Clear any existing timers
+        this.stateMachine.clearSilenceTimer()
+        
+        // Transition to CODING_PROBLEM state (this will trigger handleCodingProblem which presents the problem)
+        // We need to force a state change to trigger the handler, so transition to a temporary state first if needed
+        const targetState = InterviewState.CODING_PROBLEM
+        if (currentState === targetState) {
+          // If already in CODING_PROBLEM, temporarily transition away then back to trigger handler
+          console.log('🎯 [Interview] Already in CODING_PROBLEM, forcing state reset')
+          await this.stateMachine.setState(InterviewState.IDLE)
+          await new Promise(resolve => setTimeout(resolve, 100)) // Small delay
+        }
+        
+        // Now set to CODING_PROBLEM - this will trigger handleCodingProblem which:
+        // 1. Emits 'presentCodingProblem' event (which calls speakCodingProblem)
+        // 2. After 2s, transitions to 'ask_for_approach'
+        console.log('🎯 [Interview] Setting state to CODING_PROBLEM - will present problem automatically')
+        await this.stateMachine.setState(targetState)
+        
+        // Verify problem is still set after state change
+        const verifyAfterState = this.codeAnalysis.getCurrentProblem()
+        console.log('🎯 [Interview] Problem after state change - ID:', verifyAfterState?.id, 'Title:', verifyAfterState?.title)
+        console.log('🎯 [Interview] State set to CODING_PROBLEM, problem will be presented and approach asked shortly')
+        
         return {
           success: analysis.progress >= 70,
           feedback,
@@ -1369,8 +2176,133 @@ export class InterviewOrchestrator extends EventEmitter {
       }
 
       console.log('🎯 [Interview] All coding problems completed')
+      console.log('🎯 [Interview] Current state before transition:', this.stateMachine.getState())
+      console.log('🎯 [Interview] Storing final coding problem conversation')
+      console.log('🎯 [Interview] Current problem ID:', problem.id)
+      console.log('🎯 [Interview] Existing conversations count:', this.codingProblemConversations.length)
+      
       this.stateMachine.clearSilenceTimer()
-      await this.stateMachine.transition('solution_complete')
+      
+      // Check if this problem's conversation is already stored
+      const existingIndex = this.codingProblemConversations.findIndex(
+        c => c.problemId === problem.id
+      )
+      
+      if (existingIndex !== -1) {
+        console.log('🎯 [Interview] Problem conversation already exists at index:', existingIndex)
+        // Sync conversation history from services before updating
+        this.syncConversationHistoryFromServices()
+        
+        // Update the existing conversation with final submission
+        const finalSubmission = this.codeAnalysis.getFinalSubmission()
+        console.log('🎯 [Interview] Final submission TC/SC:', {
+          timeComplexity: finalSubmission.timeComplexity || 'NOT SET',
+          spaceComplexity: finalSubmission.spaceComplexity || 'NOT SET'
+        })
+        
+        // Get updated conversation history
+        const problemConversationHistory = this.getProblemConversationHistory(problem.id)
+        
+        // Ensure code submission message in conversation has TC/SC if we have it
+        const codeSubmissionMsg = problemConversationHistory.find(
+          msg => msg.metadata.type === 'code_submission'
+        )
+        if (codeSubmissionMsg) {
+          const metadata = codeSubmissionMsg.metadata as any
+          if (!metadata.timeComplexity && finalSubmission.timeComplexity) {
+            console.log('🔧 [Interview] Adding TC/SC to code submission message in existing conversation')
+            metadata.timeComplexity = finalSubmission.timeComplexity
+          }
+          if (!metadata.spaceComplexity && finalSubmission.spaceComplexity) {
+            metadata.spaceComplexity = finalSubmission.spaceComplexity
+          }
+        }
+        
+        this.codingProblemConversations[existingIndex] = {
+          ...this.codingProblemConversations[existingIndex],
+          conversation: problemConversationHistory, // Update with latest history
+          finalCode: finalSubmission.code,
+          timeComplexity: finalSubmission.timeComplexity,
+          spaceComplexity: finalSubmission.spaceComplexity,
+          codeAnalysisHistory: this.codeAnalysis.getObservations().map(obs => obs.analysis),
+          submittedAt: new Date(),
+          evaluation: {
+            score: analysis.progress,
+            feedback,
+            testResults: []
+          }
+        }
+        console.log('🎯 [Interview] Updated existing conversation with final submission')
+      } else {
+        console.log('🎯 [Interview] Storing new problem conversation')
+        // Sync conversation history from services before storing
+        this.syncConversationHistoryFromServices()
+        
+        // Store coding conversation for this problem using centralized history
+        const problemConversationHistory = this.getProblemConversationHistory(problem.id)
+        console.log('🎯 [Interview] Problem conversation history from centralized store:', problemConversationHistory.length)
+        
+        const finalSubmission = this.codeAnalysis.getFinalSubmission()
+        console.log('🎯 [Interview] Final submission TC/SC:', {
+          timeComplexity: finalSubmission.timeComplexity || 'NOT SET',
+          spaceComplexity: finalSubmission.spaceComplexity || 'NOT SET'
+        })
+        
+        // Ensure code submission message in conversation has TC/SC if we have it
+        const codeSubmissionMsg = problemConversationHistory.find(
+          msg => msg.metadata.type === 'code_submission'
+        )
+        if (codeSubmissionMsg) {
+          const metadata = codeSubmissionMsg.metadata as any
+          if (!metadata.timeComplexity && finalSubmission.timeComplexity) {
+            console.log('🔧 [Interview] Adding TC/SC to code submission message in conversation')
+            metadata.timeComplexity = finalSubmission.timeComplexity
+          }
+          if (!metadata.spaceComplexity && finalSubmission.spaceComplexity) {
+            metadata.spaceComplexity = finalSubmission.spaceComplexity
+          }
+        }
+        
+        const problemConversation = {
+          problemId: problem.id,
+          problem,
+          conversation: problemConversationHistory, // Use centralized history
+          finalCode: finalSubmission.code,
+          timeComplexity: finalSubmission.timeComplexity,
+          spaceComplexity: finalSubmission.spaceComplexity,
+          codeAnalysisHistory: this.codeAnalysis.getObservations().map(obs => obs.analysis),
+          submittedAt: new Date(),
+          evaluation: {
+            score: analysis.progress,
+            feedback,
+            testResults: [] // TODO: Add test results if available
+          }
+        }
+        this.codingProblemConversations.push(problemConversation)
+        console.log('🎯 [Interview] Stored problem conversation, total conversations:', this.codingProblemConversations.length)
+      }
+      
+      console.log('🎯 [Interview] Transitioning to solution_complete (should move to WRAP_UP)')
+      
+      // Check if we can transition from current state
+      const stateBeforeTransition = this.stateMachine.getState()
+      console.log('🎯 [Interview] Attempting transition from state:', stateBeforeTransition)
+      
+      // If we're not in MONITORING_CODE, we might need to set it first
+      if (stateBeforeTransition !== InterviewState.MONITORING_CODE) {
+        console.log('🎯 [Interview] Not in MONITORING_CODE, setting state first')
+        await this.stateMachine.setState(InterviewState.MONITORING_CODE)
+        await new Promise(resolve => setTimeout(resolve, 100)) // Small delay
+      }
+      
+      const transitionResult = await this.stateMachine.transition('solution_complete')
+      console.log('🎯 [Interview] Transition result:', transitionResult)
+      console.log('🎯 [Interview] State after transition:', this.stateMachine.getState())
+      
+      if (!transitionResult) {
+        console.error('❌ [Interview] Failed to transition to WRAP_UP, forcing state change')
+        await this.stateMachine.setState(InterviewState.WRAP_UP)
+      }
 
       return {
         success: analysis.progress >= 70,
@@ -1467,6 +2399,18 @@ export class InterviewOrchestrator extends EventEmitter {
         console.log('🎯 [Interview] First silence - prompting for approach (1 time only)')
         
         const reminder = "Please explain your approach to solving this problem, or feel free to ask any clarifying questions."
+        
+        // IMPORTANT: Record approach reminder in conversation history
+        const problem = this.getCurrentCodingProblem()
+        if (problem) {
+          this.codeAnalysis.addConversationMessage('assistant', reminder, {
+            type: 'feedback',
+            codingProblemId: problem.id,
+            section: 'coding'
+          } as any)
+          this.syncConversationHistoryFromServices()
+        }
+        
         await this.speakWithPolicy(reminder, {
           interruptible: true,
           bargeInPolicy: 'hard'
@@ -1487,8 +2431,25 @@ export class InterviewOrchestrator extends EventEmitter {
         // Provide escalating hint through code analysis service
         const problem = this.getCurrentCodingProblem()
         if (problem) {
-          const currentCode = this.currentCode || this.stateMachine.getPreviousCode() || ''
-          const hint = await this.codeAnalysis.getHint(problem, currentCode, hintLevel)
+          // For approach phase, use approach hint (no code context)
+          // For monitoring phase, use regular hint (with code context)
+          const currentState = this.stateMachine.getState()
+          const isApproachPhase = currentState === InterviewState.WAITING_FOR_APPROACH
+          const hint = isApproachPhase 
+            ? await this.codeAnalysis.getApproachHint(problem, hintLevel)
+            : await this.codeAnalysis.getHint(problem, this.currentCode || this.stateMachine.getPreviousCode() || '', hintLevel)
+          // Add automatic timeout hint to conversation history with metadata
+          // Note: addHint doesn't support metadata, so we'll add it directly
+          this.codeAnalysis.addConversationMessage('assistant', hint, {
+            type: 'hint',
+            hintLevel: hintLevel,
+            // Mark as automatic timeout hint (using any to allow additional metadata)
+            isAutomatic: true,
+            source: 'timeout'
+          } as any)
+          // Sync to centralized history
+          this.syncConversationHistoryFromServices()
+          
           await this.speakWithPolicy(hint, {
             interruptible: true,
             bargeInPolicy: 'hard'
@@ -1506,13 +2467,23 @@ export class InterviewOrchestrator extends EventEmitter {
         console.log('🎯 [Interview] Hints exhausted, asking if want to move on')
         this.stateMachine.setCodingMoveOnPromptGiven(true)
         
-        await this.speakWithPolicy(
-          "Would you like to move on to the next question?",
-          {
-            interruptible: true,
-            bargeInPolicy: 'hard'
-          }
-        )
+        const moveOnPrompt = "Would you like to move on to the next question?"
+        
+        // IMPORTANT: Record move-on prompt in conversation history
+        const problem = this.getCurrentCodingProblem()
+        if (problem) {
+          this.codeAnalysis.addConversationMessage('assistant', moveOnPrompt, {
+            type: 'feedback',
+            codingProblemId: problem.id,
+            section: 'coding'
+          } as any)
+          this.syncConversationHistoryFromServices()
+        }
+        
+        await this.speakWithPolicy(moveOnPrompt, {
+          interruptible: true,
+          bargeInPolicy: 'hard'
+        })
         this.stateMachine.startSilenceTimer(120000)
         return
       }
@@ -1536,10 +2507,24 @@ export class InterviewOrchestrator extends EventEmitter {
         
         try {
           if (hintEvents === 1) {
-            // First silence: provide a hint
+            // First silence: provide a hint (automatic timeout hint)
             const hintLevel = this.stateMachine.getHintLevel()
-            console.log('🎯 [Interview] First hint event (silence) - providing hint at level:', hintLevel)
+            console.log('🎯 [Interview] First hint event (silence) - providing automatic timeout hint at level:', hintLevel)
             const hintText = await this.llm.generateTheoreticalHint(currentQuestion, hintLevel)
+            
+            // IMPORTANT: Add automatic timeout hint to conversation history with metadata
+            this.llm.addConversationMessage('assistant', hintText, {
+              type: 'hint',
+              questionId: currentQuestion.id,
+              hintLevel: hintLevel,
+              section: 'theoretical',
+              // Mark as automatic timeout hint (using any to allow additional metadata)
+              isAutomatic: true,
+              source: 'timeout'
+            } as any)
+            // Sync to centralized history
+            this.syncConversationHistoryFromServices()
+            
             const result = await this.speakWithPolicy(hintText, {
               interruptible: true,
               bargeInPolicy: 'hard'
@@ -1556,6 +2541,17 @@ export class InterviewOrchestrator extends EventEmitter {
             const answerText = currentQuestion.expectedAnswer || 'Here is the concise answer based on best practices.'
             const finalPrompt = `Here's the answer: ${answerText}. Let's move to the next question.`
             console.log('🎯 [Interview] Second hint event (silence) - providing answer and moving to next question')
+            
+            // IMPORTANT: Record the answer in conversation history
+            this.llm.addConversationMessage('assistant', finalPrompt, {
+              type: 'answer',
+              questionId: currentQuestion.id,
+              section: 'theoretical',
+              hintLevel: 2
+            } as any)
+            // Sync to centralized history
+            this.syncConversationHistoryFromServices()
+            
             await this.speakWithPolicy(finalPrompt, {
               interruptible: false,
               bargeInPolicy: 'soft'
@@ -1575,9 +2571,28 @@ export class InterviewOrchestrator extends EventEmitter {
     this.stateMachine.resetCodingCounters()
     console.log('🎯 [Interview] ♻️ Reset coding counters for new problem')
     
+    // IMPORTANT: Set currentProblemId BEFORE setCurrentProblem so messages are tagged correctly
+    // This ensures that when codeAnalysis.setCurrentProblem adds the intro message,
+    // it gets tagged with the correct codingProblemId
+    this.currentProblemId = problem.id
+    console.log('🎯 [Interview] Set currentProblemId to:', problem.id, 'before setting problem in codeAnalysis')
+    
+    this.codeAnalysis.setCurrentProblem(problem)
+    
+    // Sync the intro message to centralized history
+    // This ensures the intro message gets the correct codingProblemId
+    this.syncConversationHistoryFromServices()
+    
+    // Verify the intro message was added with correct problem ID
+    const introMessages = this.fullConversationHistory.filter(
+      m => m.metadata.codingProblemId === problem.id && m.metadata.type === 'question'
+    )
+    console.log('🎯 [Interview] Intro messages for problem', problem.id, ':', introMessages.length)
+    
     // Present the problem - details are shown in editor
     const intro = "Here's the coding problem. You can see the details on your screen."
     const reminder = "While you work through it, please plan to note the time and space complexity of your final solution as well."
+    
     await this.speakWithPolicy(intro, {
       interruptible: false,
       bargeInPolicy: 'soft'
@@ -1586,9 +2601,6 @@ export class InterviewOrchestrator extends EventEmitter {
       interruptible: false,
       bargeInPolicy: 'soft'
     })
-    
-    // Set the problem in code analysis
-    this.codeAnalysis.setCurrentProblem(problem)
     
     // Note: The state machine will automatically transition to CODING_APPROACH
     // after a delay (handled in handleCodingProblem)
@@ -1622,6 +2634,18 @@ export class InterviewOrchestrator extends EventEmitter {
       console.log('🎯 [Interview] Providing hint - candidate is stuck')
       const currentCode = this.currentCode || last.code || ''
       const hintText = await this.codeAnalysis.getHint(problem, currentCode, 1) // Use level 1 hint
+      // Add automatic stuck detection hint to conversation history with metadata
+      // Note: addHint doesn't support metadata, so we'll add it directly
+      this.codeAnalysis.addConversationMessage('assistant', hintText, {
+        type: 'hint',
+        hintLevel: 1,
+        // Mark as automatic stuck detection hint (using any to allow additional metadata)
+        isAutomatic: true,
+        source: 'stuck_detection'
+      } as any)
+      // Sync to centralized history
+      this.syncConversationHistoryFromServices()
+      
       // Coding hints are interruptible with hard stop
       const result = await this.speakWithPolicy(hintText, {
         interruptible: true,
@@ -1646,20 +2670,350 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private async handleInterviewCompletion(): Promise<void> {
-    if (this.currentSession) {
-      this.currentSession.endTime = new Date()
-      this.currentSession.status = 'completed'
+    // Store session reference early to prevent null access
+    const session = this.currentSession
+    if (!session) {
+      console.error('❌ [InterviewOrchestrator] Cannot handle interview completion: currentSession is null')
+      return
+    }
+    
+    try {
+      session.endTime = new Date()
+      session.status = 'completed'
+      
+      console.log('📊 [InterviewOrchestrator] Handling interview completion for session:', session.id)
       
       // Stop services
       await this.stt.stopListening()
       await this.tts.stopAudio()
       
-      this.emit('interviewCompleted', this.currentSession)
+      // Sync conversation history from services one final time before creating payload
+      this.syncConversationHistoryFromServices()
+      
+      // Use centralized conversation history instead of aggregating from services
+      console.log('📊 [InterviewOrchestrator] Using centralized conversation history')
+      console.log('📊 [InterviewOrchestrator] Full conversation history length:', this.fullConversationHistory.length)
+      console.log('📊 [InterviewOrchestrator] Current coding conversations BEFORE check:', this.codingProblemConversations.length)
+      
+      // If conversations were cleared (shouldn't happen, but safeguard), restore from centralized history
+      if (this.codingProblemConversations.length === 0 && this.fullConversationHistory.length > 0) {
+        console.warn('⚠️ [InterviewOrchestrator] Conversations were cleared! Restoring from centralized history...')
+        // Get all unique problem IDs from centralized history
+        const problemIds = [...new Set(this.fullConversationHistory
+          .filter(m => m.metadata.codingProblemId)
+          .map(m => m.metadata.codingProblemId!))]
+        
+        console.log('📊 [InterviewOrchestrator] Found', problemIds.length, 'problems in centralized history:', problemIds)
+        
+        // Restore conversations for each problem
+        for (const problemId of problemIds) {
+          const problem = session.codingProblems?.find(p => p.id === problemId)
+          if (problem) {
+            const problemHistory = this.getProblemConversationHistory(problemId)
+            if (problemHistory.length > 0) {
+              const problemConversation = {
+                problemId,
+                problem,
+                conversation: problemHistory,
+                finalCode: undefined,
+                timeComplexity: undefined,
+                spaceComplexity: undefined,
+                codeAnalysisHistory: [],
+                submittedAt: new Date(),
+                evaluation: undefined
+              }
+              this.codingProblemConversations.push(problemConversation)
+              console.log('📊 [InterviewOrchestrator] Restored conversation for problem:', problemId, 'with', problemHistory.length, 'messages')
+            }
+          }
+        }
+      }
+      
+      // If evaluations were cleared (shouldn't happen, but safeguard), restore from centralized history
+      if (this.allEvaluations.length === 0 && this.fullConversationHistory.length > 0) {
+        console.warn('⚠️ [InterviewOrchestrator] Evaluations were cleared! Restoring from centralized history...')
+        
+        // Extract evaluations from conversation messages that have evaluation metadata
+        const theoreticalMessages = this.fullConversationHistory.filter(
+          m => m.metadata.section === 'theoretical' && m.metadata.evaluation
+        )
+        
+        console.log('📊 [InterviewOrchestrator] Found', theoreticalMessages.length, 'messages with evaluation metadata')
+        
+        // Reconstruct evaluations from conversation history
+        for (const msg of theoreticalMessages) {
+          if (msg.metadata.evaluation && msg.metadata.questionId) {
+            // Find the user's answer message that preceded this evaluation
+            // Look for the most recent user message with the same questionId before this evaluation
+            const questionId = msg.metadata.questionId
+            const evaluationTimestamp = msg.timestamp
+            
+            // Find user answer message for this question (should be before the evaluation)
+            const userAnswer = this.fullConversationHistory
+              .filter(m => 
+                m.metadata.questionId === questionId &&
+                m.role === 'user' &&
+                m.timestamp < evaluationTimestamp &&
+                (m.metadata.type === 'answer' || m.metadata.type === 'hint' || m.metadata.type === 'clarification')
+              )
+              .sort((a, b) => b.timestamp - a.timestamp)[0] // Get most recent before evaluation
+            
+            if (userAnswer && msg.metadata.evaluation) {
+              // Try to find follow-up question if needsFollowUp is true
+              let followUpQuestion: string | undefined = undefined
+              if (msg.metadata.evaluation.needsFollowUp) {
+                // Look for follow-up question message after this evaluation
+                const followUpMsg = this.fullConversationHistory
+                  .filter(m =>
+                    m.metadata.questionId === questionId &&
+                    m.role === 'assistant' &&
+                    m.timestamp > evaluationTimestamp &&
+                    m.metadata.type === 'followup'
+                  )
+                  .sort((a, b) => a.timestamp - b.timestamp)[0] // Get first follow-up after evaluation
+                
+                if (followUpMsg) {
+                  followUpQuestion = followUpMsg.content
+                }
+              }
+              
+              const evaluation: Evaluation = {
+                questionId: questionId,
+                candidateAnswer: userAnswer.content,
+                keyPointsCovered: msg.metadata.evaluation.keyPointsCovered || [],
+                score: msg.metadata.evaluation.score || 0,
+                needsFollowUp: msg.metadata.evaluation.needsFollowUp || false,
+                followUpQuestion: followUpQuestion,
+                feedback: msg.content // Use the evaluation message content as feedback
+              }
+              
+              // Check if this evaluation already exists (avoid duplicates)
+              const exists = this.allEvaluations.some(
+                e => e.questionId === evaluation.questionId && 
+                     e.candidateAnswer === evaluation.candidateAnswer &&
+                     Math.abs(e.score - evaluation.score) < 0.01
+              )
+              
+              if (!exists) {
+                this.allEvaluations.push(evaluation)
+                console.log('📊 [InterviewOrchestrator] Restored evaluation for question:', questionId, 'Score:', evaluation.score)
+              }
+            }
+          }
+        }
+        
+        console.log('📊 [InterviewOrchestrator] Restored', this.allEvaluations.length, 'evaluations from centralized history')
+      }
+      
+      this.codingProblemConversations.forEach((conv, idx) => {
+        console.log(`📊 [InterviewOrchestrator]   Existing conversation ${idx + 1}: Problem ${conv.problemId}, ${conv.conversation.length} messages`)
+      })
+      
+      // If there's a current coding problem that hasn't been stored yet, add it
+      const currentProblem = this.codeAnalysis.getCurrentProblem()
+      console.log('📊 [InterviewOrchestrator] Checking for unstored coding problem:', currentProblem?.id)
+      console.log('📊 [InterviewOrchestrator] Current coding conversations:', this.codingProblemConversations.length)
+      
+      if (currentProblem) {
+        const existingIndex = this.codingProblemConversations.findIndex(
+          c => c.problemId === currentProblem.id
+        )
+        console.log('📊 [InterviewOrchestrator] Existing index for problem', currentProblem.id, ':', existingIndex)
+        
+        if (existingIndex === -1) {
+          console.log('📊 [InterviewOrchestrator] Problem not found in conversations, storing it now')
+          const problemConversationHistory = this.getProblemConversationHistory(currentProblem.id)
+          console.log('📊 [InterviewOrchestrator] Problem conversation history from centralized store:', problemConversationHistory.length)
+          
+          const finalSubmission = this.codeAnalysis.getFinalSubmission()
+          const problemConversation = {
+            problemId: currentProblem.id,
+            problem: currentProblem,
+            conversation: problemConversationHistory, // Use centralized history
+            finalCode: finalSubmission.code,
+            timeComplexity: finalSubmission.timeComplexity,
+            spaceComplexity: finalSubmission.spaceComplexity,
+            codeAnalysisHistory: this.codeAnalysis.getObservations().map(obs => obs.analysis),
+            submittedAt: new Date(),
+            evaluation: undefined
+          }
+          this.codingProblemConversations.push(problemConversation)
+          console.log('📊 [InterviewOrchestrator] Stored missing problem conversation, total now:', this.codingProblemConversations.length)
+        } else {
+          console.log('📊 [InterviewOrchestrator] Problem already stored at index:', existingIndex)
+        }
+      } else {
+        console.log('📊 [InterviewOrchestrator] No current coding problem found')
+      }
+      
+      // Get theoretical conversations from centralized history
+      const theoreticalConversations = session.questions.map(q => 
+        this.getQuestionConversationHistory(q.id)
+      ).flat()
+      
+      // Use full centralized history for the payload (instead of aggregating from services)
+      console.log('📊 [InterviewOrchestrator] Creating final evaluation payload using centralized history...')
+      console.log('📊 [InterviewOrchestrator] Session ID:', session.id)
+      console.log('📊 [InterviewOrchestrator] Full centralized history:', this.fullConversationHistory.length, 'messages')
+      console.log('📊 [InterviewOrchestrator] Theoretical conversations:', theoreticalConversations.length, 'messages')
+      console.log('📊 [InterviewOrchestrator] Coding conversations count:', this.codingProblemConversations.length)
+      this.codingProblemConversations.forEach((conv, idx) => {
+        console.log(`📊 [InterviewOrchestrator]   Conversation ${idx + 1}: Problem ID ${conv.problemId}, ${conv.conversation.length} messages`)
+      })
+      console.log('📊 [InterviewOrchestrator] Evaluations count:', this.allEvaluations.length)
+      
+      // Use centralized history for final payload
+      // Pass the complete conversation history directly - the function will extract what it needs
+      const finalEvaluationPayload = createFinalEvaluationPayload(
+        session,
+        this.fullConversationHistory, // Complete conversation history (theoretical + coding)
+        this.codingProblemConversations, // Structured metadata per problem (finalCode, timeComplexity, etc.)
+        this.allEvaluations
+      )
+      
+      console.log('📊 [InterviewOrchestrator] Final evaluation payload created:')
+      console.log('📊 [InterviewOrchestrator] - Session ID:', finalEvaluationPayload.sessionId)
+      console.log('📊 [InterviewOrchestrator] - Candidate ID:', finalEvaluationPayload.candidateId)
+      console.log('📊 [InterviewOrchestrator] - Interview Link ID:', finalEvaluationPayload.interviewLinkId)
+      console.log('📊 [InterviewOrchestrator] - Full conversation history length:', finalEvaluationPayload.fullConversationHistory.length)
+      console.log('📊 [InterviewOrchestrator] - Theoretical questions:', finalEvaluationPayload.theoreticalSection.totalQuestions)
+      console.log('📊 [InterviewOrchestrator] - Coding problems:', finalEvaluationPayload.codingSection.totalProblems)
+      console.log('📊 [InterviewOrchestrator] - Total score:', finalEvaluationPayload.totalScore)
+      
+      // Log conversation history details
+      if (finalEvaluationPayload.fullConversationHistory.length > 0) {
+        console.log('📊 [InterviewOrchestrator] Full conversation history breakdown:')
+        finalEvaluationPayload.fullConversationHistory.forEach((msg, idx) => {
+          console.log(`  [${idx + 1}] ${msg.role} (${msg.metadata.type}) - ${msg.content.substring(0, 80)}...`)
+          console.log(`      Timestamp: ${new Date(msg.timestamp).toISOString()}`)
+          console.log(`      Section: ${msg.metadata.section || 'N/A'}, QuestionID: ${msg.metadata.questionId || 'N/A'}`)
+        })
+      } else {
+        console.warn('⚠️ [InterviewOrchestrator] Full conversation history is empty!')
+      }
+      
+      // Log theoretical section conversations
+      if (finalEvaluationPayload.theoreticalSection.conversations.length > 0) {
+        console.log('📊 [InterviewOrchestrator] Theoretical conversations:')
+        finalEvaluationPayload.theoreticalSection.conversations.forEach((conv, idx) => {
+          console.log(`  Question ${idx + 1} (${conv.questionId}): ${conv.conversation.length} messages`)
+        })
+      }
+      
+      // Log coding section conversations
+      if (finalEvaluationPayload.codingSection.conversations.length > 0) {
+        console.log('📊 [InterviewOrchestrator] Coding conversations:')
+        finalEvaluationPayload.codingSection.conversations.forEach((conv, idx) => {
+          console.log(`  Problem ${idx + 1} (${conv.problemId}): ${conv.conversation.length} messages`)
+          console.log(`    Final code: ${conv.finalCode ? 'Yes' : 'No'}, Code length: ${conv.finalCode?.length || 0}`)
+        })
+      }
+      
+      // Log FULL conversation history in chronological order (use orchestrator's history directly)
+      console.log('\n📝 ========== FULL CONVERSATION HISTORY ==========')
+      console.log(`📝 Total messages: ${this.fullConversationHistory.length}`)
+      console.log('📝 Conversation timeline:\n')
+      
+      this.fullConversationHistory.forEach((msg, idx) => {
+        const time = new Date(msg.timestamp).toISOString()
+        const roleIcon = msg.role === 'user' ? '👤' : msg.role === 'assistant' ? '🤖' : '⚙️'
+        const typeLabel = msg.metadata.type.toUpperCase()
+        const section = msg.metadata.section ? `[${msg.metadata.section}]` : ''
+        const questionId = msg.metadata.questionId ? `Q:${msg.metadata.questionId}` : ''
+        const problemId = msg.metadata.codingProblemId ? `P:${msg.metadata.codingProblemId}` : ''
+        
+        console.log(`${idx + 1}. ${roleIcon} [${typeLabel}] ${section} ${questionId} ${problemId}`)
+        console.log(`   Time: ${time}`)
+        console.log(`   Content: ${msg.content}`)
+        
+        // Log code submission details if present
+        if (msg.metadata.type === 'code_submission') {
+          const metadata = msg.metadata as any
+          if (metadata.code) {
+            console.log(`   Code:\n\`\`\`\n${metadata.code}\n\`\`\``)
+          }
+          
+          // Get TC/SC from message metadata first
+          let timeComplexity = metadata.timeComplexity
+          let spaceComplexity = metadata.spaceComplexity
+          
+          // If missing from metadata, try to get from stored conversation
+          if ((!timeComplexity || !spaceComplexity) && msg.metadata.codingProblemId) {
+            const storedConversation = this.codingProblemConversations.find(
+              conv => conv.problemId === msg.metadata.codingProblemId
+            )
+            if (storedConversation) {
+              if (!timeComplexity && storedConversation.timeComplexity) {
+                timeComplexity = storedConversation.timeComplexity
+                console.log(`   🔧 [Log] Retrieved Time Complexity from stored conversation: ${timeComplexity}`)
+              }
+              if (!spaceComplexity && storedConversation.spaceComplexity) {
+                spaceComplexity = storedConversation.spaceComplexity
+                console.log(`   🔧 [Log] Retrieved Space Complexity from stored conversation: ${spaceComplexity}`)
+              }
+            }
+          }
+          
+          if (timeComplexity) {
+            console.log(`   Time Complexity: ${timeComplexity}`)
+          }
+          if (spaceComplexity) {
+            console.log(`   Space Complexity: ${spaceComplexity}`)
+          }
+        }
+        
+        // Log additional metadata if present
+        if (msg.metadata.evaluation) {
+          console.log(`   Evaluation: Score=${msg.metadata.evaluation.score}, KeyPoints=${msg.metadata.evaluation.keyPointsCovered?.length || 0}`)
+        }
+        if (msg.metadata.hintLevel) {
+          console.log(`   Hint Level: ${msg.metadata.hintLevel}`)
+        }
+        // Log automatic hint source if present
+        if ((msg.metadata as any).isAutomatic) {
+          console.log(`   Source: ${(msg.metadata as any).source || 'automatic'} (auto timeout hint)`)
+        }
+        console.log('')
+      })
+      
+      console.log('📝 ========== END CONVERSATION HISTORY ==========\n')
+      
+      // Store payload in session for access
+      ;(session as any).finalEvaluationPayload = finalEvaluationPayload
+      
+      // Emit both the session and the payload
+      console.log('📊 [InterviewOrchestrator] Emitting interviewCompleted event')
+      this.emit('interviewCompleted', session)
+      
+      console.log('📊 [InterviewOrchestrator] Emitting finalEvaluationReady event with payload')
+      this.emit('finalEvaluationReady', finalEvaluationPayload)
+      console.log('✅ [InterviewOrchestrator] Final evaluation payload emitted successfully')
+      
       this.cleanupListeners()
       
-      // Clear the session after completion to prevent welcome back modal
-      this.clearSession()
+      // IMPORTANT: Don't clear session here - it clears codingProblemConversations
+      // The session will be cleared after the payload is successfully sent to the server
+      // Clearing here would cause the first problem's conversation to be lost
+      console.log('📊 [InterviewOrchestrator] Session data preserved until payload is sent')
+      // Only clear non-critical state, keep conversations
+      this.currentSession = null
+      this.stateMachine.reset()
+      this.llm.reset()
+      // Keep codingProblemConversations, allEvaluations, and fullConversationHistory
+      // They will be cleared after successful payload submission
+    } catch (error) {
+      console.error('❌ [InterviewOrchestrator] Error in handleInterviewCompletion:', error)
+      console.error('❌ [InterviewOrchestrator] Error stack:', error instanceof Error ? error.stack : String(error))
+      throw error
     }
+  }
+  
+  // Get final evaluation payload (can be called after completion)
+  getFinalEvaluationPayload(): FinalEvaluationPayload | null {
+    if (this.currentSession && (this.currentSession as any).finalEvaluationPayload) {
+      return (this.currentSession as any).finalEvaluationPayload
+    }
+    return null
   }
 
   private cleanupListeners(): void {

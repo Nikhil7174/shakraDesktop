@@ -191,6 +191,24 @@ export interface CodeAnalysis {
   testable: boolean
 }
 
+export interface ConversationMessage {
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  timestamp: number
+  metadata: {
+    type: 'question' | 'answer' | 'hint' | 'clarification' | 'followup' | 'feedback' | 'code_submission' | 'code_analysis' | 'transition'
+    questionId?: string  // Link to original question
+    evaluation?: {
+      score?: number
+      keyPointsCovered?: string[]
+      needsFollowUp?: boolean
+    }
+    hintLevel?: 1 | 2  // For hints
+    section?: 'theoretical' | 'coding'  // Which section of interview
+    codingProblemId?: string  // For coding section messages
+  }
+}
+
 export interface InterviewSession {
   id: string
   candidateId: string
@@ -199,6 +217,101 @@ export interface InterviewSession {
   startTime: Date
   endTime?: Date
   status: 'scheduled' | 'in_progress' | 'completed'
+  // Conversation history fields
+  conversationHistory?: ConversationMessage[]  // Full chronological history
+  theoreticalConversations?: {
+    questionId: string
+    question: string
+    conversation: ConversationMessage[]  // Subset for this question
+    evaluations: Evaluation[]
+  }[]
+  codingConversations?: {
+    problemId: string
+    problem: CodingProblem
+    conversation: ConversationMessage[]  // Verbal conversation during coding
+    finalCode?: string
+    timeComplexity?: string
+    spaceComplexity?: string
+    codeAnalysisHistory: CodeAnalysis[]  // Progress snapshots
+    submittedAt?: Date
+    evaluation?: {
+      score: number
+      feedback: string
+      testResults?: Array<{
+        passed: boolean
+        input: string
+        expectedOutput: string
+        actualOutput: string
+      }>
+    }
+  }[]
+}
+
+export interface FinalEvaluationPayload {
+  // Session metadata
+  sessionId: string
+  candidateId: string
+  interviewLinkId?: number
+  startTime: string  // ISO string for JSON serialization
+  endTime: string    // ISO string for JSON serialization
+  duration: number   // milliseconds
+  
+  // Full chronological conversation (all sections)
+  // This is the complete interview transcript in order
+  fullConversationHistory: ConversationMessage[]
+  
+  // Structured breakdowns for easy analysis
+  theoreticalSection: {
+    questions: Question[]
+    conversations: {
+      questionId: string
+      question: string
+      conversation: ConversationMessage[]  // All interactions for this question
+      evaluations: Evaluation[]
+      totalScore: number
+    }[]
+    overallScore: number
+    totalQuestions: number
+  }
+  
+  codingSection: {
+    problems: CodingProblem[]
+    conversations: {
+      problemId: string
+      problem: CodingProblem
+      conversation: ConversationMessage[]  // Verbal conversation during coding
+      finalCode?: string
+      timeComplexity?: string
+      spaceComplexity?: string
+      codeAnalysisHistory: CodeAnalysis[]  // Progress snapshots over time
+      submittedAt?: string  // ISO string
+      evaluation?: {
+        score: number
+        feedback: string
+        testResults?: Array<{
+          passed: boolean
+          input: string
+          expectedOutput: string
+          actualOutput: string
+        }>
+      }
+    }[]
+    overallScore: number
+    totalProblems: number
+  }
+  
+  // Summary metrics
+  totalScore: number
+  strengths: string[]
+  areasForImprovement: string[]
+  overallFeedback: string
+  
+  // Additional metadata
+  hintRequestCount: number
+  clarificationRequestCount: number
+  followUpCount: number
+  averageTimePerQuestion: number
+  averageTimePerCodingProblem: number
 }
 
 // ============================================================================

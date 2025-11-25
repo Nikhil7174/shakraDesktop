@@ -91,7 +91,10 @@ export class WebSocketServer {
           break
 
         default:
-          console.warn('Unknown message type:', data.type)
+          // Ignore known informational message types
+          if (data.type !== 'session-info' && data.type !== 'stats' && data.type !== 'pong') {
+            console.warn('Unknown message type:', data.type)
+          }
       }
     } catch (error) {
       console.error('Error handling message:', error)

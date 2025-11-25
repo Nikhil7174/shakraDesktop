@@ -6,7 +6,7 @@ interface CodeEditorProps {
   problem: CodingProblem
   onCodeChange?: (code: string) => void
   onAnalysisRequest?: (code: string, problemId: string) => void
-  onSubmit?: (code: string) => void
+  onSubmit?: (code: string, timeComplexity?: string, spaceComplexity?: string) => void
   isMonitoring?: boolean
   readOnly?: boolean
   onTimerExpire?: () => void
@@ -35,6 +35,8 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   const monacoEditorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const monitoringIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const timerIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const timeComplexityInputRef = useRef<HTMLInputElement | null>(null)
+  const spaceComplexityInputRef = useRef<HTMLInputElement | null>(null)
   const [isEditorReady, setIsEditorReady] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [selectedLanguage, setSelectedLanguage] = useState<string>(problem.language || 'cpp')
@@ -436,15 +438,26 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   const handleSubmit = useCallback(async () => {
     if (!monacoEditorRef.current || !onSubmit || isSubmitting) return
     
+    // Read code directly from editor (like we always do)
     const code = monacoEditorRef.current.getValue()
     if (!code.trim()) {
       alert('Please write some code before submitting!')
       return
     }
 
+    // Read TC/SC directly from input fields (same approach as reading code from editor)
+    const timeComplexityValue = timeComplexityInputRef.current?.value?.trim() || undefined
+    const spaceComplexityValue = spaceComplexityInputRef.current?.value?.trim() || undefined
+
+    console.log('📝 [CodeEditor] Submitting - reading from inputs:', { 
+      codeLength: code.length,
+      timeComplexity: timeComplexityValue || 'NOT PROVIDED',
+      spaceComplexity: spaceComplexityValue || 'NOT PROVIDED'
+    })
+
     setIsSubmitting(true)
     try {
-      await onSubmit(code)
+      await onSubmit(code, timeComplexityValue, spaceComplexityValue)
     } catch (error) {
       console.error('Error submitting solution:', error)
       alert('Failed to submit solution. Please try again.')
@@ -574,6 +587,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                 <div className="complexity-input">
                   <label htmlFor="time-complexity">Time Complexity</label>
                   <input
+                    ref={timeComplexityInputRef}
                     id="time-complexity"
                     type="text"
                     placeholder="e.g. O(n log n)"
@@ -584,6 +598,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                 <div className="complexity-input">
                   <label htmlFor="space-complexity">Space Complexity</label>
                   <input
+                    ref={spaceComplexityInputRef}
                     id="space-complexity"
                     type="text"
                     placeholder="e.g. O(n)"

@@ -202,6 +202,91 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         setCodeAnalysis(analysis)
       })
 
+      // Final evaluation ready
+      window.electronAPI.onFinalEvaluationReady(async (payload: any) => {
+        console.log('📊 [Renderer] Final evaluation payload received from main process')
+        console.log('📊 [Renderer] Payload session ID:', payload?.sessionId)
+        console.log('📊 [Renderer] Payload candidate ID:', payload?.candidateId)
+        console.log('📊 [Renderer] Payload interview link ID:', payload?.interviewLinkId)
+        console.log('📊 [Renderer] Full conversation history length:', payload?.fullConversationHistory?.length || 0)
+        console.log('📊 [Renderer] Theoretical section questions:', payload?.theoreticalSection?.totalQuestions || 0)
+        console.log('📊 [Renderer] Coding section problems:', payload?.codingSection?.totalProblems || 0)
+        
+        if (!payload) {
+          console.error('❌ [Renderer] Final evaluation payload is null or undefined!')
+          return
+        }
+        
+        if (!payload.sessionId) {
+          console.error('❌ [Renderer] Final evaluation payload missing sessionId!')
+          console.error('❌ [Renderer] Payload keys:', Object.keys(payload))
+          return
+        }
+        
+        console.log('📊 [Renderer] Submitting final evaluation to backend...')
+        try {
+          // Import API_BASE_URL
+          const { API_BASE_URL } = await import('../constants/api')
+          console.log('📊 [Renderer] API Base URL:', API_BASE_URL)
+          console.log('📊 [Renderer] Endpoint:', `${API_BASE_URL}/interview/final-evaluation`)
+          
+          const response = await fetch(`${API_BASE_URL}/interview/final-evaluation`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${localStorage.getItem('authToken')}`
+            },
+            body: JSON.stringify(payload)
+          })
+          
+          console.log('📊 [Renderer] Response status:', response.status)
+          console.log('📊 [Renderer] Response ok:', response.ok)
+          
+          const data = await response.json()
+          console.log('📊 [Renderer] Response data:', data)
+          
+          if (!response.ok || !data.success) {
+            console.error('❌ [Renderer] Final evaluation submission failed:')
+            console.error('❌ [Renderer] Status:', response.status)
+            console.error('❌ [Renderer] Error message:', data.message || data.error)
+            throw new Error(data.message || data.error || 'Failed to submit final evaluation')
+          }
+          
+          console.log('✅ [Renderer] Final evaluation submitted successfully!')
+          console.log('✅ [Renderer] Server response:', JSON.stringify(data, null, 2))
+          
+          // Mark payload as sent - this allows clearSession() to fully clear conversations
+          try {
+            await window.electronAPI.markPayloadSent()
+            console.log('✅ [Renderer] Marked payload as sent - conversations can now be cleared')
+          } catch (markError) {
+            console.error('❌ [Renderer] Failed to mark payload as sent:', markError)
+            // Non-critical error - payload was sent successfully
+          }
+        } catch (error: any) {
+          console.error('❌ [Renderer] Failed to submit final evaluation:')
+          console.error('❌ [Renderer] Error type:', error?.constructor?.name)
+          console.error('❌ [Renderer] Error message:', error?.message)
+          console.error('❌ [Renderer] Error stack:', error?.stack)
+          if (error?.response) {
+            console.error('❌ [Renderer] Response status:', error.response.status)
+            console.error('❌ [Renderer] Response data:', error.response.data)
+          }
+          
+          // Store payload locally for retry later if needed
+          try {
+            localStorage.setItem('pendingFinalEvaluation', JSON.stringify({
+              payload,
+              timestamp: Date.now(),
+              error: error?.message
+            }))
+            console.log('💾 [Renderer] Stored pending evaluation in localStorage for retry')
+          } catch (e) {
+            console.error('❌ [Renderer] Failed to store pending evaluation:', e)
+          }
+        }
+      })
+
       // Interview completion
       window.electronAPI.onInterviewCompleted(async (results: any) => {
         // Save results if onSaveResults is provided
@@ -259,13 +344,9 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           }
         }
         
-        // Clear unfinished interview in main process
-        try {
-          await window.electronAPI?.clearUnfinishedInterview()
-          console.log('✅ Cleared unfinished interview in main process')
-        } catch (error) {
-          console.error('Failed to clear unfinished interview:', error)
-        }
+        // NOTE: Don't clear unfinished interview here - the payload needs to be sent first
+        // The main process will clear conversations after payload is successfully sent via markPayloadSent()
+        // This event (onInterviewCompleted) fires before the final evaluation payload is sent
         
         onComplete?.(results)
       })
@@ -440,10 +521,26 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     }
   }, [])
 
-  const handleSubmit = useCallback(async (code: string) => {
+  const handleSubmit = useCallback(async (code: string, timeComplexity?: string, spaceComplexity?: string) => {
     try {
       console.log('📤 [Interview] Submitting solution:', code.length, 'characters')
-      const result = await window.electronAPI.submitSolution(code)
+      console.log('📤 [Interview] TC/SC from props:', { timeComplexity, spaceComplexity })
+      console.log('📤 [Interview] Current problem:', currentCodingProblem?.id)
+      console.log('📤 [Interview] Complexity notes:', complexityNotes)
+      
+      // Get complexity from current problem's notes (preferred) or from props
+      const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
+        ? complexityNotes[currentCodingProblem.id]
+        : { time: timeComplexity || '', space: spaceComplexity || '' }
+      
+      console.log('📤 [Interview] Final complexity being sent:', complexity)
+      
+      const result = await window.electronAPI.submitSolution(
+        code, 
+        false, 
+        complexity.time && complexity.time.trim() ? complexity.time.trim() : undefined, 
+        complexity.space && complexity.space.trim() ? complexity.space.trim() : undefined
+      )
 
       if (result.success) {
         console.log('✅ [Interview] Solution submitted successfully')
@@ -463,7 +560,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       console.error('Failed to submit solution:', error)
       alert('Failed to submit solution. Please try again.')
     }
-  }, [])
+  }, [currentCodingProblem, complexityNotes])
 
   const handleTimerExpire = useCallback(async () => {
     if (!currentCodingProblem) return
@@ -482,7 +579,17 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     
     try {
       console.log('📤 [Interview] Auto-submitting solution due to timeout:', codeToSubmit.length, 'characters')
-      const result = await window.electronAPI.submitSolution(codeToSubmit, true) // Pass isTimeout = true
+      // Get complexity for timeout submission
+      const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
+        ? complexityNotes[currentCodingProblem.id]
+        : { time: '', space: '' }
+      
+      const result = await window.electronAPI.submitSolution(
+        codeToSubmit, 
+        true, 
+        complexity.time || undefined, 
+        complexity.space || undefined
+      ) // Pass isTimeout = true
       
       if (result.success) {
         console.log('✅ [Interview] Timeout solution submitted successfully')
@@ -551,13 +658,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           />
         </div>
       )}
-      {monitoringMode && codeAnalysis && (
-        <div className="code-analysis">
-          <h4>Progress Analysis</h4>
-          <p>Progress: {codeAnalysis.progress}%</p>
-          <p>Approach: {codeAnalysis.approach}</p>
-        </div>
-      )}
     </div>
   )
 
@@ -578,11 +678,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
                 </div>
                 <h2 className="loading-title">Preparing Interview</h2>
                 <p className="loading-subtitle">Connecting audio and AI services</p>
-                <div className="loading-dots">
-                  <span className="dot"></span>
-                  <span className="dot"></span>
-                  <span className="dot"></span>
-                </div>
               </div>
             </div>
           </div>
@@ -618,11 +713,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
                         <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor"/>
                       </svg>
                     </div>
-                    {isSpeaking && (
-                      <div className="speaking-indicator">
-                        <div className="speaking-pulse"></div>
-                      </div>
-                    )}
                   </div>
                 </div>
 
@@ -666,11 +756,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
                         <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor"/>
                       </svg>
                     </div>
-                    {isListening && (
-                      <div className="speaking-indicator">
-                        <div className="speaking-pulse"></div>
-                      </div>
-                    )}
                   </div>
                 </div>
 
@@ -706,10 +791,14 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
       case 'coding_intro':
         return (
-          <div className="coding-intro-section">
-            <h2>Moving to Coding Section</h2>
-            <p>Now we'll work on a programming problem. Take your time and think through the solution step by step.</p>
-            <p>As you implement, jot down the time and space complexity in the boxes beneath the editor so you can discuss them later.</p>
+          <div className="loading-section">
+            <div className="glassmorphic-card">
+              <div className="loading-content">
+                <h2 className="loading-title">Moving to Coding Section</h2>
+                <p className="loading-subtitle">Now we'll work on a programming problem. Take your time and think through the solution step by step.</p>
+                <p className="loading-subtitle" style={{ marginTop: '12px' }}>As you implement, jot down the time and space complexity in the boxes beneath the editor so you can discuss them later.</p>
+              </div>
+            </div>
           </div>
         )
 
@@ -1393,24 +1482,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           width: 100%;
           height: 100%;
           overflow-y: auto;
-        }
-
-        .code-analysis {
-          margin-top: 20px;
-          padding: 16px;
-          background: #2d2d30;
-          border-radius: 8px;
-          border: 1px solid #333;
-        }
-
-        .code-analysis h4 {
-          margin: 0 0 12px 0;
-          color: #ffffff;
-        }
-
-        .code-analysis p {
-          margin: 8px 0;
-          color: #cccccc;
         }
 
         .stuck-indicator {

@@ -225,6 +225,10 @@ app.whenReady().then(async () => {
       mainWindow?.webContents.send('interview-completed', results)
     })
 
+    interviewOrchestrator.on('finalEvaluationReady', (payload) => {
+      mainWindow?.webContents.send('final-evaluation-ready', payload)
+    })
+
     console.log('✓ Interview orchestrator initialized')
   } catch (error) {
     console.error('Failed to initialize interview orchestrator:', error)
@@ -413,13 +417,13 @@ app.whenReady().then(async () => {
     }
   })
 
-  ipcMain.handle('submit-solution', async (_event, code: string, isTimeout: boolean = false) => {
+  ipcMain.handle('submit-solution', async (_event, code: string, isTimeout: boolean = false, timeComplexity?: string, spaceComplexity?: string) => {
     try {
       if (!interviewOrchestrator) {
         throw new Error('Interview orchestrator not initialized')
       }
       
-      const result = await interviewOrchestrator.submitCodingSolution(code, isTimeout)
+      const result = await interviewOrchestrator.submitCodingSolution(code, isTimeout, timeComplexity, spaceComplexity)
       return result
     } catch (error: unknown) {
       const err = error as Error
@@ -579,6 +583,21 @@ app.whenReady().then(async () => {
     } catch (error: unknown) {
       const err = error as Error
       console.error('Failed to request audio permissions:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
+  // Handle marking payload as sent (allows clearing conversation data)
+  ipcMain.handle('mark-payload-sent', async () => {
+    try {
+      if (!interviewOrchestrator) {
+        return { success: false, error: 'Interview orchestrator not initialized' }
+      }
+      interviewOrchestrator.markPayloadSent()
+      return { success: true }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to mark payload as sent:', err)
       return { success: false, error: err.message }
     }
   })

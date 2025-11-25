@@ -94,11 +94,6 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
                   <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor"/>
                 </svg>
               </div>
-              {isSpeaking && (
-                <div className="speaking-indicator">
-                  <div className="speaking-pulse"></div>
-                </div>
-              )}
             </div>
           </div>
 
@@ -140,11 +135,6 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
                   <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor"/>
                 </svg>
               </div>
-              {isListening && (
-                <div className="speaking-indicator">
-                  <div className="speaking-pulse"></div>
-                </div>
-              )}
             </div>
           </div>
 

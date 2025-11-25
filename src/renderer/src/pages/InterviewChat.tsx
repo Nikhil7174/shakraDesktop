@@ -303,15 +303,11 @@ export const InterviewChat: React.FC = () => {
     console.log('Interview completed - clearing all data and redirecting');
 
     try {
-      // Clear unfinished interview in main process (electron)
-      try {
-        await window.electronAPI?.clearUnfinishedInterview();
-        console.log('✅ Cleared unfinished interview in main process');
-      } catch (error) {
-        console.error('Failed to clear unfinished interview in main process:', error);
-      }
-
-      // Clear all session data using unified method
+      // NOTE: Don't clear unfinished interview here - the payload needs to be sent first
+      // The main process will clear conversations after payload is successfully sent via markPayloadSent()
+      // Only clear Redux state (UI state), not main process state
+      
+      // Clear all session data using unified method (Redux only)
       clearAllSessions();
 
       // Clear Redux state

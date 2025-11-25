@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 import axios from 'axios'
 import http from 'http'
 import https from 'https'
+import { ConversationMessage } from '../../shared/types'
 
 export interface Message {
   role: 'system' | 'user' | 'assistant'
@@ -88,13 +89,14 @@ const axiosInstance = axios.create({
 export class LLMService extends EventEmitter {
   private serverUrl: string
   private axios: typeof axiosInstance  // Use shared instance with connection reuse
-  private conversationHistory: Message[] = []
+  private conversationHistory: ConversationMessage[] = []
   private currentQuestion: Question | null = null
   private currentQuestionIndex: number = 0
   private questions: Question[] = []
   private followUpDepth: number = 0
   private maxTheoreticalQuestions: number = 10
   private currentFollowUpQuestion: string | null = null // Track the current follow-up question text
+  private hintLevel: 1 | 2 = 1 // Track current hint level
 
   constructor(serverUrl: string) {
     super()
@@ -102,11 +104,37 @@ export class LLMService extends EventEmitter {
     this.axios = axiosInstance  // Use shared instance with connection reuse
   }
 
+  // Helper method to add messages with metadata
+  // Public method to add conversation messages (used by orchestrator for follow-ups, etc.)
+  addConversationMessage(
+    role: 'user' | 'assistant' | 'system',
+    content: string,
+    metadata: ConversationMessage['metadata']
+  ): void {
+    const message: ConversationMessage = {
+      role,
+      content,
+      timestamp: Date.now(),
+      metadata
+    }
+    this.conversationHistory.push(message)
+    // Log occasionally to track conversation history growth
+    if (this.conversationHistory.length % 10 === 0 || this.conversationHistory.length <= 5) {
+      console.log(`💬 [LLM] Conversation history: ${this.conversationHistory.length} messages. Latest: ${role} - ${content.substring(0, 50)}...`)
+    }
+  }
+
   async processTranscript(text: string, detectedIntent?: IntentDetection): Promise<LLMResponse> {
     // Add user message to conversation history
-    this.conversationHistory.push({
-      role: 'user',
-      content: text
+    // Determine message type based on intent or context
+    const messageType = detectedIntent?.intent === 'hint_request' ? 'hint' :
+                        detectedIntent?.intent === 'clarification_request' ? 'clarification' :
+                        'answer'
+    
+    this.addConversationMessage('user', text, {
+      type: messageType,
+      questionId: this.currentQuestion?.id,
+      section: 'theoretical'
     })
 
     try {
@@ -133,17 +161,24 @@ export class LLMService extends EventEmitter {
       }
 
       // Fallback to regular conversation
+      // Convert ConversationMessage[] to Message[] for API compatibility
+      const apiConversationHistory: Message[] = this.conversationHistory.map(msg => ({
+        role: msg.role,
+        content: msg.content
+      }))
+      
       const response = await this.axios.post(`${this.serverUrl}/api/llm/generate-response`, {
         context: this.buildContext(),
-        conversationHistory: this.conversationHistory
+        conversationHistory: apiConversationHistory
       })
 
       if (response.data.success) {
         const assistantMessage = response.data.response
         
-        this.conversationHistory.push({
-          role: 'assistant',
-          content: assistantMessage
+        this.addConversationMessage('assistant', assistantMessage, {
+          type: 'feedback',
+          questionId: this.currentQuestion?.id,
+          section: 'theoretical'
         })
 
         return {
@@ -202,9 +237,11 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
 
         // Handle the 3 cases based on intent detection
         if (evaluation.isAskingHint && evaluation.isHintResponse) {
-          this.conversationHistory.push({
-            role: 'assistant',
-            content: evaluation.feedback
+          this.addConversationMessage('assistant', evaluation.feedback, {
+            type: 'hint',
+            questionId: this.currentQuestion?.id,
+            hintLevel: this.hintLevel,
+            section: 'theoretical'
           })
 
           return {
@@ -215,9 +252,10 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
         }
 
         if (evaluation.isAskingClarifyingQuestion && evaluation.isClarificationResponse) {
-          this.conversationHistory.push({
-            role: 'assistant',
-            content: evaluation.feedback
+          this.addConversationMessage('assistant', evaluation.feedback, {
+            type: 'clarification',
+            questionId: this.currentQuestion?.id,
+            section: 'theoretical'
           })
 
           return {
@@ -233,19 +271,31 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
 
         // Handle normal evaluation responses
         let responseText = ''
+        let messageType: ConversationMessage['metadata']['type'] = 'feedback'
         if (evaluation.needsFollowUp) {
-          responseText = evaluation.followUpQuestion || "Let me ask a follow-up question about that."
+          // Don't add the follow-up question here - it will be added when askFollowUp event fires
+          // Just provide a transition message
+          responseText = "Let me ask a follow-up question about that."
+          messageType = 'feedback'
           // Store the follow-up question for hint generation
           this.currentFollowUpQuestion = evaluation.followUpQuestion || null
           console.log('🎯 [LLM] Follow-up question stored for hints:', this.currentFollowUpQuestion?.substring(0, 50))
         } else {
           responseText = this.generatePositiveResponse(evaluation.score)
+          messageType = 'feedback'
         }
 
-        // Add assistant message to conversation
-        this.conversationHistory.push({
-          role: 'assistant',
-          content: responseText
+        // Add assistant message to conversation with evaluation metadata
+        // Note: Follow-up questions are added separately when askFollowUp event fires
+        this.addConversationMessage('assistant', responseText, {
+          type: messageType,
+          questionId: this.currentQuestion?.id,
+          section: 'theoretical',
+          evaluation: {
+            score: evaluation.score,
+            keyPointsCovered: evaluation.keyPointsCovered,
+            needsFollowUp: evaluation.needsFollowUp
+          }
         })
 
         return {
@@ -312,9 +362,10 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
       
       const responseText = `Great! Now, ${this.currentQuestion.question}`
       
-      this.conversationHistory.push({
-        role: 'assistant',
-        content: responseText
+      this.addConversationMessage('assistant', responseText, {
+        type: 'question',
+        questionId: this.currentQuestion.id,
+        section: 'theoretical'
       })
 
       this.emit('questionChanged', this.currentQuestion)
@@ -332,9 +383,9 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
   async transitionToCoding(): Promise<LLMResponse> {
     const responseText = "Excellent! Now let's move on to the coding section. I'll present you with a programming problem."
     
-    this.conversationHistory.push({
-      role: 'assistant',
-      content: responseText
+    this.addConversationMessage('assistant', responseText, {
+      type: 'transition',
+      section: 'theoretical'
     })
 
     this.emit('transitionToCoding')
@@ -346,9 +397,11 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
   }
 
   async provideHint(hintText: string): Promise<LLMResponse> {
-    this.conversationHistory.push({
-      role: 'assistant',
-      content: hintText
+    this.addConversationMessage('assistant', hintText, {
+      type: 'hint',
+      questionId: this.currentQuestion?.id,
+      hintLevel: this.hintLevel,
+      section: 'theoretical'
     })
 
     return {
@@ -406,12 +459,26 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
     this.currentFollowUpQuestion = null // Clear follow-up question on reset
   }
 
-  // Add to conversation history
+  // Add to conversation history (legacy method - use addConversationMessage for new code)
   addToConversation(role: 'user' | 'assistant', content: string): void {
-    this.conversationHistory.push({ role, content })
+    this.addConversationMessage(role, content, {
+      type: role === 'user' ? 'answer' : 'feedback',
+      questionId: this.currentQuestion?.id,
+      section: 'theoretical'
+    })
   }
 
-  getConversationHistory(): Message[] {
+  // Set hint level for tracking
+  setHintLevel(level: 1 | 2): void {
+    this.hintLevel = level
+  }
+
+  getConversationHistory(): ConversationMessage[] {
+    console.log(`💬 [LLM] getConversationHistory called: returning ${this.conversationHistory.length} messages`)
+    if (this.conversationHistory.length > 0) {
+      console.log(`💬 [LLM] First message: ${this.conversationHistory[0].role} - ${this.conversationHistory[0].content.substring(0, 50)}...`)
+      console.log(`💬 [LLM] Last message: ${this.conversationHistory[this.conversationHistory.length - 1].role} - ${this.conversationHistory[this.conversationHistory.length - 1].content.substring(0, 50)}...`)
+    }
     return [...this.conversationHistory]
   }
 
@@ -519,9 +586,11 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
         const hintText = response.data.hint
         console.log('🔍 [LLM] Hint generated:', hintText)
         
-        this.conversationHistory.push({
-          role: 'assistant',
-          content: hintText
+        this.addConversationMessage('assistant', hintText, {
+          type: 'hint',
+          questionId: this.currentQuestion?.id,
+          hintLevel: this.hintLevel,
+          section: 'theoretical'
         })
 
         return {
@@ -572,9 +641,10 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
       if (response.data.success) {
         const clarificationText = response.data.clarification
         
-        this.conversationHistory.push({
-          role: 'assistant',
-          content: clarificationText
+        this.addConversationMessage('assistant', clarificationText, {
+          type: 'clarification',
+          questionId: this.currentQuestion?.id,
+          section: 'theoretical'
         })
 
         return {
