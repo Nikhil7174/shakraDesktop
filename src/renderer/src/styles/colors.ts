@@ -52,7 +52,7 @@ export const colors = {
   background: {
     primary: '#ffffff',
     secondary: '#fafafa',
-    tertiary: '#f5f5f5',
+    tertiary: '#fafafa',
     elevated: '#ffffff',
     overlay: 'rgba(0, 0, 0, 0.45)',
   },

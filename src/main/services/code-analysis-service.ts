@@ -475,8 +475,71 @@ export class CodeAnalysisService extends EventEmitter {
     this.spaceComplexity = undefined
     this.hintLevel = 1
     
-    // Add problem introduction to conversation
-    this.addConversationMessage('assistant', `Let's work on: ${problem.title}. ${problem.description}`, {
+    // Build complete problem statement with all details
+    let problemStatement = `Let's work on: ${problem.title}.\n\n${problem.description}`
+    
+    // Add constraints if available
+    if (problem.constraints) {
+      let constraintsText = ''
+      if (Array.isArray(problem.constraints)) {
+        constraintsText = problem.constraints.join('\n')
+      } else if (typeof problem.constraints === 'string') {
+        try {
+          // Try to parse as JSON array
+          const parsed = JSON.parse(problem.constraints)
+          if (Array.isArray(parsed)) {
+            constraintsText = parsed.join('\n')
+          } else {
+            constraintsText = problem.constraints
+          }
+        } catch {
+          // If not JSON, use as-is
+          constraintsText = problem.constraints
+        }
+      }
+      if (constraintsText) {
+        problemStatement += `\n\nConstraints:\n${constraintsText}`
+      }
+    }
+    
+    // Add examples if available
+    if (problem.examples) {
+      let examplesText = ''
+      if (Array.isArray(problem.examples)) {
+        examplesText = problem.examples.map((ex, idx) => {
+          const parts: string[] = []
+          if (ex.input !== undefined) parts.push(`Input: ${ex.input}`)
+          if (ex.output !== undefined) parts.push(`Output: ${ex.output}`)
+          if (ex.explanation !== undefined) parts.push(`Explanation: ${ex.explanation}`)
+          return `Example ${idx + 1}:\n${parts.join('\n')}`
+        }).join('\n\n')
+      } else if (typeof problem.examples === 'string') {
+        try {
+          // Try to parse as JSON
+          const parsed = JSON.parse(problem.examples)
+          if (Array.isArray(parsed)) {
+            examplesText = parsed.map((ex: any, idx: number) => {
+              const parts: string[] = []
+              if (ex.input !== undefined) parts.push(`Input: ${ex.input}`)
+              if (ex.output !== undefined) parts.push(`Output: ${ex.output}`)
+              if (ex.explanation !== undefined) parts.push(`Explanation: ${ex.explanation}`)
+              return `Example ${idx + 1}:\n${parts.join('\n')}`
+            }).join('\n\n')
+          } else {
+            examplesText = problem.examples
+          }
+        } catch {
+          // If not JSON, use as-is
+          examplesText = problem.examples
+        }
+      }
+      if (examplesText) {
+        problemStatement += `\n\nExamples:\n${examplesText}`
+      }
+    }
+    
+    // Add problem introduction to conversation with full statement
+    this.addConversationMessage('assistant', problemStatement, {
       type: 'question'
     })
     

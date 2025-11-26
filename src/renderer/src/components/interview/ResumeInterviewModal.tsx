@@ -64,7 +64,7 @@ export const ResumeInterviewModal: React.FC<ResumeInterviewModalProps> = ({
 
         {sessionSummary && (
           <div style={{
-            background: '#f5f5f5',
+            background: '#fafafa',
             borderRadius: 8,
             padding: 20,
             marginBottom: 32

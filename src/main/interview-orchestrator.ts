@@ -239,26 +239,62 @@ export class InterviewOrchestrator extends EventEmitter {
     const finalSubmission = this.codeAnalysis.getFinalSubmission()
     
     codeAnalysisHistory.forEach(msg => {
-      // Check if message already exists
-      const existingIndex = this.fullConversationHistory.findIndex(
-        existing => existing.timestamp === msg.timestamp && 
-                   existing.content === msg.content &&
-                   existing.role === msg.role
-      )
+      // First, ensure codingProblemId is set (needed for duplicate detection)
+      // If message doesn't have codingProblemId but we have a current problem, add it
+      if (!msg.metadata.codingProblemId && currentProblemInCodeAnalysis) {
+        console.log('🔧 [ConversationHistory] Adding missing codingProblemId to message:', msg.metadata.type, 'for problem:', currentProblemInCodeAnalysis.id)
+        msg.metadata.codingProblemId = currentProblemInCodeAnalysis.id
+      }
+      
+      // If message still doesn't have codingProblemId but we're tracking one, use that
+      if (!msg.metadata.codingProblemId && this.currentProblemId) {
+        console.log('🔧 [ConversationHistory] Using tracked currentProblemId for message:', this.currentProblemId)
+        msg.metadata.codingProblemId = this.currentProblemId
+      }
+      
+      // For question messages, check for duplicates by problem ID and type (not just timestamp)
+      // This prevents the same question from being added twice even if timestamps differ
+      let existingIndex = -1
+      if (msg.metadata.type === 'question' && msg.metadata.codingProblemId) {
+        // Check if a question for this problem already exists
+        // First check by problem ID and role
+        existingIndex = this.fullConversationHistory.findIndex(
+          existing => existing.metadata.type === 'question' &&
+                     existing.metadata.codingProblemId === msg.metadata.codingProblemId &&
+                     existing.role === msg.role
+        )
+        
+        // If not found by problem ID, also check by content similarity (for cases where codingProblemId might not be set)
+        // Check if content starts with "Let's work on:" and has similar title
+        if (existingIndex === -1 && msg.content.startsWith("Let's work on:")) {
+          const titleMatch = msg.content.match(/Let's work on:\s*([^\n.]+)/)
+          if (titleMatch) {
+            const questionTitle = titleMatch[1].trim()
+            existingIndex = this.fullConversationHistory.findIndex(
+              existing => existing.metadata.type === 'question' &&
+                         existing.role === msg.role &&
+                         existing.content.startsWith("Let's work on:") &&
+                         existing.content.includes(questionTitle)
+            )
+          }
+        }
+        
+        if (existingIndex !== -1) {
+          console.log('🔧 [ConversationHistory] Duplicate coding question detected for problem:', msg.metadata.codingProblemId || 'unknown', '- skipping')
+        }
+      }
+      
+      // If not found by problem ID or content, check by timestamp and exact content (for other message types)
+      if (existingIndex === -1) {
+        existingIndex = this.fullConversationHistory.findIndex(
+          existing => existing.timestamp === msg.timestamp && 
+                     existing.content === msg.content &&
+                     existing.role === msg.role
+        )
+      }
       
       if (existingIndex === -1) {
         // New message - add it
-        // If message doesn't have codingProblemId but we have a current problem, add it
-        if (!msg.metadata.codingProblemId && currentProblemInCodeAnalysis) {
-          console.log('🔧 [ConversationHistory] Adding missing codingProblemId to message:', msg.metadata.type, 'for problem:', currentProblemInCodeAnalysis.id)
-          msg.metadata.codingProblemId = currentProblemInCodeAnalysis.id
-        }
-        
-        // If message still doesn't have codingProblemId but we're tracking one, use that
-        if (!msg.metadata.codingProblemId && this.currentProblemId) {
-          console.log('🔧 [ConversationHistory] Using tracked currentProblemId for message:', this.currentProblemId)
-          msg.metadata.codingProblemId = this.currentProblemId
-        }
         
         // For code submission messages, ensure TC/SC is in metadata
         if (msg.metadata.type === 'code_submission') {
@@ -475,7 +511,18 @@ export class InterviewOrchestrator extends EventEmitter {
       let problem = this.codeAnalysis.getCurrentProblem()
       if (!problem) {
         console.warn('⚠️ [Interview] Problem not found in codeAnalysis, trying session...')
-        problem = this.getCurrentCodingProblem()
+        // Get the first problem from session if codeAnalysis doesn't have it
+        // This can happen if setCurrentProblem wasn't called during initialization
+        if (this.currentSession?.codingProblems && this.currentSession.codingProblems.length > 0) {
+          // Use the problem at the current index, or the first one if no index is tracked
+          const problemIndex = this.currentProblemId 
+            ? this.currentSession.codingProblems.findIndex(p => p.id === this.currentProblemId)
+            : 0
+          problem = this.currentSession.codingProblems[problemIndex >= 0 ? problemIndex : 0]
+          console.log('✅ [Interview] Got problem from session:', problem?.id, problem?.title)
+        } else {
+          problem = this.getCurrentCodingProblem()
+        }
       }
       
       console.log('🎯 [Interview] presentCodingProblem event triggered')
@@ -756,7 +803,14 @@ export class InterviewOrchestrator extends EventEmitter {
     this.currentQuestionId = null
     this.payloadSent = false // Reset payload sent flag for new interview
     
-    this.currentSession = session
+    // Ensure startTime is set if not already present
+    const sessionWithStartTime: InterviewSession = {
+      ...session,
+      startTime: session.startTime || new Date(),
+      status: session.status || 'in_progress'
+    }
+    
+    this.currentSession = sessionWithStartTime
     this.llm.setQuestions(session.questions)
     this.stateMachine.setQuestions(session.questions, session.maxTheoreticalQuestions || 10)
     this.llm.setMaxTheoreticalQuestions(session.maxTheoreticalQuestions || 10)
@@ -767,10 +821,9 @@ export class InterviewOrchestrator extends EventEmitter {
       this.stateMachine.setCurrentQuestionIndex(idx)
       this.llm.setCurrentQuestionIndex(idx)
     }
-    // Initialize coding problem context if provided
-    if (session.codingProblems && session.codingProblems.length > 0) {
-      this.codeAnalysis.setCurrentProblem(session.codingProblems[0])
-    }
+    // NOTE: Don't call setCurrentProblem during initialization - it will be called when the problem is actually presented
+    // This prevents the coding question from being added to conversation history twice
+    // The problem will be set in the presentCodingProblem handler when it's actually needed
 
     try {
       // Start audio capture

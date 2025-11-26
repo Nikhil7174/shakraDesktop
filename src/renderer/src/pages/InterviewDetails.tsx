@@ -134,7 +134,7 @@ export const InterviewDetails: React.FC = () => {
     }
 
     return (
-        <div style={{ padding: spacing.xl, background: '#f5f5f5', minHeight: '100vh' }}>
+        <div style={{ padding: spacing.xl, background: '#fafafa', minHeight: '100vh' }}>
             {/* Header */}
             <div style={{ marginBottom: spacing.xl }}>
                 <Button
@@ -429,7 +429,7 @@ export const InterviewDetails: React.FC = () => {
                                                                                 Your Code Solution:
                                                                             </Text>
                                                                             <pre style={{
-                                                                                background: '#f5f5f5',
+                                                                                background: '#fafafa',
                                                                                 padding: '12px',
                                                                                 borderRadius: '4px',
                                                                                 border: '1px solid #e8e8e8',

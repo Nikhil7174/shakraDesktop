@@ -44,11 +44,33 @@ export function createFinalEvaluationPayload(
     msg => msg.metadata.section === 'coding'
   )
   
+  // Separate messages without a section (should be rare, but handle gracefully)
+  const otherMessages = fullConversationHistory.filter(
+    msg => !msg.metadata.section || (msg.metadata.section !== 'theoretical' && msg.metadata.section !== 'coding')
+  )
+  
   console.log('📊 [FinalEvaluation] - Theoretical messages:', theoreticalMessages.length)
   console.log('📊 [FinalEvaluation] - Coding messages:', codingMessages.length)
+  console.log('📊 [FinalEvaluation] - Other messages:', otherMessages.length)
   
-  // Use the full conversation history directly (already sorted chronologically)
-  const allConversations: ConversationMessage[] = fullConversationHistory
+  // Sort messages within each section by timestamp
+  const sortedTheoretical = [...theoreticalMessages].sort((a, b) => 
+    (a.timestamp || 0) - (b.timestamp || 0)
+  )
+  const sortedCoding = [...codingMessages].sort((a, b) => 
+    (a.timestamp || 0) - (b.timestamp || 0)
+  )
+  const sortedOther = [...otherMessages].sort((a, b) => 
+    (a.timestamp || 0) - (b.timestamp || 0)
+  )
+  
+  // Combine: theoretical first, then coding, then other (all sorted by timestamp within their section)
+  // This ensures theoretical questions always appear before coding questions in the conversation history
+  const allConversations: ConversationMessage[] = [
+    ...sortedTheoretical,
+    ...sortedCoding,
+    ...sortedOther
+  ]
   
   console.log('📊 [FinalEvaluation] Total conversation history:', allConversations.length, 'messages')
   console.log('📊 [FinalEvaluation] Message breakdown by type:')

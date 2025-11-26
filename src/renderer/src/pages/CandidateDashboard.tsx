@@ -185,19 +185,6 @@ export const CandidateDashboard: React.FC = () => {
       key: 'startTime',
       render: (date: string) => dayjs(date).format('MMM D, YYYY'),
     },
-    {
-      title: 'Score',
-      dataIndex: 'score',
-      key: 'score',
-      render: (score?: number) =>
-        score !== undefined ? (
-          <Tag color={score >= 70 ? 'success' : score >= 50 ? 'warning' : 'error'}>
-            {score}%
-          </Tag>
-        ) : (
-          <Text type="secondary">—</Text>
-        ),
-    },
   ], []);
 
   return (
