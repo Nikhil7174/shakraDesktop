@@ -176,28 +176,7 @@ export class VisionSecurityService {
       blinkRate = this.detectBlink(landmarks, now)
     }
 
-    // Gaze away detection
-    let gazeAwayDuration = 0
-    if (gazeDirection !== 'center' && gazeDirection !== 'away') {
-      if (this.gazeAwayStartTime === null) {
-        this.gazeAwayStartTime = now
-      } else {
-        gazeAwayDuration = now - this.gazeAwayStartTime
-        if (gazeAwayDuration > this.GAZE_AWAY_THRESHOLD) {
-          suspiciousEvents.push({
-            type: 'gaze_away',
-            timestamp: now,
-            severity: 'medium',
-            description: `Gaze away from screen for ${Math.round(gazeAwayDuration / 1000)}s`,
-            duration: gazeAwayDuration
-          })
-        }
-      }
-    } else {
-      this.gazeAwayStartTime = null
-    }
-
-    // Hand tracking and mobile device detection
+    // Hand tracking and mobile device detection (declare early for debug logging)
     const handsDetected = (handLandmarks?.landmarks?.length || 0) > 0
     const handCount = handLandmarks?.landmarks?.length || 0
     const suspiciousHandPatterns: SuspiciousHandPattern[] = []
@@ -232,6 +211,32 @@ export class VisionSecurityService {
       }
     }
 
+    // Gaze away detection
+    let gazeAwayDuration = 0
+    if (gazeDirection !== 'center' && gazeDirection !== 'away') {
+      if (this.gazeAwayStartTime === null) {
+        this.gazeAwayStartTime = now
+      } else {
+        gazeAwayDuration = now - this.gazeAwayStartTime
+        if (gazeAwayDuration > this.GAZE_AWAY_THRESHOLD) {
+          suspiciousEvents.push({
+            type: 'gaze_away',
+            timestamp: now,
+            severity: 'medium',
+            description: `Gaze away from screen (${gazeDirection}) for ${Math.round(gazeAwayDuration / 1000)}s`,
+            duration: gazeAwayDuration
+          })
+        }
+      }
+    } else {
+      this.gazeAwayStartTime = null
+    }
+
+    // Log debug info periodically (every 5 seconds) to help diagnose detection issues
+    if (now % 5000 < 100) { // Roughly every 5 seconds
+      console.log('👁️ [Vision Debug] Gaze:', gazeDirection, '| Face:', faceDetected, '| Hands:', handsDetected, '| Events:', suspiciousEvents.length)
+    }
+
     return {
       gazeDirection,
       blinkRate,
@@ -251,45 +256,75 @@ export class VisionSecurityService {
 
   private calculateGazeDirection(landmarks: NormalizedLandmark[]): GazeDirection {
     // Eye landmarks indices (MediaPipe face landmarks)
+    // Using more reliable landmarks that are always available
     const leftEyeLeft = landmarks[33] // Left eye left corner
     const leftEyeRight = landmarks[133] // Left eye right corner
+    const leftEyeTop = landmarks[159] // Left eye top
+    const leftEyeBottom = landmarks[145] // Left eye bottom
     const rightEyeLeft = landmarks[362] // Right eye left corner
     const rightEyeRight = landmarks[263] // Right eye right corner
-    const leftIris = landmarks[468] // Left iris center
-    const rightIris = landmarks[473] // Right iris center
+    const rightEyeTop = landmarks[386] // Right eye top
+    const rightEyeBottom = landmarks[374] // Right eye bottom
     const noseTip = landmarks[4] // Nose tip
+    const leftEyeCenter = landmarks[468] || null // Left iris/eye center (if available)
+    const rightEyeCenter = landmarks[473] || null // Right iris/eye center (if available)
 
-    if (!leftIris || !rightIris) {
+    // Check if we have basic eye landmarks
+    if (!leftEyeLeft || !leftEyeRight || !rightEyeLeft || !rightEyeRight) {
       return 'away'
     }
 
-    // Calculate eye center positions
-    const leftEyeCenterX = (leftEyeLeft.x + leftEyeRight.x) / 2
-    const leftEyeCenterY = (leftEyeLeft.y + leftEyeRight.y) / 2
-    const rightEyeCenterX = (rightEyeLeft.x + rightEyeRight.x) / 2
-    const rightEyeCenterY = (rightEyeLeft.y + rightEyeRight.y) / 2
+    // Calculate eye width for normalization
+    const leftEyeWidth = Math.abs(leftEyeRight.x - leftEyeLeft.x)
+    const rightEyeWidth = Math.abs(rightEyeRight.x - rightEyeLeft.x)
 
-    // Calculate iris offset from eye center
-    const leftIrisOffsetX = leftIris.x - leftEyeCenterX
-    const leftIrisOffsetY = leftIris.y - leftEyeCenterY
-    const rightIrisOffsetX = rightIris.x - rightEyeCenterX
-    const rightIrisOffsetY = rightIris.y - rightEyeCenterY
+    // Calculate offset from eye center (normalized by eye width)
+    const leftOffsetX = leftEyeCenter 
+      ? (leftEyeCenter.x - (leftEyeLeft.x + leftEyeRight.x) / 2) / leftEyeWidth
+      : 0
+    const leftOffsetY = leftEyeCenter && leftEyeTop && leftEyeBottom
+      ? (leftEyeCenter.y - (leftEyeTop.y + leftEyeBottom.y) / 2) / Math.abs(leftEyeTop.y - leftEyeBottom.y)
+      : 0
+    
+    const rightOffsetX = rightEyeCenter 
+      ? (rightEyeCenter.x - (rightEyeLeft.x + rightEyeRight.x) / 2) / rightEyeWidth
+      : 0
+    const rightOffsetY = rightEyeCenter && rightEyeTop && rightEyeBottom
+      ? (rightEyeCenter.y - (rightEyeTop.y + rightEyeBottom.y) / 2) / Math.abs(rightEyeTop.y - rightEyeBottom.y)
+      : 0
 
     // Average the offsets
-    const avgOffsetX = (leftIrisOffsetX + rightIrisOffsetX) / 2
-    const avgOffsetY = (leftIrisOffsetY + rightIrisOffsetY) / 2
+    const avgOffsetX = (leftOffsetX + rightOffsetX) / 2
+    const avgOffsetY = (leftOffsetY + rightOffsetY) / 2
 
-    // Thresholds for gaze direction
-    const threshold = 0.02
+    // Use nose position as additional reference for head pose
+    const noseOffsetX = noseTip ? (noseTip.x - 0.5) : 0 // 0.5 is center of face
 
-    if (Math.abs(avgOffsetX) < threshold && Math.abs(avgOffsetY) < threshold) {
+    // Thresholds for gaze direction (more lenient)
+    const threshold = 0.05 // Increased from 0.02 for better detection
+    const headPoseThreshold = 0.1 // For head turning
+
+    // If no iris data, use head pose estimation from nose position
+    if (!leftEyeCenter || !rightEyeCenter) {
+      if (Math.abs(noseOffsetX) > headPoseThreshold) {
+        return noseOffsetX > 0 ? 'right' : 'left'
+      }
+      // Without iris data, assume center if face is detected
       return 'center'
     }
 
-    if (Math.abs(avgOffsetX) > Math.abs(avgOffsetY)) {
-      return avgOffsetX > 0 ? 'right' : 'left'
+    // Combine eye gaze and head pose
+    const combinedOffsetX = (avgOffsetX * 0.7) + (noseOffsetX * 0.3)
+    const combinedOffsetY = avgOffsetY
+
+    if (Math.abs(combinedOffsetX) < threshold && Math.abs(combinedOffsetY) < threshold) {
+      return 'center'
+    }
+
+    if (Math.abs(combinedOffsetX) > Math.abs(combinedOffsetY)) {
+      return combinedOffsetX > 0 ? 'right' : 'left'
     } else {
-      return avgOffsetY > 0 ? 'down' : 'up'
+      return combinedOffsetY > 0 ? 'down' : 'up'
     }
   }
 

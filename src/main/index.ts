@@ -622,12 +622,29 @@ app.whenReady().then(async () => {
 
   // Handle vision security data from renderer
   ipcMain.on('vision-security-data', (_event, data: any) => {
-    // Log security data for monitoring
-    console.log('📹 [Vision Security] Data received:', {
-      gazeDirection: data.gazeDirection,
-      faceDetected: data.faceDetected,
-      suspiciousEvents: data.suspiciousEvents?.length || 0
-    })
+    const eventCount = data.suspiciousEvents?.length || 0
+    
+    // Log security data for monitoring (only log if there are events or every 5 seconds)
+    const shouldLog = eventCount > 0 || (Date.now() % 5000 < 1000)
+    if (shouldLog) {
+      console.log('📹 [Vision Security] Data received:', {
+        gazeDirection: data.gazeDirection,
+        faceDetected: data.faceDetected,
+        handsDetected: data.handsDetected,
+        suspiciousEvents: eventCount,
+        blinkRate: data.blinkRate
+      })
+    }
+    
+    // Log all suspicious events (not just high severity)
+    if (eventCount > 0) {
+      console.warn('⚠️ [Vision Security] Events:', data.suspiciousEvents.map((e: any) => ({
+        type: e.type,
+        severity: e.severity,
+        description: e.description,
+        duration: e.duration ? `${Math.round(e.duration / 1000)}s` : undefined
+      })))
+    }
     
     // Emit to renderer if there are high-severity events
     if (data.suspiciousEvents?.some((e: any) => e.severity === 'high')) {

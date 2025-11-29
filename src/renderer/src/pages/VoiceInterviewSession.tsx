@@ -3,6 +3,8 @@ import { useSelector } from 'react-redux'
 import { CodeEditor } from '../components/CodeEditor'
 import { AudioVisualizer } from '../components/AudioVisualizer'
 import { QuestionDisplay } from '../components/QuestionDisplay'
+import { VideoCapture } from '../components/VideoCapture'
+import { useVisionSecurity } from '../hooks/useVisionSecurity'
 import { ResumeInterviewModal } from '../components/interview/ResumeInterviewModal'
 import { CodingProblem, Question } from '../../../shared/types'
 import type { RootState } from '../store'
@@ -48,8 +50,28 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [unfinishedSession, setUnfinishedSession] = useState<any>(null)
   const [hasCheckedUnfinished, setHasCheckedUnfinished] = useState(false)
   const [userChoseResume, setUserChoseResume] = useState(false)
+  const [hiddenVideoElement, setHiddenVideoElement] = useState<HTMLVideoElement | null>(null)
   
   const codeEditorRef = useRef<any>(null)
+
+  // Initialize vision security tracking that stays active throughout the interview
+  // This works even when video windows are hidden (like in coding section)
+  useVisionSecurity({
+    videoElement: hiddenVideoElement,
+    enabled: hiddenVideoElement !== null && currentState !== 'wrap_up' && currentState !== 'connecting',
+    onSecurityAlert: (status) => {
+      if (status.suspiciousEvents.length > 0) {
+        console.warn('🚨 [Vision Security - Hidden] Alert triggered:', {
+          totalEvents: status.suspiciousEvents.length,
+          events: status.suspiciousEvents.map(e => ({
+            type: e.type,
+            severity: e.severity,
+            description: e.description
+          }))
+        })
+      }
+    }
+  })
   const resumeData = useSelector((state: RootState) => state.interview.resumeData)
   const { user } = useSelector((state: RootState) => state.auth)
   const audioContextRef = useRef<AudioContext | null>(null)
@@ -823,6 +845,24 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         {renderCurrentSection()}
       </div>
 
+      {/* Hidden video capture for security tracking during coding section and throughout interview */}
+      <div className="hidden-video-tracker">
+        <VideoCapture
+          onStreamReady={() => {
+            console.log('📹 [VoiceInterviewSession] Hidden video stream ready for security tracking')
+          }}
+          onVideoElementReady={(videoEl) => {
+            setHiddenVideoElement(videoEl)
+            console.log('📹 [VoiceInterviewSession] Hidden video element ready for vision tracking')
+          }}
+          onStreamError={(error) => {
+            console.error('Hidden video capture error:', error)
+          }}
+          className="hidden-video-capture"
+          autoStart={true}
+        />
+      </div>
+
       <div className="audio-visualizer">
         <AudioVisualizer 
           isListening={isListening}
@@ -1097,6 +1137,23 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           bottom: 10px;
           right: 20px;
           z-index: 1000;
+        }
+
+        .hidden-video-tracker {
+          position: fixed;
+          top: -9999px;
+          left: -9999px;
+          width: 1px;
+          height: 1px;
+          opacity: 0;
+          pointer-events: none;
+          overflow: hidden;
+          z-index: -1;
+        }
+
+        .hidden-video-tracker video {
+          width: 1px;
+          height: 1px;
         }
       `}</style>
       </div>

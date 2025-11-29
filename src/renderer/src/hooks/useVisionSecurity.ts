@@ -91,9 +91,18 @@ export const useVisionSecurity = ({
               window.electronAPI.sendVisionSecurityData(securityStatus)
             }
 
-            // Trigger alert callback if there are suspicious events
-            if (securityStatus.suspiciousEvents.length > 0 && onSecurityAlert) {
-              onSecurityAlert(securityStatus)
+            // Trigger alert callback if there are suspicious events (any severity)
+            if (securityStatus.suspiciousEvents.length > 0) {
+              // Log all suspicious events
+              console.warn('🚨 [Vision Security] Suspicious events detected:', securityStatus.suspiciousEvents.map(e => ({
+                type: e.type,
+                severity: e.severity,
+                description: e.description
+              })))
+              
+              if (onSecurityAlert) {
+                onSecurityAlert(securityStatus)
+              }
             }
           }
         }

@@ -29,9 +29,16 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
     videoElement,
     enabled: true,
     onSecurityAlert: (status) => {
-      // Log high-severity alerts
-      if (status.suspiciousEvents.some(e => e.severity === 'high')) {
-        console.warn('🚨 [Vision Security] High-severity alert:', status.suspiciousEvents.filter(e => e.severity === 'high'))
+      // Log all alerts (not just high severity)
+      if (status.suspiciousEvents.length > 0) {
+        console.warn('🚨 [Vision Security - QuestionDisplay] Alert triggered:', {
+          totalEvents: status.suspiciousEvents.length,
+          events: status.suspiciousEvents.map(e => ({
+            type: e.type,
+            severity: e.severity,
+            description: e.description
+          }))
+        })
       }
     }
   })
