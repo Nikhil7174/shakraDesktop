@@ -325,4 +325,36 @@ export interface SecurityAgentAPI {
   onProcessStatsUpdate: (callback: (stats: ProcessStatsData) => void) => void
 }
 
+// ============================================================================
+// VISION SECURITY TYPES
+// ============================================================================
+
+export type GazeDirection = 'center' | 'left' | 'right' | 'up' | 'down' | 'away'
+
+export type SuspiciousHandPattern = 'phone_usage' | 'typing' | 'hand_near_face' | 'hand_near_ear' | 'rapid_movement'
+
+export interface SuspiciousEvent {
+  type: 'gaze_away' | 'multiple_faces' | 'face_absent' | 'abnormal_blink' | 'suspicious_hand_pattern' | 'mobile_device_usage'
+  timestamp: number
+  severity: 'low' | 'medium' | 'high'
+  description: string
+  duration?: number // milliseconds
+}
+
+export interface VisionSecurityStatus {
+  gazeDirection: GazeDirection
+  blinkRate: number // blinks per minute
+  faceDetected: boolean
+  multipleFacesDetected: boolean
+  facePresenceConfidence: number // 0-1
+  gazeAwayDuration: number // milliseconds
+  handsDetected: boolean
+  handCount: number
+  suspiciousHandPatterns: SuspiciousHandPattern[]
+  mobileDeviceUsageDetected: boolean
+  handMovementIntensity: number // 0-1, indicating rapid hand movements
+  suspiciousEvents: SuspiciousEvent[]
+  timestamp: number
+}
+
 

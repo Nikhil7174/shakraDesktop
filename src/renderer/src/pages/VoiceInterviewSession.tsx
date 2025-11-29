@@ -681,88 +681,15 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         const introMessage = "Welcome to your AI interview. I'll be conducting your technical interview today. We'll start with some theoretical questions, then move on to a coding problem. Please make sure your microphone is working and speak clearly."
         
         return (
-          <div className="meeting-intro-section">
-            <div className="meeting-container">
-              {/* AI Interviewer Video Window (Left Half) */}
-              <div className={`video-window ai-video ${isSpeaking ? 'speaking-active' : ''}`}>
-                <div className="video-header">
-                  <div className="video-header-info">
-                    <div className="video-name">AI Interviewer</div>
-                    <div className="video-meta">Ready to begin</div>
-                  </div>
-                  <div className="video-status">
-                    {isSpeaking && (
-                      <div className="status-badge speaking-badge">
-                        <div className="status-dot"></div>
-                        <span>Speaking</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="video-content">
-                  <div className="video-background">
-                    <div className="person-icon ai-icon">
-                      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <circle cx="12" cy="8" r="4" fill="currentColor"/>
-                        <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor"/>
-                      </svg>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="video-subtitles">
-                  {isSpeaking && (
-                    <div className="subtitle-text">
-                      {introMessage}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Candidate Video Window (Right Half) */}
-              <div className={`video-window candidate-video ${isListening ? 'speaking-active' : ''}`}>
-                <div className="video-header">
-                  <div className="video-header-info">
-                    <div className="video-name">You</div>
-                    <div className="video-meta">Candidate</div>
-                  </div>
-                  <div className="video-status">
-                    {isListening && !isSpeaking && (
-                      <div className="status-badge listening-badge">
-                        <div className="status-dot"></div>
-                        <span>Ready</span>
-                      </div>
-                    )}
-                    {isSpeaking && (
-                      <div className="status-badge waiting-badge">
-                        <div className="status-dot"></div>
-                        <span>AI speaking</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="video-content">
-                  <div className="video-background">
-                    <div className="person-icon candidate-icon">
-                      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <circle cx="12" cy="8" r="4" fill="currentColor"/>
-                        <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor"/>
-                      </svg>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="video-subtitles">
-                  {isListening && (
-                    <div className="subtitle-text listening-subtitle">
-                      🎤 Get ready - The interview will begin shortly
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
+          <div className="theoretical-section">
+            <QuestionDisplay 
+              question={null}
+              introMessage={isSpeaking ? introMessage : null}
+              introMeta="Ready to begin"
+              isListening={isListening}
+              isSpeaking={isSpeaking}
+              progress={progress}
+            />
           </div>
         )
 
@@ -920,202 +847,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           flex-direction: column;
         }
 
-        .meeting-intro-section {
-          width: 100%;
-          height: 100%;
-          margin: 0;
-          padding: 0;
-        }
-
-        .meeting-intro-section .meeting-container {
-          display: flex;
-          width: 100%;
-          height: 100%;
-          gap: 12px;
-          padding: 12px;
-          justify-content: center;
-          align-items: center;
-          max-width: 1400px;
-          margin: 0 auto;
-        }
-
-        .meeting-intro-section .video-window {
-          flex: 0 1 45%;
-          max-width: 600px;
-          display: flex;
-          flex-direction: column;
-          background: #0a0a0a;
-          border-radius: 8px;
-          border: 3px solid #2a2a2a;
-          overflow: hidden;
-          position: relative;
-          transition: all 0.3s ease;
-          min-height: 500px;
-        }
-
-        .meeting-intro-section .video-window.speaking-active {
-          border-color: #4caf50;
-          box-shadow: 0 0 20px rgba(76, 175, 80, 0.4), 0 0 40px rgba(76, 175, 80, 0.2);
-        }
-
-        .meeting-intro-section .video-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 12px 16px;
-          background: rgba(0, 0, 0, 0.6);
-          border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-          z-index: 10;
-        }
-
-        .meeting-intro-section .video-header-info {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-
-        .meeting-intro-section .video-name {
-          font-size: 14px;
-          font-weight: 600;
-          color: #ffffff;
-        }
-
-        .meeting-intro-section .video-meta {
-          font-size: 11px;
-          color: #888888;
-          font-weight: 400;
-        }
-
-        .meeting-intro-section .video-status {
-          display: flex;
-          gap: 8px;
-        }
-
-        .meeting-intro-section .status-badge {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 4px 10px;
-          border-radius: 12px;
-          font-size: 11px;
-          font-weight: 500;
-        }
-
-        .meeting-intro-section .speaking-badge {
-          background: rgba(33, 150, 243, 0.2);
-          color: #2196f3;
-          border: 1px solid rgba(33, 150, 243, 0.4);
-        }
-
-        .meeting-intro-section .listening-badge {
-          background: rgba(76, 175, 80, 0.2);
-          color: #4caf50;
-          border: 1px solid rgba(76, 175, 80, 0.4);
-        }
-
-        .meeting-intro-section .waiting-badge {
-          background: rgba(255, 255, 255, 0.1);
-          color: #cccccc;
-          border: 1px solid rgba(255, 255, 255, 0.2);
-        }
-
-        .meeting-intro-section .status-dot {
-          width: 6px;
-          height: 6px;
-          border-radius: 50%;
-          background: currentColor;
-          animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-          0% { opacity: 1; transform: scale(1); }
-          50% { opacity: 0.6; transform: scale(1.2); }
-          100% { opacity: 1; transform: scale(1); }
-        }
-
-        .meeting-intro-section .video-content {
-          flex: 1;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          position: relative;
-          overflow: hidden;
-        }
-
-        .meeting-intro-section .video-background {
-          width: 100%;
-          height: 100%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          position: absolute;
-          top: 0;
-          left: 0;
-          background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-        }
-
-        .meeting-intro-section .ai-video .video-background {
-          background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-        }
-
-        .meeting-intro-section .candidate-video .video-background {
-          background: linear-gradient(135deg, #2d1b3d 0%, #3d2a4d 50%, #4d3a5d 100%);
-        }
-
-        .meeting-intro-section .person-icon {
-          width: 100%;
-          height: 100%;
-          color: rgba(255, 255, 255, 0.4);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          position: absolute;
-          top: 50%;
-          left: 50%;
-          transform: translate(-50%, -50%);
-          z-index: 1;
-        }
-
-        .meeting-intro-section .person-icon svg {
-          width: 60%;
-          height: 60%;
-          max-width: 300px;
-          max-height: 300px;
-        }
-
-        .meeting-intro-section .ai-icon {
-          color: rgba(33, 150, 243, 0.5);
-        }
-
-        .meeting-intro-section .candidate-icon {
-          color: rgba(156, 39, 176, 0.5);
-        }
-
-
-        .meeting-intro-section .video-subtitles {
-          padding: 12px 16px;
-          background: rgba(0, 0, 0, 0.7);
-          border-top: 1px solid rgba(255, 255, 255, 0.1);
-          min-height: 60px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-
-        .meeting-intro-section .subtitle-text {
-          font-size: 14px;
-          color: #ffffff;
-          line-height: 1.5;
-          text-align: center;
-          max-width: 90%;
-          opacity: 0.9;
-        }
-
-        .meeting-intro-section .listening-subtitle {
-          color: #4caf50;
-          font-weight: 500;
-        }
-
         .coding-intro-section,
         .wrap-up-section {
           text-align: center;
@@ -1255,16 +986,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           animation: pulse 1.5s ease-in-out infinite;
         }
 
-        @keyframes pulse {
-          0%, 100% {
-            transform: scale(1);
-            opacity: 1;
-          }
-          50% {
-            transform: scale(1.3);
-            opacity: 0.7;
-          }
-        }
 
         .loading-title {
           font-size: 28px;
@@ -1287,14 +1008,12 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         }
 
 
-        .intro-section h2,
         .coding-intro-section h2,
         .wrap-up-section h2 {
           margin-bottom: 16px;
           color: #ffffff;
         }
 
-        .intro-section p,
         .coding-intro-section p,
         .wrap-up-section p {
           margin-bottom: 12px;

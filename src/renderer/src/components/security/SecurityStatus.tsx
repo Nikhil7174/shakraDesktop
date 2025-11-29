@@ -4,13 +4,21 @@ import { Badge, Tooltip, Typography, Space } from 'antd';
 import { 
   SafetyCertificateOutlined, 
   DisconnectOutlined,
-  WarningOutlined 
+  WarningOutlined,
+  EyeOutlined
 } from '@ant-design/icons';
 import { useAppSelector } from '../../store';
 
 const { Text } = Typography;
 
-export const SecurityStatus: React.FC = () => {
+interface SecurityStatusProps {
+  visionSecurityStatus?: {
+    faceDetected: boolean
+    suspiciousEvents: Array<{ type: string; severity: string }>
+  } | null
+}
+
+export const SecurityStatus: React.FC<SecurityStatusProps> = ({ visionSecurityStatus }) => {
   const { 
     isSecurityAgentConnected, 
     cheatingDetected, 
@@ -35,7 +43,7 @@ export const SecurityStatus: React.FC = () => {
       return 'Security Offline';
     }
     
-    if (cheatingDetected) {
+    if (cheatingDetected || (visionSecurityStatus?.suspiciousEvents?.some(e => e.severity === 'high'))) {
       return 'Security Alert';
     }
     
@@ -47,7 +55,7 @@ export const SecurityStatus: React.FC = () => {
       return 'error';
     }
     
-    if (cheatingDetected) {
+    if (cheatingDetected || (visionSecurityStatus?.suspiciousEvents?.some(e => e.severity === 'high'))) {
       return 'warning';
     }
     
@@ -59,17 +67,28 @@ export const SecurityStatus: React.FC = () => {
       return 'Security agent is not connected. Please ensure the security application is running.';
     }
     
-    if (cheatingDetected) {
+    const visionAlerts = visionSecurityStatus?.suspiciousEvents?.filter(e => e.severity === 'high').length || 0;
+    
+    if (cheatingDetected || visionAlerts > 0) {
       const incidentCount = cheatingIncidents.length;
-      return `${incidentCount} suspicious application${incidentCount > 1 ? 's' : ''} detected and blocked.`;
+      const parts = [];
+      if (incidentCount > 0) {
+        parts.push(`${incidentCount} suspicious application${incidentCount > 1 ? 's' : ''} detected`);
+      }
+      if (visionAlerts > 0) {
+        parts.push(`${visionAlerts} vision security alert${visionAlerts > 1 ? 's' : ''}`);
+      }
+      return parts.join('. ') + '.';
     }
     
-    if (securityStatus?.blockedAppsDetected.length === 0) {
-      return 'No suspicious applications detected. Your interview environment is secure.';
+    if (securityStatus?.blockedAppsDetected.length === 0 && (!visionSecurityStatus || visionSecurityStatus.faceDetected)) {
+      return 'No suspicious activity detected. Your interview environment is secure.';
     }
     
     return 'Security monitoring is active and protecting your interview.';
   };
+
+  const hasVisionMonitoring = visionSecurityStatus !== undefined;
 
   return (
     <Tooltip title={getTooltipContent()} placement="bottom">
@@ -78,6 +97,9 @@ export const SecurityStatus: React.FC = () => {
         text={
           <Space size="small">
             {getStatusIcon()}
+            {hasVisionMonitoring && visionSecurityStatus?.faceDetected && (
+              <EyeOutlined style={{ fontSize: 12, color: '#52c41a' }} />
+            )}
             <Text type="secondary" style={{ fontSize: 12 }}>
               {getStatusText()}
             </Text>

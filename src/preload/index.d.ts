@@ -7,9 +7,14 @@ type InterviewAPI = {
   resumeInterview: () => Promise<{ success: boolean; error?: string }>
   stopInterview: () => Promise<{ success: boolean; error?: string }>
   analyzeCode: (codeData: any) => Promise<{ success: boolean; analysis?: any; error?: string }>
-  submitSolution: (code: string, isTimeout?: boolean) => Promise<{ success: boolean; error?: string; hasNextProblem?: boolean; feedback?: string }>
+  submitSolution: (code: string, isTimeout?: boolean, timeComplexity?: string, spaceComplexity?: string) => Promise<{ success: boolean; error?: string; hasNextProblem?: boolean; feedback?: string }>
+  markPayloadSent: () => Promise<{ success: boolean; error?: string }>
+  onFinalEvaluationReady: (callback: (payload: any) => void) => void
   requestAudioPermissions: () => Promise<{ success: boolean; error?: string }>
+  requestCameraPermissions: () => Promise<{ success: boolean; error?: string }>
   sendAudioChunk: (data: Uint8Array) => void
+  sendVisionSecurityData: (data: any) => void
+  onVisionSecurityAlert: (callback: (alert: any) => void) => void
   getSTTToken: () => Promise<{ success: boolean; token?: string; error?: string }>
   updateSTTToken: (token: string) => Promise<{ success: boolean; error?: string }>
   checkUnfinishedInterview: () => Promise<{ hasUnfinished: boolean; sessionInfo?: any; error?: string }>

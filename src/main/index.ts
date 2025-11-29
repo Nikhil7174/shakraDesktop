@@ -109,11 +109,14 @@ app.whenReady().then(async () => {
         ...details.responseHeaders,
         'Content-Security-Policy': [
           "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; " +
-          "connect-src 'self' https://crisp-3jy7.onrender.com https://localhost:3001 http://localhost:3001 ws://localhost:8765; " +
+          "connect-src 'self' https://crisp-3jy7.onrender.com https://localhost:3001 http://localhost:3001 ws://localhost:8765 https://cdn.jsdelivr.net https://storage.googleapis.com; " +
           "img-src 'self' data: https:; " +
-          "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+          "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com; " +
+          "script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com; " +
           "style-src 'self' 'unsafe-inline'; " +
-          "font-src 'self' data:;"
+          "font-src 'self' data:; " +
+          "worker-src 'self' blob: https://cdn.jsdelivr.net; " +
+          "wasm-unsafe-eval;"
         ]
       }
     })
@@ -594,6 +597,44 @@ app.whenReady().then(async () => {
       const err = error as Error
       console.error('Failed to request audio permissions:', err)
       return { success: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('request-camera-permissions', async () => {
+    try {
+      // Request camera permissions
+      const { systemPreferences } = require('electron')
+      
+      if (process.platform === 'darwin') {
+        const status = systemPreferences.getMediaAccessStatus('camera')
+        if (status !== 'granted') {
+          await systemPreferences.askForMediaAccess('camera')
+        }
+      }
+      
+      return { success: true }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to request camera permissions:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
+  // Handle vision security data from renderer
+  ipcMain.on('vision-security-data', (_event, data: any) => {
+    // Log security data for monitoring
+    console.log('📹 [Vision Security] Data received:', {
+      gazeDirection: data.gazeDirection,
+      faceDetected: data.faceDetected,
+      suspiciousEvents: data.suspiciousEvents?.length || 0
+    })
+    
+    // Emit to renderer if there are high-severity events
+    if (data.suspiciousEvents?.some((e: any) => e.severity === 'high')) {
+      mainWindow?.webContents.send('vision-security-alert', {
+        events: data.suspiciousEvents.filter((e: any) => e.severity === 'high'),
+        timestamp: Date.now()
+      })
     }
   })
 

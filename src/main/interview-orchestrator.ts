@@ -464,6 +464,26 @@ export class InterviewOrchestrator extends EventEmitter {
     this.stateMachine.on('codingIntroStarted', async () => {
       console.log('🎯 [Interview] Coding intro started')
       
+      // Debug: Log coding problems availability
+      console.log('🎯 [Interview] Debug - currentSession:', !!this.currentSession)
+      console.log('🎯 [Interview] Debug - codingProblems:', this.currentSession?.codingProblems)
+      console.log('🎯 [Interview] Debug - codingProblems length:', this.currentSession?.codingProblems?.length)
+      console.log('🎯 [Interview] Debug - codingProblems array:', JSON.stringify(this.currentSession?.codingProblems?.map(p => ({ id: p.id, title: p.title }))))
+      
+      // Check if we have coding problems BEFORE speaking
+      const hasCodingProblems = this.currentSession?.codingProblems && this.currentSession.codingProblems.length > 0
+      
+      if (!hasCodingProblems) {
+        console.error('❌ [Interview] No coding problems available! Session:', {
+          hasSession: !!this.currentSession,
+          codingProblemsCount: this.currentSession?.codingProblems?.length || 0,
+          codingProblems: this.currentSession?.codingProblems
+        })
+        console.log('🎯 [Interview] No coding problems, moving to wrap up')
+        await this.stateMachine.transition('no_coding_problems')
+        return
+      }
+      
       // Only speak transition message if we actually had theoretical questions
       if (this.hadTheoreticalQuestions) {
         console.log('🎯 [Interview] Theoretical questions completed, transitioning to coding phase')
@@ -474,16 +494,10 @@ export class InterviewOrchestrator extends EventEmitter {
           bargeInPolicy: 'soft'
         })
         
-        // Check if we have coding problems
-        if (this.currentSession?.codingProblems && this.currentSession.codingProblems.length > 0) {
-          console.log(`🎯 [Interview] ${this.currentSession.codingProblems.length} coding problem(s) available`)
-          // Only transition if intro completed
-          if (result.completed || result.softStopped) {
-            await this.stateMachine.transition('coding_problem_presented')
-          }
-        } else {
-          console.log('🎯 [Interview] No coding problems, moving to wrap up')
-          await this.stateMachine.transition('no_coding_problems')
+        console.log(`🎯 [Interview] ${this.currentSession?.codingProblems?.length || 0} coding problem(s) available`)
+        // Only transition if intro completed
+        if (result.completed || result.softStopped) {
+          await this.stateMachine.transition('coding_problem_presented')
         }
       } else {
         // Coding-only interview - speak welcome message here (centralized, no duplication)
@@ -494,14 +508,9 @@ export class InterviewOrchestrator extends EventEmitter {
           bargeInPolicy: 'soft'
         })
         
-        if (this.currentSession?.codingProblems && this.currentSession.codingProblems.length > 0) {
-          // Only transition if intro completed
-          if (result.completed || result.softStopped) {
-            await this.stateMachine.transition('coding_problem_presented')
-          }
-        } else {
-          console.log('🎯 [Interview] No coding problems, moving to wrap up')
-          await this.stateMachine.transition('no_coding_problems')
+        // Only transition if intro completed
+        if (result.completed || result.softStopped) {
+          await this.stateMachine.transition('coding_problem_presented')
         }
       }
     })
@@ -528,39 +537,47 @@ export class InterviewOrchestrator extends EventEmitter {
       console.log('🎯 [Interview] presentCodingProblem event triggered')
       console.log('🎯 [Interview] Problem from codeAnalysis:', problem?.id, problem?.title)
       console.log('🎯 [Interview] Current problem ID tracked:', this.currentProblemId)
+      console.log('🎯 [Interview] Session coding problems count:', this.currentSession?.codingProblems?.length)
       
-      if (problem) {
-        // Ensure currentProblemId matches
-        if (this.currentProblemId !== problem.id) {
-          console.log('🎯 [Interview] Updating currentProblemId to match problem:', problem.id)
-          this.currentProblemId = problem.id
-        }
-        
-        // Do minimal setup first (must be done before speaking for proper tagging)
-        this.stateMachine.resetCodingCounters()
-        this.codeAnalysis.setCurrentProblem(problem)
-        
-        // Start TTS generation immediately (don't await - let it generate in background)
-        const intro = "Here's the coding problem. You can see the details on your screen. Before you start coding, please explain your approach to solving this problem. Also feel free to ask any clarifying questions if you need to understand the requirements better. While you work through it, please plan to note the time and space complexity of your final solution as well."
-        const speakPromise = this.speakWithPolicy(intro, {
-          interruptible: false,
-          bargeInPolicy: 'soft'
-        })
-        
-        // Emit to renderer immediately (timer starts right away)
-        this.emit('presentCodingProblem', problem)
-        console.log('🎯 [Interview] Emitted presentCodingProblem event to renderer')
-        
-        // Sync conversation history in parallel (non-blocking)
-        this.syncConversationHistoryFromServices()
-        
-        // Wait for speech to complete
-        await speakPromise
-      } else {
+      if (!problem) {
         console.error('❌ [Interview] No coding problem found when presenting!')
         console.error('❌ [Interview] CodeAnalysis problem:', this.codeAnalysis.getCurrentProblem()?.id)
         console.error('❌ [Interview] Session problems:', this.currentSession?.codingProblems?.length)
+        console.error('❌ [Interview] Session problems array:', this.currentSession?.codingProblems)
+        console.error('❌ [Interview] Current problem ID:', this.currentProblemId)
+        
+        // If no problem found, transition to wrap up
+        console.error('❌ [Interview] Cannot proceed without coding problem, transitioning to wrap up')
+        await this.stateMachine.transition('no_coding_problems')
+        return
       }
+      
+      // Ensure currentProblemId matches
+      if (this.currentProblemId !== problem.id) {
+        console.log('🎯 [Interview] Updating currentProblemId to match problem:', problem.id)
+        this.currentProblemId = problem.id
+      }
+      
+      // Do minimal setup first (must be done before speaking for proper tagging)
+      this.stateMachine.resetCodingCounters()
+      this.codeAnalysis.setCurrentProblem(problem)
+      
+      // Start TTS generation immediately (don't await - let it generate in background)
+      const intro = "Here's the coding problem. You can see the details on your screen. Before you start coding, please explain your approach to solving this problem. Also feel free to ask any clarifying questions if you need to understand the requirements better. While you work through it, please plan to note the time and space complexity of your final solution as well."
+      const speakPromise = this.speakWithPolicy(intro, {
+        interruptible: false,
+        bargeInPolicy: 'soft'
+      })
+      
+      // Emit to renderer immediately (timer starts right away)
+      this.emit('presentCodingProblem', problem)
+      console.log('🎯 [Interview] Emitted presentCodingProblem event to renderer with problem:', problem.id, problem.title)
+      
+      // Sync conversation history in parallel (non-blocking)
+      this.syncConversationHistoryFromServices()
+      
+      // Wait for speech to complete
+      await speakPromise
     })
 
     this.stateMachine.on('askForApproach', async () => {

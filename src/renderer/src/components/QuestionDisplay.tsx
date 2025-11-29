@@ -1,9 +1,13 @@
-import React from 'react'
+import React, { useState, useEffect } from 'react'
 import { Question } from '../../../shared/types'
+import { VideoCapture } from './VideoCapture'
+import { useVisionSecurity } from '../hooks/useVisionSecurity'
 
 interface QuestionDisplayProps {
   question: Question | null
   followUpQuestionText?: string | null
+  introMessage?: string | null
+  introMeta?: string
   isListening: boolean
   isSpeaking: boolean
   progress: { current: number, total: number }
@@ -12,11 +16,63 @@ interface QuestionDisplayProps {
 export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
   question,
   followUpQuestionText,
+  introMessage,
+  introMeta = 'Ready to begin',
   isListening,
   isSpeaking,
   progress
 }) => {
-  if (!question) {
+  const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null)
+  
+  // Initialize vision security tracking
+  const { status: visionStatus, isInitialized: visionInitialized, error: visionError } = useVisionSecurity({
+    videoElement,
+    enabled: true,
+    onSecurityAlert: (status) => {
+      // Log high-severity alerts
+      if (status.suspiciousEvents.some(e => e.severity === 'high')) {
+        console.warn('🚨 [Vision Security] High-severity alert:', status.suspiciousEvents.filter(e => e.severity === 'high'))
+      }
+    }
+  })
+
+  // Log vision security status periodically (for debugging)
+  useEffect(() => {
+    if (visionStatus && visionInitialized) {
+      // Log every 5 seconds to avoid spam
+      const interval = setInterval(() => {
+        console.log('📹 [Vision Security] Status:', {
+          faceDetected: visionStatus.faceDetected,
+          gazeDirection: visionStatus.gazeDirection,
+          blinkRate: visionStatus.blinkRate,
+          handsDetected: visionStatus.handsDetected,
+          suspiciousEvents: visionStatus.suspiciousEvents.length
+        })
+      }, 5000)
+      return () => clearInterval(interval)
+    }
+    return undefined
+  }, [visionStatus, visionInitialized])
+
+  // Log vision security errors
+  useEffect(() => {
+    if (visionError) {
+      console.error('❌ [Vision Security] Error:', visionError)
+    }
+  }, [visionError])
+
+  // Determine display text and meta
+  const isIntroMode = !question && !!introMessage
+  const displayText = question 
+    ? (followUpQuestionText || question.question)
+    : (introMessage || null)
+  const displayMeta = question
+    ? `Question ${progress.current} of ${progress.total}`
+    : (introMeta || 'Loading...')
+  const isFollowUp = !!followUpQuestionText && !!question
+
+  // Show loading state only if no question and no intro message
+  if (!question && !introMessage) {
     return (
       <div className="meeting-display">
         <div className="meeting-container">
@@ -44,24 +100,31 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
               </div>
             </div>
             <div className="video-content">
-              <div className="video-background">
-                <div className="person-icon candidate-icon">
-                  <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <circle cx="12" cy="8" r="4" fill="currentColor"/>
-                    <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor"/>
-                  </svg>
-                </div>
-              </div>
+              <VideoCapture
+                onStreamReady={() => {
+                  setTimeout(() => {
+                    const videoEl = document.querySelector('.candidate-video video') as HTMLVideoElement
+                    if (videoEl && (window as any).setVideoElementRef) {
+                      (window as any).setVideoElementRef(videoEl)
+                    }
+                  }, 200)
+                }}
+                onVideoElementReady={(videoEl) => {
+                  setVideoElement(videoEl)
+                  console.log('📹 [QuestionDisplay] Video element ready for vision tracking')
+                }}
+                onStreamError={(error) => {
+                  console.error('Video capture error:', error)
+                }}
+                className="candidate-video-capture"
+                autoStart={true}
+              />
             </div>
           </div>
         </div>
       </div>
     )
   }
-
-  // Display follow-up question if available, otherwise show original question
-  const displayQuestion = followUpQuestionText || question.question
-  const isFollowUp = !!followUpQuestionText
 
   return (
     <div className="meeting-display">
@@ -72,7 +135,7 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
             <div className="video-header-info">
               <div className="video-name">AI Interviewer</div>
               <div className="video-meta">
-                Question {progress.current} of {progress.total}
+                {displayMeta}
                 {isFollowUp && <span className="follow-up-badge">Follow-up</span>}
               </div>
             </div>
@@ -98,9 +161,11 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
           </div>
 
           <div className="video-subtitles">
-            <div className="subtitle-text">
-              {displayQuestion}
-            </div>
+            {displayText && (isIntroMode ? isSpeaking : true) && (
+              <div className="subtitle-text">
+                {displayText}
+              </div>
+            )}
           </div>
         </div>
 
@@ -115,7 +180,7 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
               {isListening && !isSpeaking && (
                 <div className="status-badge listening-badge">
                   <div className="status-dot"></div>
-                  <span>Your turn</span>
+                  <span>{isIntroMode ? 'Ready' : 'Your turn'}</span>
                 </div>
               )}
               {isSpeaking && (
@@ -128,21 +193,40 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
           </div>
 
           <div className="video-content">
-            <div className="video-background">
-              <div className="person-icon candidate-icon">
-                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <circle cx="12" cy="8" r="4" fill="currentColor"/>
-                  <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor"/>
-                </svg>
-              </div>
-            </div>
+            <VideoCapture
+              onStreamReady={() => {
+                setTimeout(() => {
+                  const videoEl = document.querySelector('.candidate-video video') as HTMLVideoElement
+                  if (videoEl && (window as any).setVideoElementRef) {
+                    (window as any).setVideoElementRef(videoEl)
+                  }
+                }, 200)
+              }}
+              onVideoElementReady={(videoEl) => {
+                setVideoElement(videoEl)
+                console.log('📹 [QuestionDisplay] Video element ready for vision tracking')
+              }}
+              onStreamError={(error) => {
+                console.error('Video capture error:', error)
+              }}
+              className="candidate-video-capture"
+              autoStart={true}
+            />
           </div>
 
           <div className="video-subtitles">
-            {isListening && (
-              <div className="subtitle-text listening-subtitle">
-                🎤 Your microphone is active
-              </div>
+            {isIntroMode ? (
+              isListening && (
+                <div className="subtitle-text listening-subtitle">
+                  🎤 Get ready - The interview will begin shortly
+                </div>
+              )
+            ) : (
+              isListening && (
+                <div className="subtitle-text listening-subtitle">
+                  🎤 Your microphone is active
+                </div>
+              )
             )}
           </div>
         </div>
@@ -169,7 +253,7 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
           margin: 0 auto;
         }
 
-        .video-window {
+        .meeting-container .video-window {
           flex: 0 1 45%;
           max-width: 600px;
           display: flex;
@@ -181,14 +265,15 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
           position: relative;
           transition: all 0.3s ease;
           min-height: 500px;
+          height: 80%;
         }
 
-        .video-window.speaking-active {
+        .meeting-container .video-window.speaking-active {
           border-color: #4caf50;
           box-shadow: 0 0 20px rgba(76, 175, 80, 0.4), 0 0 40px rgba(76, 175, 80, 0.2);
         }
 
-        .video-header {
+        .meeting-container .video-header {
           display: flex;
           justify-content: space-between;
           align-items: center;
@@ -198,22 +283,150 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
           z-index: 10;
         }
 
-        .video-header-info {
+        .meeting-container .video-header-info {
           display: flex;
           flex-direction: column;
           gap: 4px;
         }
 
-        .video-name {
+        .meeting-container .video-name {
           font-size: 14px;
           font-weight: 600;
           color: #ffffff;
         }
 
-        .video-meta {
+        .meeting-container .video-meta {
           font-size: 11px;
           color: #888888;
           font-weight: 400;
+        }
+
+        .meeting-container .video-status {
+          display: flex;
+          gap: 8px;
+        }
+
+        .meeting-container .status-badge {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          padding: 4px 10px;
+          border-radius: 12px;
+          font-size: 11px;
+          font-weight: 500;
+        }
+
+        .meeting-container .speaking-badge {
+          background: rgba(33, 150, 243, 0.2);
+          color: #2196f3;
+          border: 1px solid rgba(33, 150, 243, 0.4);
+        }
+
+        .meeting-container .listening-badge {
+          background: rgba(76, 175, 80, 0.2);
+          color: #4caf50;
+          border: 1px solid rgba(76, 175, 80, 0.4);
+        }
+
+        .meeting-container .waiting-badge {
+          background: rgba(255, 255, 255, 0.1);
+          color: #cccccc;
+          border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .meeting-container .status-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: currentColor;
+          animation: pulse 2s infinite;
+        }
+
+        .meeting-container .video-content {
+          flex: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          position: relative;
+          overflow: hidden;
+        }
+
+        .meeting-container .video-background {
+          width: 100%;
+          height: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          position: absolute;
+          top: 0;
+          left: 0;
+        }
+
+        .meeting-container .ai-video .video-background {
+          background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        }
+
+        .meeting-container .person-icon {
+          width: 100%;
+          height: 100%;
+          color: rgba(255, 255, 255, 0.4);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          z-index: 1;
+        }
+
+        .meeting-container .person-icon svg {
+          width: 60%;
+          height: 60%;
+          max-width: 300px;
+          max-height: 300px;
+        }
+
+        .meeting-container .ai-icon {
+          color: rgba(33, 150, 243, 0.5);
+        }
+
+        .meeting-container .candidate-video .video-content {
+          background: #000;
+        }
+
+        .meeting-container .candidate-video .candidate-video-capture {
+          width: 100%;
+          height: 100%;
+          position: relative;
+          z-index: 1;
+        }
+
+        .meeting-container .video-subtitles {
+          padding: 12px 16px;
+          background: rgba(0, 0, 0, 0.7);
+          border-top: 1px solid rgba(255, 255, 255, 0.1);
+          min-height: 60px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .meeting-container .subtitle-text {
+          font-size: 14px;
+          color: #ffffff;
+          line-height: 1.5;
+          text-align: center;
+          max-width: 90%;
+          opacity: 0.9;
+        }
+
+        .meeting-container .listening-subtitle {
+          color: #4caf50;
+          font-weight: 500;
+        }
+
+        .meeting-container .video-meta {
           display: flex;
           align-items: center;
           gap: 6px;
@@ -233,168 +446,6 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
           letter-spacing: 0.5px;
         }
 
-        .video-status {
-          display: flex;
-          gap: 8px;
-        }
-
-        .status-badge {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          padding: 4px 10px;
-          border-radius: 12px;
-          font-size: 11px;
-          font-weight: 500;
-        }
-
-        .speaking-badge {
-          background: rgba(33, 150, 243, 0.2);
-          color: #2196f3;
-          border: 1px solid rgba(33, 150, 243, 0.4);
-        }
-
-        .listening-badge {
-          background: rgba(76, 175, 80, 0.2);
-          color: #4caf50;
-          border: 1px solid rgba(76, 175, 80, 0.4);
-        }
-
-        .waiting-badge {
-          background: rgba(255, 255, 255, 0.1);
-          color: #cccccc;
-          border: 1px solid rgba(255, 255, 255, 0.2);
-        }
-
-        .status-dot {
-          width: 6px;
-          height: 6px;
-          border-radius: 50%;
-          background: currentColor;
-          animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-          0% { opacity: 1; transform: scale(1); }
-          50% { opacity: 0.6; transform: scale(1.2); }
-          100% { opacity: 1; transform: scale(1); }
-        }
-
-        .video-content {
-          flex: 1;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          position: relative;
-          overflow: hidden;
-        }
-
-        .video-background {
-          width: 100%;
-          height: 100%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          position: absolute;
-          top: 0;
-          left: 0;
-          background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-        }
-
-        .ai-video .video-background {
-          background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-        }
-
-        .candidate-video .video-background {
-          background: linear-gradient(135deg, #2d1b3d 0%, #3d2a4d 50%, #4d3a5d 100%);
-        }
-
-        .person-icon {
-          width: 100%;
-          height: 100%;
-          color: rgba(255, 255, 255, 0.4);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          position: absolute;
-          top: 50%;
-          left: 50%;
-          transform: translate(-50%, -50%);
-          z-index: 1;
-        }
-
-        .person-icon svg {
-          width: 60%;
-          height: 60%;
-          max-width: 300px;
-          max-height: 300px;
-        }
-
-        .ai-icon {
-          color: rgba(33, 150, 243, 0.5);
-        }
-
-        .candidate-icon {
-          color: rgba(156, 39, 176, 0.5);
-        }
-
-        .speaking-indicator {
-          position: absolute;
-          top: 50%;
-          left: 50%;
-          transform: translate(-50%, -50%);
-          width: 200px;
-          height: 200px;
-          pointer-events: none;
-          z-index: 5;
-        }
-
-        .speaking-pulse {
-          width: 100%;
-          height: 100%;
-          border-radius: 50%;
-          border: 3px solid #4caf50;
-          animation: speakingPulse 2s infinite;
-        }
-
-        @keyframes speakingPulse {
-          0% {
-            transform: scale(0.8);
-            opacity: 1;
-          }
-          50% {
-            transform: scale(1.1);
-            opacity: 0.6;
-          }
-          100% {
-            transform: scale(0.8);
-            opacity: 1;
-          }
-        }
-
-        .video-subtitles {
-          padding: 12px 16px;
-          background: rgba(0, 0, 0, 0.7);
-          border-top: 1px solid rgba(255, 255, 255, 0.1);
-          min-height: 60px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-
-        .subtitle-text {
-          font-size: 14px;
-          color: #ffffff;
-          line-height: 1.5;
-          text-align: center;
-          max-width: 90%;
-          opacity: 0.9;
-        }
-
-        .listening-subtitle {
-          color: #4caf50;
-          font-weight: 500;
-        }
 
         .loading-state {
           display: flex;

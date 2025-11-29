@@ -39,6 +39,15 @@ const interviewAPI = {
   // Audio permissions
   requestAudioPermissions: () => ipcRenderer.invoke('request-audio-permissions'),
   
+  // Camera permissions
+  requestCameraPermissions: () => ipcRenderer.invoke('request-camera-permissions'),
+  
+  // Vision security
+  sendVisionSecurityData: (data: any) => ipcRenderer.send('vision-security-data', data),
+  onVisionSecurityAlert: (callback: (alert: any) => void) => {
+    ipcRenderer.on('vision-security-alert', (_event, alert) => callback(alert))
+  },
+  
   // STT token management
   getSTTToken: () => ipcRenderer.invoke('get-stt-token'),
   updateSTTToken: (token: string) => ipcRenderer.invoke('update-stt-token', token),
