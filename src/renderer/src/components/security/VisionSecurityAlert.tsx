@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import { Alert, Space } from 'antd'
 import { WarningOutlined, EyeOutlined, MobileOutlined, UserDeleteOutlined } from '@ant-design/icons'
 import type { VisionSecurityStatus, SuspiciousEvent } from '../../../../shared/types'
@@ -28,16 +28,74 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
     }
   }, [status, dismissedEvents, onDismiss])
 
-  if (!status || status.suspiciousEvents.length === 0) {
+  // Debug logging
+  useEffect(() => {
+    if (status) {
+      const eventsCount = status.suspiciousEvents?.length || 0
+      console.log('🔔 [VisionSecurityAlert] Status received:', {
+        hasStatus: !!status,
+        eventsCount: eventsCount,
+        faceDetected: status.faceDetected,
+        events: status.suspiciousEvents?.map(e => ({
+          type: e.type,
+          severity: e.severity,
+          timestamp: e.timestamp,
+          description: e.description
+        })) || []
+      })
+      
+      if (eventsCount > 0) {
+        console.log('🔔 [VisionSecurityAlert] Will render alerts for', eventsCount, 'events')
+      } else {
+        console.log('🔔 [VisionSecurityAlert] No events to display')
+      }
+    } else {
+      console.log('🔔 [VisionSecurityAlert] No status received')
+    }
+  }, [status])
+
+  if (!status) {
+    console.log('🔔 [VisionSecurityAlert] No status, returning null')
+    return null
+  }
+
+  if (!status.suspiciousEvents || status.suspiciousEvents.length === 0) {
+    console.log('🔔 [VisionSecurityAlert] No suspicious events, returning null')
     return null
   }
 
   // Filter out dismissed events
-  const activeEvents = status.suspiciousEvents.filter(
-    event => !dismissedEvents.has(`${event.type}-${event.timestamp}`)
-  )
+  // Group events by type and keep only the most recent one of each type
+  // This prevents duplicate alerts for the same event type
+  const now = Date.now()
+  const eventsByType = new Map<string, SuspiciousEvent>()
+  
+  // Collect most recent event of each type
+  status.suspiciousEvents.forEach(event => {
+    const eventKey = `${event.type}-${event.timestamp}`
+    const isDismissed = dismissedEvents.has(eventKey)
+    
+    // Events stay visible for 60 seconds
+    const staleThreshold = 60000
+    const isRecent = (now - event.timestamp) < staleThreshold
+    
+    if (!isDismissed && isRecent) {
+      const existing = eventsByType.get(event.type)
+      // Keep the most recent event of each type
+      if (!existing || event.timestamp > existing.timestamp) {
+        eventsByType.set(event.type, event)
+      }
+    }
+  })
+  
+  const activeEvents = Array.from(eventsByType.values())
+
+  console.log('🔔 [VisionSecurityAlert] Active events after filtering:', activeEvents.length, 'out of', status.suspiciousEvents.length, {
+    events: activeEvents.map(e => ({ type: e.type, timestamp: e.timestamp, age: now - e.timestamp }))
+  })
 
   if (activeEvents.length === 0) {
+    console.log('🔔 [VisionSecurityAlert] No active events after filtering, returning null')
     return null
   }
 
@@ -57,7 +115,6 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
       case 'multiple_faces':
         return <UserDeleteOutlined />
       case 'mobile_device_usage':
-      case 'suspicious_hand_pattern':
         return <MobileOutlined />
       default:
         return <WarningOutlined />
@@ -74,9 +131,7 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
       case 'face_absent':
         return `Face not detected (${Math.round((event.duration || 0) / 1000)}s)`
       case 'mobile_device_usage':
-        return 'Possible mobile device usage detected'
-      case 'suspicious_hand_pattern':
-        return `Suspicious hand pattern: ${status.suspiciousHandPatterns.join(', ')}`
+        return 'Possible mobile device usage detected (looking down)'
       default:
         return event.description
     }
@@ -93,15 +148,20 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
     }
   }
 
+  console.log('🔔 [VisionSecurityAlert] Rendering alerts for', Object.keys(eventGroups).length, 'event types')
+
   return (
     <div className="vision-security-alerts">
       <Space direction="vertical" size="small" style={{ width: '100%' }}>
         {Object.entries(eventGroups).map(([type, events]) => {
           const severity = events[0].severity
+          const message = getEventMessage(type as SuspiciousEvent['type'], events)
+          console.log('🔔 [VisionSecurityAlert] Rendering alert:', { type, severity, message })
+          
           return (
             <Alert
               key={type}
-              message={getEventMessage(type as SuspiciousEvent['type'], events)}
+              message={message}
               type={getSeverityType(severity)}
               icon={getEventIcon(type as SuspiciousEvent['type'])}
               closable

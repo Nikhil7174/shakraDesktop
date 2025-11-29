@@ -5,6 +5,7 @@ import { AudioVisualizer } from '../components/AudioVisualizer'
 import { QuestionDisplay } from '../components/QuestionDisplay'
 import { VideoCapture } from '../components/VideoCapture'
 import { useVisionSecurity } from '../hooks/useVisionSecurity'
+import { VisionSecurityAlert } from '../components/security/VisionSecurityAlert'
 import { ResumeInterviewModal } from '../components/interview/ResumeInterviewModal'
 import { CodingProblem, Question } from '../../../shared/types'
 import type { RootState } from '../store'
@@ -51,12 +52,13 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [hasCheckedUnfinished, setHasCheckedUnfinished] = useState(false)
   const [userChoseResume, setUserChoseResume] = useState(false)
   const [hiddenVideoElement, setHiddenVideoElement] = useState<HTMLVideoElement | null>(null)
+  const [visionSecurityStatus, setVisionSecurityStatus] = useState<any>(null)
   
   const codeEditorRef = useRef<any>(null)
 
   // Initialize vision security tracking that stays active throughout the interview
   // This works even when video windows are hidden (like in coding section)
-  useVisionSecurity({
+  const { status: hiddenVisionStatus } = useVisionSecurity({
     videoElement: hiddenVideoElement,
     enabled: hiddenVideoElement !== null && currentState !== 'wrap_up' && currentState !== 'connecting',
     onSecurityAlert: (status) => {
@@ -69,9 +71,39 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
             description: e.description
           }))
         })
+        // Update vision security status for UI alerts
+        setVisionSecurityStatus(status)
       }
     }
   })
+
+  // Update vision security status from hidden tracking
+  // This ensures we always have the latest status, even when events are present
+  useEffect(() => {
+    if (hiddenVisionStatus) {
+      // Always update status, not just when events change
+      setVisionSecurityStatus(hiddenVisionStatus)
+      
+      // Log when suspicious events are detected for debugging
+      if (hiddenVisionStatus.suspiciousEvents && hiddenVisionStatus.suspiciousEvents.length > 0) {
+        console.log('📢 [VoiceInterviewSession] Hidden tracking detected events:', {
+          count: hiddenVisionStatus.suspiciousEvents.length,
+          events: hiddenVisionStatus.suspiciousEvents.map((e: any) => ({
+            type: e.type,
+            severity: e.severity,
+            timestamp: e.timestamp,
+            description: e.description
+          }))
+        })
+        console.log('📢 [VoiceInterviewSession] Setting visionSecurityStatus state with events')
+      }
+    }
+  }, [hiddenVisionStatus])
+
+  // Memoize the callback to prevent infinite loops
+  const handleVisionStatusChange = useCallback((status: any) => {
+    setVisionSecurityStatus(status)
+  }, [])
   const resumeData = useSelector((state: RootState) => state.interview.resumeData)
   const { user } = useSelector((state: RootState) => state.auth)
   const audioContextRef = useRef<AudioContext | null>(null)
@@ -711,6 +743,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               isListening={isListening}
               isSpeaking={isSpeaking}
               progress={progress}
+              onVisionStatusChange={handleVisionStatusChange}
             />
           </div>
         )
@@ -729,6 +762,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               isListening={isListening}
               isSpeaking={isSpeaking}
               progress={progress}
+              onVisionStatusChange={handleVisionStatusChange}
             />
           </div>
         )
@@ -844,6 +878,14 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         <div className="interview-content">
         {renderCurrentSection()}
       </div>
+
+      {/* Vision Security Alerts - Display warnings for suspicious events */}
+      <VisionSecurityAlert 
+        status={visionSecurityStatus}
+        onDismiss={(eventType) => {
+          console.log('🔕 [Vision Security] Alert dismissed:', eventType)
+        }}
+      />
 
       {/* Hidden video capture for security tracking during coding section and throughout interview */}
       <div className="hidden-video-tracker">

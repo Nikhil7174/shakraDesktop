@@ -11,6 +11,7 @@ interface QuestionDisplayProps {
   isListening: boolean
   isSpeaking: boolean
   progress: { current: number, total: number }
+  onVisionStatusChange?: (status: any) => void
 }
 
 export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
@@ -20,7 +21,8 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
   introMeta = 'Ready to begin',
   isListening,
   isSpeaking,
-  progress
+  progress,
+  onVisionStatusChange
 }) => {
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null)
   
@@ -40,8 +42,34 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
           }))
         })
       }
+      // Immediately pass to parent when alert is triggered
+      if (onVisionStatusChange) {
+        onVisionStatusChange(status)
+      }
     }
   })
+
+  // Update parent component with vision security status
+  // Always pass the latest status to ensure UI updates when events occur
+  useEffect(() => {
+    if (visionStatus && onVisionStatusChange) {
+      // Always update parent with latest status to ensure alerts are shown
+      // The VisionSecurityAlert component will handle deduplication
+      onVisionStatusChange(visionStatus)
+      
+      // Log when suspicious events are detected for debugging
+      if (visionStatus.suspiciousEvents && visionStatus.suspiciousEvents.length > 0) {
+        console.log('📢 [QuestionDisplay] Passing suspicious events to parent:', {
+          count: visionStatus.suspiciousEvents.length,
+          events: visionStatus.suspiciousEvents.map(e => ({
+            type: e.type,
+            severity: e.severity,
+            timestamp: e.timestamp
+          }))
+        })
+      }
+    }
+  }, [visionStatus, onVisionStatusChange])
 
   // Log vision security status periodically (for debugging)
   useEffect(() => {

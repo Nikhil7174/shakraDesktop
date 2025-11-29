@@ -2,25 +2,23 @@ import {
   FilesetResolver,
   FaceLandmarker,
   FaceDetector,
-  HandLandmarker,
   NormalizedLandmark
 } from '@mediapipe/tasks-vision'
 import type {
   VisionSecurityStatus,
   GazeDirection,
-  SuspiciousHandPattern,
   SuspiciousEvent
 } from '../../../shared/types'
 
 export class VisionSecurityService {
   private faceLandmarker: FaceLandmarker | null = null
   private faceDetector: FaceDetector | null = null
-  private handLandmarker: HandLandmarker | null = null
   private isInitialized = false
   private blinkHistory: number[] = []
   private lastBlinkTime = 0
   private gazeAwayStartTime: number | null = null
-  private previousHandPositions: Array<{ x: number; y: number; z: number }>[] = []
+  private faceAbsentStartTime: number | null = null
+  private mobileDeviceStartTime: number | null = null
   private lastProcessTime = 0
   private readonly PROCESS_INTERVAL = 100 // Process every 100ms (10 FPS)
 
@@ -28,8 +26,7 @@ export class VisionSecurityService {
   private readonly GAZE_AWAY_THRESHOLD = 3000 // 3 seconds
   private readonly FACE_ABSENT_THRESHOLD = 5000 // 5 seconds
   private readonly BLINK_EAR_THRESHOLD = 0.25
-  private readonly HAND_MOVEMENT_THRESHOLD = 0.1 // Distance threshold for rapid movement
-  private readonly PHONE_USAGE_DISTANCE = 0.15 // Hand near face/ear threshold
+  private readonly MOBILE_DEVICE_DURATION = 3000 // 3 seconds - gaze down must persist
 
   async initialize(): Promise<void> {
     if (this.isInitialized) return
@@ -61,16 +58,6 @@ export class VisionSecurityService {
           delegate: 'GPU'
         },
         runningMode: 'IMAGE'
-      })
-
-      // Initialize Hand Landmarker
-      this.handLandmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
-          delegate: 'GPU'
-        },
-        runningMode: 'IMAGE',
-        numHands: 2
       })
 
       this.isInitialized = true
@@ -116,10 +103,7 @@ export class VisionSecurityService {
       const faceDetections = this.faceDetector?.detect(imageData)
       const faceLandmarks = this.faceLandmarker?.detect(imageData)
 
-      // Process hand landmarks
-      const handLandmarks = this.handLandmarker?.detect(imageData)
-
-      return this.analyzeResults(faceDetections, faceLandmarks, handLandmarks)
+      return this.analyzeResults(faceDetections, faceLandmarks)
     } catch (error) {
       console.error('Error processing frame:', error)
       return null
@@ -128,8 +112,7 @@ export class VisionSecurityService {
 
   private analyzeResults(
     faceDetections: any,
-    faceLandmarks: any,
-    handLandmarks: any
+    faceLandmarks: any
   ): VisionSecurityStatus {
     const suspiciousEvents: SuspiciousEvent[] = []
     const now = Date.now()
@@ -142,28 +125,40 @@ export class VisionSecurityService {
       : 0
 
     if (multipleFacesDetected) {
-      suspiciousEvents.push({
-        type: 'multiple_faces',
-        timestamp: now,
-        severity: 'high',
-        description: 'Multiple faces detected in frame'
-      })
-    }
-
-    if (!faceDetected) {
-      if (this.gazeAwayStartTime === null) {
-        this.gazeAwayStartTime = now
-      } else if (now - this.gazeAwayStartTime > this.FACE_ABSENT_THRESHOLD) {
+      // Only add event once per detection to avoid spam
+      const lastMultipleFacesEvent = suspiciousEvents.find(e => e.type === 'multiple_faces')
+      if (!lastMultipleFacesEvent || (now - lastMultipleFacesEvent.timestamp) > 5000) {
         suspiciousEvents.push({
-          type: 'face_absent',
+          type: 'multiple_faces',
           timestamp: now,
           severity: 'high',
-          description: 'Face not detected for extended period',
-          duration: now - this.gazeAwayStartTime
+          description: 'Multiple faces detected in frame'
         })
       }
+    }
+
+    // Face absent detection (separate from gaze away)
+    if (!faceDetected) {
+      if (this.faceAbsentStartTime === null) {
+        this.faceAbsentStartTime = now
+      } else {
+        const faceAbsentDuration = now - this.faceAbsentStartTime
+        if (faceAbsentDuration > this.FACE_ABSENT_THRESHOLD) {
+          // Only add event once per threshold period (every 5 seconds)
+          const lastFaceAbsentEvent = suspiciousEvents.find(e => e.type === 'face_absent')
+          if (!lastFaceAbsentEvent || (now - lastFaceAbsentEvent.timestamp) > 5000) {
+            suspiciousEvents.push({
+              type: 'face_absent',
+              timestamp: now,
+              severity: 'high',
+              description: `Face not detected for ${Math.round(faceAbsentDuration / 1000)}s`,
+              duration: faceAbsentDuration
+            })
+          }
+        }
+      }
     } else {
-      this.gazeAwayStartTime = null
+      this.faceAbsentStartTime = null
     }
 
     // Eye tracking and gaze direction
@@ -176,56 +171,53 @@ export class VisionSecurityService {
       blinkRate = this.detectBlink(landmarks, now)
     }
 
-    // Hand tracking and mobile device detection (declare early for debug logging)
-    const handsDetected = (handLandmarks?.landmarks?.length || 0) > 0
-    const handCount = handLandmarks?.landmarks?.length || 0
-    const suspiciousHandPatterns: SuspiciousHandPattern[] = []
-    let mobileDeviceUsageDetected = false
-    let handMovementIntensity = 0
+    // Mobile device detection: Gaze down pattern
+    // Looking down is a strong indicator of mobile phone usage
+    const mobileDeviceUsageDetected = faceDetected && gazeDirection === 'down'
 
-    if (handLandmarks?.landmarks && handLandmarks.landmarks.length > 0) {
-      const handAnalysis = this.analyzeHands(
-        handLandmarks.landmarks,
-        faceLandmarks?.faceLandmarks?.[0]
-      )
-      suspiciousHandPatterns.push(...handAnalysis.patterns)
-      mobileDeviceUsageDetected = handAnalysis.mobileDeviceUsage
-      handMovementIntensity = handAnalysis.movementIntensity
-
-      if (handAnalysis.patterns.length > 0) {
-        suspiciousEvents.push({
-          type: 'suspicious_hand_pattern',
-          timestamp: now,
-          severity: 'high',
-          description: `Suspicious hand pattern detected: ${handAnalysis.patterns.join(', ')}`
-        })
+    if (mobileDeviceUsageDetected) {
+      if (this.mobileDeviceStartTime === null) {
+        this.mobileDeviceStartTime = now
+      } else {
+        const mobileDuration = now - this.mobileDeviceStartTime
+        if (mobileDuration > this.MOBILE_DEVICE_DURATION) {
+          // Only add event once per threshold period to avoid spam
+          const lastMobileEvent = suspiciousEvents.find(e => e.type === 'mobile_device_usage')
+          if (!lastMobileEvent || (now - lastMobileEvent.timestamp) > 5000) {
+            suspiciousEvents.push({
+              type: 'mobile_device_usage',
+              timestamp: now,
+              severity: 'high',
+              description: 'Possible mobile device usage detected (looking down)',
+              duration: mobileDuration
+            })
+          }
+        }
       }
-
-      if (mobileDeviceUsageDetected) {
-        suspiciousEvents.push({
-          type: 'mobile_device_usage',
-          timestamp: now,
-          severity: 'high',
-          description: 'Possible mobile device usage detected'
-        })
-      }
+    } else {
+      // Reset timer if condition is no longer met
+      this.mobileDeviceStartTime = null
     }
 
-    // Gaze away detection
+    // Gaze away detection (only when face is detected, otherwise face_absent handles it)
     let gazeAwayDuration = 0
-    if (gazeDirection !== 'center' && gazeDirection !== 'away') {
+    if (faceDetected && gazeDirection !== 'center' && gazeDirection !== 'away') {
       if (this.gazeAwayStartTime === null) {
         this.gazeAwayStartTime = now
       } else {
         gazeAwayDuration = now - this.gazeAwayStartTime
+        // Only add event once per threshold period (every 3 seconds) to avoid spam
+        const lastGazeAwayEvent = suspiciousEvents.find(e => e.type === 'gaze_away')
         if (gazeAwayDuration > this.GAZE_AWAY_THRESHOLD) {
-          suspiciousEvents.push({
-            type: 'gaze_away',
-            timestamp: now,
-            severity: 'medium',
-            description: `Gaze away from screen (${gazeDirection}) for ${Math.round(gazeAwayDuration / 1000)}s`,
-            duration: gazeAwayDuration
-          })
+          if (!lastGazeAwayEvent || (now - lastGazeAwayEvent.timestamp) > 3000) {
+            suspiciousEvents.push({
+              type: 'gaze_away',
+              timestamp: now,
+              severity: 'medium',
+              description: `Gaze away from screen (${gazeDirection}) for ${Math.round(gazeAwayDuration / 1000)}s`,
+              duration: gazeAwayDuration
+            })
+          }
         }
       }
     } else {
@@ -234,7 +226,20 @@ export class VisionSecurityService {
 
     // Log debug info periodically (every 5 seconds) to help diagnose detection issues
     if (now % 5000 < 100) { // Roughly every 5 seconds
-      console.log('👁️ [Vision Debug] Gaze:', gazeDirection, '| Face:', faceDetected, '| Hands:', handsDetected, '| Events:', suspiciousEvents.length)
+      console.log('👁️ [Vision Debug] Gaze:', gazeDirection, '| Face:', faceDetected, '| Events:', suspiciousEvents.length)
+      if (suspiciousEvents.length > 0) {
+        console.log('👁️ [Vision Debug] Event details:', suspiciousEvents.map(e => ({
+          type: e.type,
+          severity: e.severity,
+          description: e.description
+        })))
+      }
+    }
+    
+    // Log immediately when new events are detected (not just periodically)
+    if (suspiciousEvents.length > 0) {
+      const eventTypes = suspiciousEvents.map(e => e.type).join(', ')
+      console.log(`🚨 [Vision Security] Detected ${suspiciousEvents.length} suspicious event(s): ${eventTypes}`)
     }
 
     return {
@@ -244,11 +249,11 @@ export class VisionSecurityService {
       multipleFacesDetected,
       facePresenceConfidence,
       gazeAwayDuration,
-      handsDetected,
-      handCount,
-      suspiciousHandPatterns,
+      handsDetected: false, // Hand tracking removed
+      handCount: 0, // Hand tracking removed
+      suspiciousHandPatterns: [], // Hand tracking removed
+      handMovementIntensity: 0, // Hand tracking removed
       mobileDeviceUsageDetected,
-      handMovementIntensity,
       suspiciousEvents,
       timestamp: now
     }
@@ -365,119 +370,6 @@ export class VisionSecurityService {
     return blinkRate
   }
 
-  private analyzeHands(
-    handLandmarks: NormalizedLandmark[][],
-    faceLandmarks?: NormalizedLandmark[]
-  ): {
-    patterns: SuspiciousHandPattern[]
-    mobileDeviceUsage: boolean
-    movementIntensity: number
-  } {
-    const patterns: SuspiciousHandPattern[] = []
-    let mobileDeviceUsage = false
-    let movementIntensity = 0
-
-    if (!handLandmarks || handLandmarks.length === 0) {
-      return { patterns, mobileDeviceUsage, movementIntensity }
-    }
-
-    // Calculate current hand positions (wrist landmarks)
-    const currentPositions: Array<{ x: number; y: number; z: number }>[] = []
-    
-    for (const hand of handLandmarks) {
-      if (hand && hand.length > 0) {
-        const wrist = hand[0] // Wrist landmark
-        currentPositions.push([{ x: wrist.x, y: wrist.y, z: wrist.z }])
-      }
-    }
-
-    // Calculate movement intensity
-    if (this.previousHandPositions.length > 0 && currentPositions.length > 0) {
-      let totalMovement = 0
-      for (let i = 0; i < Math.min(currentPositions.length, this.previousHandPositions.length); i++) {
-        const current = currentPositions[i][0]
-        const previous = this.previousHandPositions[i][0]
-        const distance = Math.sqrt(
-          Math.pow(current.x - previous.x, 2) +
-          Math.pow(current.y - previous.y, 2) +
-          Math.pow(current.z - previous.z, 2)
-        )
-        totalMovement += distance
-      }
-      movementIntensity = Math.min(totalMovement / currentPositions.length, 1)
-      
-      if (movementIntensity > this.HAND_MOVEMENT_THRESHOLD) {
-        patterns.push('rapid_movement')
-      }
-    }
-
-    this.previousHandPositions = currentPositions
-
-    // Check for hand near face/ear (phone usage pattern)
-    if (faceLandmarks && faceLandmarks.length > 0) {
-      const faceCenter = {
-        x: faceLandmarks[4]?.x || 0.5, // Nose tip
-        y: faceLandmarks[4]?.y || 0.5,
-        z: faceLandmarks[4]?.z || 0
-      }
-
-      for (const hand of handLandmarks) {
-        if (hand && hand.length > 0) {
-          const wrist = hand[0]
-          const distance = Math.sqrt(
-            Math.pow(wrist.x - faceCenter.x, 2) +
-            Math.pow(wrist.y - faceCenter.y, 2) +
-            Math.pow(wrist.z - faceCenter.z, 2)
-          )
-
-          if (distance < this.PHONE_USAGE_DISTANCE) {
-            // Check if hand is near ear (y position similar, x position to side)
-            const earY = faceLandmarks[234]?.y || faceCenter.y // Ear landmark
-            if (Math.abs(wrist.y - earY) < 0.1) {
-              patterns.push('hand_near_ear')
-              mobileDeviceUsage = true
-            } else {
-              patterns.push('hand_near_face')
-            }
-          }
-        }
-      }
-    }
-
-    // Detect typing gestures (rapid finger movements)
-    for (const hand of handLandmarks) {
-      if (hand && hand.length >= 21) {
-        // Check finger tip positions for typing pattern
-        const thumbTip = hand[4]
-        const indexTip = hand[8]
-        const middleTip = hand[12]
-        const ringTip = hand[16]
-        const pinkyTip = hand[20]
-
-        // Typing pattern: fingers moving in sequence
-        const fingerTips = [thumbTip, indexTip, middleTip, ringTip, pinkyTip]
-        let typingPattern = true
-        for (let i = 1; i < fingerTips.length; i++) {
-          const distance = Math.sqrt(
-            Math.pow(fingerTips[i].x - fingerTips[i - 1].x, 2) +
-            Math.pow(fingerTips[i].y - fingerTips[i - 1].y, 2)
-          )
-          if (distance > 0.05) {
-            typingPattern = false
-            break
-          }
-        }
-
-        if (typingPattern && movementIntensity > 0.05) {
-          patterns.push('typing')
-          mobileDeviceUsage = true
-        }
-      }
-    }
-
-    return { patterns, mobileDeviceUsage, movementIntensity }
-  }
-
   cleanup(): void {
     if (this.faceLandmarker) {
       this.faceLandmarker.close()
@@ -487,13 +379,8 @@ export class VisionSecurityService {
       this.faceDetector.close()
       this.faceDetector = null
     }
-    if (this.handLandmarker) {
-      this.handLandmarker.close()
-      this.handLandmarker = null
-    }
     this.isInitialized = false
     this.blinkHistory = []
-    this.previousHandPositions = []
   }
 }
 

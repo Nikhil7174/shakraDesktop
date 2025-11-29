@@ -61,7 +61,23 @@ export const VideoCapture: React.FC<VideoCaptureProps> = ({
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream
-        videoRef.current.play()
+        // Handle play() promise to avoid AbortError
+        try {
+          const playPromise = videoRef.current.play()
+          if (playPromise !== undefined) {
+            playPromise.catch((err) => {
+              // Ignore AbortError - it happens when video is interrupted by new load
+              if (err.name !== 'AbortError') {
+                console.warn('Video play error:', err)
+              }
+            })
+          }
+        } catch (err: any) {
+          // Ignore AbortError - it happens when video is interrupted by new load
+          if (err.name !== 'AbortError') {
+            console.warn('Video play error:', err)
+          }
+        }
         setIsStreaming(true)
         setError(null)
         onStreamReady?.(stream)
@@ -88,17 +104,8 @@ export const VideoCapture: React.FC<VideoCaptureProps> = ({
     setIsStreaming(false)
   }
 
-  // Expose video element via callback when stream is ready
-  useEffect(() => {
-    if (videoRef.current && isStreaming && onVideoElementReady) {
-      // Small delay to ensure video is ready
-      setTimeout(() => {
-        if (videoRef.current) {
-          onVideoElementReady(videoRef.current)
-        }
-      }, 200)
-    }
-  }, [isStreaming, onVideoElementReady])
+  // Note: onVideoElementReady is already called in startCapture() after setting srcObject
+  // This useEffect was causing duplicate calls and potential issues
 
   return (
     <div className={`video-capture-container ${className}`}>
