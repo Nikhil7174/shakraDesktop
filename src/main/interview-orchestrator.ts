@@ -697,12 +697,26 @@ export class InterviewOrchestrator extends EventEmitter {
   private setupTTSListeners(): void {
     // TTS listeners
     this.tts.on('playbackStarted', () => {
+      // For security warnings, do NOT pause the mic – we want STT to keep hearing the user
+      if (this.currentSpeechContext?.source === 'security_warning') {
+        console.log('🎯 [Security] TTS started for security warning - NOT pausing mic')
+        this.emit('speakingStarted')
+        return
+      }
+
       console.log('🎯 [Interview] TTS started - pausing mic')
       this.setMicPaused(true, 'tts-playback-started')
       this.emit('speakingStarted')
     })
 
     this.tts.on('playbackCompleted', () => {
+      // For security warnings, we never paused the mic, so just emit speakingCompleted
+      if (this.currentSpeechContext?.source === 'security_warning') {
+        console.log('🎯 [Security] TTS completed for security warning - mic was never paused')
+        this.emit('speakingCompleted')
+        return
+      }
+
       console.log('🎯 [Interview] TTS completed - resuming mic after 100ms grace period')
       if (this.suppressAutoMicResume) {
         console.log('🎯 [Interview] Mic resume suppressed (batch speaking in progress)')
@@ -1924,9 +1938,8 @@ export class InterviewOrchestrator extends EventEmitter {
       console.log('🎯 [Interview] ⚠️ Not in listening state, ignoring transcript. Current state:', currentState)
     }
     } finally {
-      if (!this.speechGate.isSpeaking()) {
-        this.setMicPaused(false, 'llm-processing')
-      }
+      // Always clear llm-processing pause flag; streaming is gated in streamAudio now
+      this.setMicPaused(false, 'llm-processing')
     }
   }
 
@@ -2174,9 +2187,8 @@ export class InterviewOrchestrator extends EventEmitter {
           }
         } finally {
           this.autoHintInProgress = false
-          if (!this.speechGate.isSpeaking()) {
-            this.setMicPaused(false, 'auto-hint-llm-processing')
-          }
+          // Always clear auto-hint pause flag; streaming is gated in streamAudio now
+          this.setMicPaused(false, 'auto-hint-llm-processing')
         }
       }
 
@@ -2586,15 +2598,22 @@ export class InterviewOrchestrator extends EventEmitter {
     try {
       this.currentSpeakOptions = opts
       this.softStopRequested = false
+
+      const isSecurityWarning = context.source === 'security_warning'
       // Check if mic resume is already suppressed (for chained TTS calls)
       const wasSuppressed = this.suppressAutoMicResume
-      // Suppress automatic mic resume between sentences; resume once after the whole batch
-      this.suppressAutoMicResume = true
-      this.setMicPaused(true, 'speech-batch')
-      this.emit('speakingStarted')
+
+      // For non-security speech, pause mic and use speech-batch suppression
+      if (!isSecurityWarning) {
+        this.suppressAutoMicResume = true
+        this.setMicPaused(true, 'speech-batch')
+        this.emit('speakingStarted')
+      } else {
+        console.log('🎯 [Security] speakWithPolicy for security warning - leaving mic unpaused')
+      }
 
       // Always send entire text as one TTS call to avoid delays between sentences
-      console.log(`🎯 [Speech] Speaking full text with policy:`, opts)
+      console.log(`🎯 [Speech] Speaking full text with policy:`, opts, 'context:', context)
       await this.speechGate.speak(text)
       await this.speechGate.wait()
 
@@ -2602,14 +2621,16 @@ export class InterviewOrchestrator extends EventEmitter {
       const softStopped = this.softStopRequested
       const completed = !interrupted && !softStopped
 
-      // Only resume mic if this wasn't part of a chained sequence
-      if (!wasSuppressed) {
+      // Only resume mic if this wasn't part of a chained sequence and this is not a security warning
+      if (!wasSuppressed && !isSecurityWarning) {
         // Manually resume mic once at the end of batch (if not interrupted early)
         setTimeout(() => {
           this.setMicPaused(false, 'speech-batch')
           console.log('🎯 [Interview] Mic resumed (batch complete)')
         }, 100)
         this.suppressAutoMicResume = false
+      } else if (isSecurityWarning) {
+        console.log('🎯 [Security] Security warning TTS completed - mic was never paused by speakWithPolicy')
       } else {
         console.log('🎯 [Interview] Mic resume still suppressed (chained TTS)')
       }
@@ -2865,10 +2886,8 @@ export class InterviewOrchestrator extends EventEmitter {
           }
         } finally {
           this.autoHintInProgress = false
-          // Resume mic if not speaking (speakWithPolicy will handle mic during TTS)
-          if (!this.speechGate.isSpeaking()) {
-            this.setMicPaused(false, 'auto-hint-llm-processing')
-          }
+          // Always clear auto-hint pause flag; streaming is gated in streamAudio now
+          this.setMicPaused(false, 'auto-hint-llm-processing')
         }
         
         // Restart the 2-minute timer
@@ -3510,17 +3529,34 @@ export class InterviewOrchestrator extends EventEmitter {
     }
   }
 
-  // Audio capture integration (to be implemented with system audio)
-  streamAudio(audioChunk: Buffer): void {
-    // Drop audio chunks when mic is paused (during TTS + grace period)
-    if (this.micPaused) {
-      return
-    }
-    
-    if (this.stt.isListening()) {
+    // Audio capture integration (renderer → main → STT)
+    streamAudio(audioChunk: Buffer): void {
+      const isSecurityWarningSpeech =
+        this.currentSpeechContext?.source === 'security_warning'
+      const isTtsSpeaking = this.speechGate?.isSpeaking?.() ?? false
+
+      console.log(
+        '🎤 [Main] streamAudio:',
+        'micPaused =', this.micPaused,
+        'isSecurityWarningSpeech =', isSecurityWarningSpeech,
+        'isTtsSpeaking =', isTtsSpeaking,
+        'sttListening =', this.stt?.isListening()
+      )
+
+      // Optional suppression: only drop audio during active non-security TTS playback
+      if (isTtsSpeaking && !isSecurityWarningSpeech) {
+        console.log('🎤 [Main] Dropping audio chunk during non-security TTS playback')
+        return
+      }
+
+      // Let STT's own VAD / turn detection decide what counts as speech
+      if (!this.stt.isListening()) {
+        console.log('🎤 [Main] STT is not listening, audio chunk ignored')
+        return
+      }
+
       this.stt.streamAudio(audioChunk)
     }
-  }
 
   // Receive vision security warnings from renderer
   updateVisionSecurityWarnings(warningStats: any): void {
