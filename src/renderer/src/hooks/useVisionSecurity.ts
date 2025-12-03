@@ -48,16 +48,24 @@ export const useVisionSecurity = ({
   const serviceRef = useRef<VisionSecurityService | null>(null)
   const animationFrameRef = useRef<number | null>(null)
   const lastEmitTime = useRef<number>(0)
-  const spokenWarningsRef = useRef<Set<string>>(new Set())
   const warningOccurrenceCountRef = useRef<Record<string, number>>({})
   const lastSpokenOccurrenceRef = useRef<Record<string, number>>({})
-  const pendingWarningRef = useRef<{ type: string; message: string } | null>(null)
   const isWarningTTSActiveRef = useRef<boolean>(false)
-  const activeTTSRequestsRef = useRef<Set<string>>(new Set()) // Track in-flight TTS requests
-  const lastIncrementingWarningKeyRef = useRef<Record<string, string>>({}) // Track last warning key that caused increment per type
-  const lastIncrementTimeRef = useRef<Record<string, number>>({}) // Track when we last incremented per type
+  const pushedOccurrencesRef = useRef<Record<string, Set<number>>>({}) // Track which occurrences we've pushed to stack
+  const incrementedWarningsRef = useRef<Record<string, Set<string>>>({}) // Track which warning instances we've incremented (by key: type-startTime)
+  const stackProcessTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({}) // Debounce timers for processing stack
+  
+  // Stack-based warning queue: one stack per warning type (LIFO - latest on top)
+  interface WarningStackItem {
+    type: string
+    message: string
+    occurrenceCount: number
+    timestamp: number
+  }
+  const warningStacksRef = useRef<Record<string, WarningStackItem[]>>({})
+  
   const EMIT_INTERVAL = 1000 // Emit security data every 1 second
-  const MIN_INCREMENT_INTERVAL = 2000 // Minimum time between increments for same warning type (2 seconds)
+  const STACK_PROCESS_DEBOUNCE_MS = 300 // Wait 300ms after pushing to stack before processing
 
   // Initialize service
   useEffect(() => {
@@ -72,6 +80,37 @@ export const useVisionSecurity = ({
       try {
         const service = new VisionSecurityService((warning) => {
           console.log(`📊 Warning completed: ${warning.type} - ${Math.round(warning.duration / 1000)}s`)
+          
+          // Only increment occurrence count if warning duration exceeded threshold
+          // This prevents short warnings from affecting the count
+          const thresholds = {
+            gaze_away: 3000,
+            face_absent: 5000,
+            mobile_device_usage: 3000,
+            multiple_faces: 0
+          }
+          const threshold = thresholds[warning.type] || 0
+          
+          // Only increment if warning was significant (above threshold)
+          if (warning.duration >= threshold) {
+            // Check if we've already incremented for this warning instance (when it exceeded threshold)
+            const warningKey = `${warning.type}-${warning.startTime}`
+            if (!incrementedWarningsRef.current[warning.type]) {
+              incrementedWarningsRef.current[warning.type] = new Set()
+            }
+            
+            // Only increment if we haven't already incremented for this instance
+            if (!incrementedWarningsRef.current[warning.type].has(warningKey)) {
+              const currentCount = warningOccurrenceCountRef.current[warning.type] || 0
+              warningOccurrenceCountRef.current[warning.type] = currentCount + 1
+              incrementedWarningsRef.current[warning.type].add(warningKey)
+              console.log(`📊 [WARNING COMPLETE] Incremented occurrence count for ${warning.type} to ${currentCount + 1}`)
+            } else {
+              console.log(`📊 [WARNING COMPLETE] Already incremented for ${warning.type} instance ${warningKey}, skipping`)
+            }
+          } else {
+            console.log(`⏭️ [WARNING COMPLETE] Skipping occurrence increment for ${warning.type} - duration ${warning.duration}ms < threshold ${threshold}ms`)
+          }
           
           // Update warning stats when a warning completes
           if (serviceRef.current) {
@@ -112,6 +151,74 @@ export const useVisionSecurity = ({
     }
   }, [enabled])
 
+  // Process warning stack: pop latest warning and speak it, then clear entire stack
+  const processWarningStack = useCallback(() => {
+    if (isSpeaking || isEvaluating || isWarningTTSActiveRef.current) {
+      return // Can't speak now
+    }
+
+    // Find the warning type with the most recent warning (highest timestamp)
+    let latestType: string | null = null
+    let latestTimestamp = 0
+    
+    Object.keys(warningStacksRef.current).forEach(type => {
+      const stack = warningStacksRef.current[type]
+      if (stack.length > 0) {
+        // Get the latest warning (top of stack - LIFO)
+        const latest = stack[stack.length - 1]
+        if (latest.timestamp > latestTimestamp) {
+          latestTimestamp = latest.timestamp
+          latestType = type
+        }
+      }
+    })
+    
+    // Process the most recent warning
+    if (latestType) {
+      const stack = warningStacksRef.current[latestType]
+      const stackSizeBefore = stack.length
+      
+      // Clear any pending timer for this type (we're processing now)
+      if (stackProcessTimersRef.current[latestType]) {
+        clearTimeout(stackProcessTimersRef.current[latestType])
+        delete stackProcessTimersRef.current[latestType]
+      }
+      
+      // Pop latest warning (top of stack - LIFO)
+      const latestWarning = stack.pop()!
+      
+      // Clear entire stack for this type (handles race conditions - even if 2 warnings ~50ms apart)
+      warningStacksRef.current[latestType] = []
+      
+      // Update last spoken occurrence
+      lastSpokenOccurrenceRef.current[latestType] = latestWarning.occurrenceCount
+      
+      // Clear the pushed occurrence tracking for this occurrence (we've spoken it)
+      if (pushedOccurrencesRef.current[latestType]) {
+        pushedOccurrencesRef.current[latestType].delete(latestWarning.occurrenceCount)
+      }
+      
+      // Mark TTS as active
+      isWarningTTSActiveRef.current = true
+      
+      const clearedCount = stackSizeBefore - 1
+      console.log(`🔊 [STACK→TTS] Speaking latest warning for ${latestType} (occurrence ${latestWarning.occurrenceCount})${clearedCount > 0 ? `, cleared ${clearedCount} other warning(s)` : ''}`)
+      
+      if (window.electronAPI?.speakSecurityWarning) {
+        window.electronAPI.speakSecurityWarning(latestWarning.message)
+        
+        // Reset after TTS completes
+        setTimeout(() => {
+          isWarningTTSActiveRef.current = false
+          // Try to process next warning in stack if any
+          processWarningStack()
+        }, 3000) // 3s to account for TTS duration
+      } else {
+        isWarningTTSActiveRef.current = false
+      }
+    }
+  }, [isSpeaking, isEvaluating])
+
   // Process frames
   useEffect(() => {
     if (!enabled || !isInitialized || !videoElement || !serviceRef.current) {
@@ -135,7 +242,7 @@ export const useVisionSecurity = ({
               setWarningStats(serviceRef.current.getWarningStats())
             }
 
-            // Check active warnings and trigger TTS when threshold exceeded
+            // Check active warnings and add to stack when threshold exceeded
             if (serviceRef.current) {
               const activeWarnings = serviceRef.current.getActiveWarnings()
               const now = Date.now()
@@ -146,204 +253,93 @@ export const useVisionSecurity = ({
                 multiple_faces: 0
               }
               
-              // Check if we can speak pending warning now
-              if (pendingWarningRef.current && !isSpeaking && !isEvaluating && !isWarningTTSActiveRef.current) {
-                const pending = pendingWarningRef.current
-                console.log(`🔍 [PENDING CHECK] Processing pending: ${pending.type}, isSpeaking=${isSpeaking}, isEvaluating=${isEvaluating}, isWarningTTSActive=${isWarningTTSActiveRef.current}`)
-                pendingWarningRef.current = null // Clear immediately to prevent re-processing
-                
-                const occurrenceCount = warningOccurrenceCountRef.current[pending.type] || 0
-                const lastSpoken = lastSpokenOccurrenceRef.current[pending.type] || 0
-                
-                console.log(`🔍 [PENDING CHECK] ${pending.type}: occurrenceCount=${occurrenceCount}, lastSpoken=${lastSpoken}`)
-                
-                // Only speak if we haven't spoken for this occurrence count yet
-                if (occurrenceCount > lastSpoken) {
-                  // Create unique request ID for deduplication
-                  const requestId = `${pending.type}-${occurrenceCount}`
-                  
-                  console.log(`🔍 [PENDING CHECK] Checking requestId: ${requestId}, inFlight: ${activeTTSRequestsRef.current.has(requestId)}, activeTTS: [${Array.from(activeTTSRequestsRef.current).join(', ')}]`)
-                  
-                  // Check if this exact request is already in flight
-                  if (activeTTSRequestsRef.current.has(requestId)) {
-                    console.log(`🔇 [PENDING CHECK] Request ${requestId} already in flight, skipping`)
-                    return
-                  }
-                  
-                  lastSpokenOccurrenceRef.current[pending.type] = occurrenceCount
-                  console.log(`🔊 [PENDING→TTS] Speaking queued warning for ${pending.type} (occurrence ${occurrenceCount})`)
-                  
-                  if (window.electronAPI?.speakSecurityWarning) {
-                    // Mark request as in-flight BEFORE IPC call
-                    activeTTSRequestsRef.current.add(requestId)
-                    isWarningTTSActiveRef.current = true
-                    
-                    window.electronAPI.speakSecurityWarning(pending.message)
-                    
-                    // Remove from in-flight after TTS completes
-                    setTimeout(() => {
-                      activeTTSRequestsRef.current.delete(requestId)
-                      isWarningTTSActiveRef.current = false
-                    }, 3000) // 3s to account for TTS duration
-                  }
-                } else {
-                  console.log(`🔍 [PENDING CHECK] Skipping pending ${pending.type} - already spoken for occurrence ${occurrenceCount}`)
-                }
-              }
-              
-              // CRITICAL: Validate warnings are still active immediately after getting them
-              // This prevents processing warnings that were discarded between getActiveWarnings() and now
-              const validActiveWarnings = activeWarnings.filter(w => {
-                if (serviceRef.current) {
-                  const isStillActive = serviceRef.current.isWarningStillActive(w.type, w.startTime)
-                  if (!isStillActive) {
-                    console.log(`🔍 [VALIDATION] Warning ${w.type}-${w.startTime} was discarded, removing from processing`)
-                    // Clean up tracking for discarded warning
-                    const warningKey = `${w.type}-${w.startTime}`
-                    spokenWarningsRef.current.delete(warningKey)
-                    
-                    // If this was the last incrementing warning, roll back the occurrence count
-                    const lastIncrementKey = lastIncrementingWarningKeyRef.current[w.type]
-                    if (lastIncrementKey === warningKey) {
-                      const currentCount = warningOccurrenceCountRef.current[w.type] || 0
-                      if (currentCount > 0) {
-                        warningOccurrenceCountRef.current[w.type] = currentCount - 1
-                        console.log(`🔍 [VALIDATION] Rolling back occurrenceCount for ${w.type} from ${currentCount} to ${currentCount - 1} (discarded warning was last increment)`)
-                        // Also clear the last increment key so a new warning can increment
-                        delete lastIncrementingWarningKeyRef.current[w.type]
-                        lastIncrementTimeRef.current[w.type] = 0
-                      }
-                    }
-                    
-                    return false
-                  }
-                }
-                return true
-              })
-              
-              // Deduplicate by type - only process the oldest instance of each type
-              const warningsByType = new Map<string, typeof validActiveWarnings[0]>()
-              validActiveWarnings.forEach(w => {
-                if (!warningsByType.has(w.type) || w.startTime < warningsByType.get(w.type)!.startTime) {
-                  warningsByType.set(w.type, w)
-                }
-              })
-              
-              // Filter out warnings that have already been spoken to avoid unnecessary processing
-              const unprocessedWarnings = Array.from(warningsByType.values()).filter(warning => {
+              // Process each active warning
+              activeWarnings.forEach((warning) => {
                 const duration = now - warning.startTime
                 const threshold = thresholds[warning.type] || 0
-                if (duration < threshold) return false // Skip warnings below threshold
                 
-                const warningKey = `${warning.type}-${warning.startTime}`
-                return !spokenWarningsRef.current.has(warningKey) // Only include unprocessed warnings
-              })
-              
-              // Only log if there are unprocessed warnings to avoid console spam
-              if (unprocessedWarnings.length > 0) {
-                console.log(`🔍 [LOOP] Processing ${unprocessedWarnings.length} unprocessed warnings`)
-              }
-              
-              unprocessedWarnings.forEach((warning) => {
-                const duration = now - warning.startTime
-                const warningKey = `${warning.type}-${warning.startTime}`
-                
-                // CRITICAL: Validate that this warning is still active before processing
-                // A warning might have been discarded between getActiveWarnings() and now
-                if (serviceRef.current && !serviceRef.current.isWarningStillActive(warning.type, warning.startTime)) {
-                  console.log(`🔍 [ACTIVE CHECK] Warning ${warningKey} was discarded, cleaning up tracking`)
-                  // Clean up tracking for discarded warning
-                  spokenWarningsRef.current.delete(warningKey)
-                  // If this was the last incrementing warning, we might want to rollback, but that's complex
-                  // For now, just skip processing
+                // Skip warnings below threshold
+                if (duration < threshold) {
                   return
                 }
                 
-                // Mark as processing immediately to prevent duplicate processing in same or next iteration
-                // This must happen BEFORE any other processing to prevent race conditions
-                if (spokenWarningsRef.current.has(warningKey)) {
-                  return // Skip if already being processed (shouldn't happen due to filter, but safety check)
+                // Validate warning is still active
+                if (serviceRef.current && !serviceRef.current.isWarningStillActive(warning.type, warning.startTime)) {
+                  return
                 }
                 
-                // Mark as spoken IMMEDIATELY to prevent duplicate processing
-                spokenWarningsRef.current.add(warningKey)
+                // Track warning instance by key
+                const warningKey = `${warning.type}-${warning.startTime}`
+                
+                // Initialize tracking sets if needed
+                if (!incrementedWarningsRef.current[warning.type]) {
+                  incrementedWarningsRef.current[warning.type] = new Set()
+                }
+                
+                // Increment occurrence count if this warning exceeded threshold and we haven't incremented for this instance yet
+                // This handles cases where warnings are discarded before completion
+                if (!incrementedWarningsRef.current[warning.type].has(warningKey)) {
+                  const currentCount = warningOccurrenceCountRef.current[warning.type] || 0
+                  warningOccurrenceCountRef.current[warning.type] = currentCount + 1
+                  incrementedWarningsRef.current[warning.type].add(warningKey)
+                  console.log(`📊 [THRESHOLD] Incremented occurrence count for ${warning.type} to ${currentCount + 1} (warning exceeded threshold)`)
+                }
                 
                 // Get current occurrence count
-                let occurrenceCount = warningOccurrenceCountRef.current[warning.type] || 0
+                const occurrenceCount = warningOccurrenceCountRef.current[warning.type] || 0
                 const lastSpoken = lastSpokenOccurrenceRef.current[warning.type] || 0
-                
-                // Only increment occurrence count if:
-                // 1. This is a different warning instance than the last one that caused an increment, AND
-                // 2. Enough time has passed since the last increment (prevents rapid-fire increments)
-                const lastIncrementKey = lastIncrementingWarningKeyRef.current[warning.type]
-                const lastIncrementTime = lastIncrementTimeRef.current[warning.type] || 0
-                const timeSinceLastIncrement = now - lastIncrementTime
-                const isDifferentWarning = lastIncrementKey !== warningKey
-                const enoughTimePassed = timeSinceLastIncrement >= MIN_INCREMENT_INTERVAL
-                
-                if (isDifferentWarning && (enoughTimePassed || lastIncrementTime === 0)) {
-                  warningOccurrenceCountRef.current[warning.type] = occurrenceCount + 1
-                  occurrenceCount = occurrenceCount + 1
-                  lastIncrementingWarningKeyRef.current[warning.type] = warningKey
-                  lastIncrementTimeRef.current[warning.type] = now
-                }
-                
-                console.log(`🔍 [ACTIVE CHECK] New warning instance: ${warning.type}, key=${warningKey}, occurrenceCount=${occurrenceCount}, lastSpoken=${lastSpoken}`)
                 
                 // Only speak on every 3rd occurrence (1st, 4th, 7th, etc.)
                 // AND only if we haven't already spoken for this occurrence count
                 const shouldSpeak = occurrenceCount % 3 === 1 && occurrenceCount > lastSpoken
                 
-                console.log(`🔍 [ACTIVE CHECK] ${warning.type}: shouldSpeak=${shouldSpeak} (${occurrenceCount} % 3 === 1 && ${occurrenceCount} > ${lastSpoken})`)
-                
                 if (shouldSpeak) {
-                  const messages = WARNING_MESSAGES[warning.type] || []
-                  const message = messages[Math.floor(Math.random() * messages.length)] || `Security alert: ${warning.type}`
+                  // Check if we've already pushed this occurrence to the stack (prevent duplicates)
+                  if (!pushedOccurrencesRef.current[warning.type]) {
+                    pushedOccurrencesRef.current[warning.type] = new Set()
+                  }
                   
-                  // Skip if already pending for this type (prevents duplicate in same iteration)
-                  const isAlreadyPending = pendingWarningRef.current?.type === warning.type
-                  
-                  console.log(`🔍 [ACTIVE CHECK] ${warning.type}: isSpeaking=${isSpeaking}, isEvaluating=${isEvaluating}, isWarningTTSActive=${isWarningTTSActiveRef.current}, isAlreadyPending=${isAlreadyPending}`)
-                  
-                  // Create unique request ID for deduplication (check FIRST)
-                  const requestId = `${warning.type}-${occurrenceCount}`
-                  
-                  console.log(`🔍 [ACTIVE CHECK] Checking requestId: ${requestId}, inFlight: ${activeTTSRequestsRef.current.has(requestId)}, activeTTS: [${Array.from(activeTTSRequestsRef.current).join(', ')}]`)
-                  
-                  // Check if this exact request is already in flight
-                  if (activeTTSRequestsRef.current.has(requestId)) {
-                    console.log(`🔇 [ACTIVE CHECK] Request ${requestId} already in flight, skipping`)
+                  if (pushedOccurrencesRef.current[warning.type].has(occurrenceCount)) {
+                    // Already pushed this occurrence, skip
                     return
                   }
                   
-                  if (!isSpeaking && !isEvaluating && !isWarningTTSActiveRef.current && !isAlreadyPending) {
-                    lastSpokenOccurrenceRef.current[warning.type] = occurrenceCount
-                    console.log(`🔊 [ACTIVE→TTS] Speaking warning for ${warning.type} (occurrence ${occurrenceCount}/3) after ${Math.round(duration / 1000)}s`)
-                    
-                    if (window.electronAPI?.speakSecurityWarning) {
-                      // Mark request as in-flight BEFORE IPC call
-                      activeTTSRequestsRef.current.add(requestId)
-                      isWarningTTSActiveRef.current = true
-                      
-                      window.electronAPI.speakSecurityWarning(message)
-                      
-                      // Remove from in-flight after TTS completes
-                      setTimeout(() => {
-                        activeTTSRequestsRef.current.delete(requestId)
-                        isWarningTTSActiveRef.current = false
-                      }, 3000) // 3s to account for TTS duration
-                    }
-                  } else if (!isAlreadyPending) {
-                    // Only queue if not already queued for this type
-                    pendingWarningRef.current = { type: warning.type, message }
-                    console.log(`⏳ [ACTIVE→QUEUE] Queuing warning for ${warning.type} (occurrence ${occurrenceCount}/3) - AI is busy`)
-                  } else {
-                    console.log(`🔍 [ACTIVE CHECK] Skipping ${warning.type} - already pending`)
+                  const messages = WARNING_MESSAGES[warning.type] || []
+                  const message = messages[Math.floor(Math.random() * messages.length)] || `Security alert: ${warning.type}`
+                  
+                  // Initialize stack for this warning type if needed
+                  if (!warningStacksRef.current[warning.type]) {
+                    warningStacksRef.current[warning.type] = []
                   }
-                } else {
-                  console.log(`⏭️ [ACTIVE CHECK] Skipping TTS for ${warning.type} (occurrence ${occurrenceCount}, last spoken: ${lastSpoken})`)
+                  
+                  // Mark this occurrence as pushed
+                  pushedOccurrencesRef.current[warning.type].add(occurrenceCount)
+                  
+                  // Push latest warning to stack (LIFO - latest on top)
+                  warningStacksRef.current[warning.type].push({
+                    type: warning.type,
+                    message,
+                    occurrenceCount,
+                    timestamp: now
+                  })
+                  
+                  console.log(`📥 [STACK] Pushed warning for ${warning.type} (occurrence ${occurrenceCount}), stack size: ${warningStacksRef.current[warning.type].length}`)
+                  
+                  // Debounce: Wait 300ms before processing stack
+                  // If another warning comes within 300ms, reset the timer (only latest will be processed)
+                  if (stackProcessTimersRef.current[warning.type]) {
+                    clearTimeout(stackProcessTimersRef.current[warning.type])
+                  }
+                  
+                  stackProcessTimersRef.current[warning.type] = setTimeout(() => {
+                    processWarningStack()
+                    delete stackProcessTimersRef.current[warning.type]
+                  }, STACK_PROCESS_DEBOUNCE_MS)
                 }
               })
+              
+              // Also try to process stack in case TTS just became available
+              processWarningStack()
               
               // Trigger alert callback for UI updates
               if (onSecurityAlert && activeWarnings.some(w => {
@@ -375,8 +371,14 @@ export const useVisionSecurity = ({
         cancelAnimationFrame(animationFrameRef.current)
         animationFrameRef.current = null
       }
+      
+      // Clean up any pending stack process timers
+      Object.values(stackProcessTimersRef.current).forEach(timer => {
+        clearTimeout(timer)
+      })
+      stackProcessTimersRef.current = {}
     }
-  }, [enabled, isInitialized, videoElement, onSecurityAlert])
+  }, [enabled, isInitialized, videoElement, onSecurityAlert, isSpeaking, isEvaluating, processWarningStack])
 
   const getStatus = useCallback((): VisionSecurityStatus | null => {
     return status
