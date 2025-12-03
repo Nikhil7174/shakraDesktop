@@ -191,9 +191,39 @@ export const useVisionSecurity = ({
                 }
               }
               
+              // CRITICAL: Validate warnings are still active immediately after getting them
+              // This prevents processing warnings that were discarded between getActiveWarnings() and now
+              const validActiveWarnings = activeWarnings.filter(w => {
+                if (serviceRef.current) {
+                  const isStillActive = serviceRef.current.isWarningStillActive(w.type, w.startTime)
+                  if (!isStillActive) {
+                    console.log(`🔍 [VALIDATION] Warning ${w.type}-${w.startTime} was discarded, removing from processing`)
+                    // Clean up tracking for discarded warning
+                    const warningKey = `${w.type}-${w.startTime}`
+                    spokenWarningsRef.current.delete(warningKey)
+                    
+                    // If this was the last incrementing warning, roll back the occurrence count
+                    const lastIncrementKey = lastIncrementingWarningKeyRef.current[w.type]
+                    if (lastIncrementKey === warningKey) {
+                      const currentCount = warningOccurrenceCountRef.current[w.type] || 0
+                      if (currentCount > 0) {
+                        warningOccurrenceCountRef.current[w.type] = currentCount - 1
+                        console.log(`🔍 [VALIDATION] Rolling back occurrenceCount for ${w.type} from ${currentCount} to ${currentCount - 1} (discarded warning was last increment)`)
+                        // Also clear the last increment key so a new warning can increment
+                        delete lastIncrementingWarningKeyRef.current[w.type]
+                        lastIncrementTimeRef.current[w.type] = 0
+                      }
+                    }
+                    
+                    return false
+                  }
+                }
+                return true
+              })
+              
               // Deduplicate by type - only process the oldest instance of each type
-              const warningsByType = new Map<string, typeof activeWarnings[0]>()
-              activeWarnings.forEach(w => {
+              const warningsByType = new Map<string, typeof validActiveWarnings[0]>()
+              validActiveWarnings.forEach(w => {
                 if (!warningsByType.has(w.type) || w.startTime < warningsByType.get(w.type)!.startTime) {
                   warningsByType.set(w.type, w)
                 }
@@ -217,6 +247,17 @@ export const useVisionSecurity = ({
               unprocessedWarnings.forEach((warning) => {
                 const duration = now - warning.startTime
                 const warningKey = `${warning.type}-${warning.startTime}`
+                
+                // CRITICAL: Validate that this warning is still active before processing
+                // A warning might have been discarded between getActiveWarnings() and now
+                if (serviceRef.current && !serviceRef.current.isWarningStillActive(warning.type, warning.startTime)) {
+                  console.log(`🔍 [ACTIVE CHECK] Warning ${warningKey} was discarded, cleaning up tracking`)
+                  // Clean up tracking for discarded warning
+                  spokenWarningsRef.current.delete(warningKey)
+                  // If this was the last incrementing warning, we might want to rollback, but that's complex
+                  // For now, just skip processing
+                  return
+                }
                 
                 // Mark as processing immediately to prevent duplicate processing in same or next iteration
                 // This must happen BEFORE any other processing to prevent race conditions
@@ -365,6 +406,13 @@ export const useVisionSecurity = ({
     return []
   }, [])
 
+  const isWarningStillActive = useCallback((type: string, startTime: number) => {
+    if (serviceRef.current) {
+      return serviceRef.current.isWarningStillActive(type, startTime)
+    }
+    return false
+  }, [])
+
   return {
     status,
     isInitialized,
@@ -373,7 +421,8 @@ export const useVisionSecurity = ({
     getStatus,
     endAllActiveWarnings,
     getWarningStats,
-    getActiveWarnings
+    getActiveWarnings,
+    isWarningStillActive
   }
 }
 

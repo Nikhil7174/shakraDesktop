@@ -307,6 +307,10 @@ export class VisionSecurityService {
     return this.warningManager.getActiveWarnings()
   }
 
+  isWarningStillActive(type: string, startTime: number): boolean {
+    return this.warningManager.isWarningStillActive(type, startTime)
+  }
+
   endAllActiveWarnings(): void {
     this.warningManager.endAllActiveWarnings()
   }
