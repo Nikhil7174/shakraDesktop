@@ -44,6 +44,7 @@ const interviewAPI = {
   
   // Vision security
   sendVisionSecurityData: (data: any) => ipcRenderer.send('vision-security-data', data),
+  speakSecurityWarning: (message: string) => ipcRenderer.send('speak-security-warning', message),
   onVisionSecurityAlert: (callback: (alert: any) => void) => {
     ipcRenderer.on('vision-security-alert', (_event, alert) => callback(alert))
   },

@@ -6,9 +6,9 @@ import {
 } from '@mediapipe/tasks-vision'
 import type {
   VisionSecurityStatus,
-  GazeDirection,
-  SuspiciousEvent
+  GazeDirection
 } from '../../../shared/types'
+import { WarningStateManager } from './warningStateManager'
 
 export class VisionSecurityService {
   private faceLandmarker: FaceLandmarker | null = null
@@ -16,17 +16,25 @@ export class VisionSecurityService {
   private isInitialized = false
   private blinkHistory: number[] = []
   private lastBlinkTime = 0
-  private gazeAwayStartTime: number | null = null
-  private faceAbsentStartTime: number | null = null
-  private mobileDeviceStartTime: number | null = null
   private lastProcessTime = 0
   private readonly PROCESS_INTERVAL = 100 // Process every 100ms (10 FPS)
+  private warningManager: WarningStateManager
 
   // Thresholds
   private readonly GAZE_AWAY_THRESHOLD = 3000 // 3 seconds
   private readonly FACE_ABSENT_THRESHOLD = 5000 // 5 seconds
   private readonly BLINK_EAR_THRESHOLD = 0.25
   private readonly MOBILE_DEVICE_DURATION = 3000 // 3 seconds - gaze down must persist
+
+  constructor(onWarningComplete?: (warning: any) => void) {
+    const thresholds = {
+      gaze_away: this.GAZE_AWAY_THRESHOLD,
+      face_absent: this.FACE_ABSENT_THRESHOLD,
+      mobile_device_usage: this.MOBILE_DEVICE_DURATION,
+      multiple_faces: 0
+    }
+    this.warningManager = new WarningStateManager(thresholds, onWarningComplete)
+  }
 
   async initialize(): Promise<void> {
     if (this.isInitialized) return
@@ -114,7 +122,6 @@ export class VisionSecurityService {
     faceDetections: any,
     faceLandmarks: any
   ): VisionSecurityStatus {
-    const suspiciousEvents: SuspiciousEvent[] = []
     const now = Date.now()
 
     // Face detection analysis
@@ -124,41 +131,18 @@ export class VisionSecurityService {
       ? (faceDetections?.detections?.[0]?.score || 0)
       : 0
 
+    // Multiple faces warning management
     if (multipleFacesDetected) {
-      // Only add event once per detection to avoid spam
-      const lastMultipleFacesEvent = suspiciousEvents.find(e => e.type === 'multiple_faces')
-      if (!lastMultipleFacesEvent || (now - lastMultipleFacesEvent.timestamp) > 5000) {
-        suspiciousEvents.push({
-          type: 'multiple_faces',
-          timestamp: now,
-          severity: 'high',
-          description: 'Multiple faces detected in frame'
-        })
-      }
+      this.warningManager.startWarning('multiple_faces')
+    } else {
+      this.warningManager.endWarning('multiple_faces')
     }
 
-    // Face absent detection (separate from gaze away)
+    // Face absent warning management
     if (!faceDetected) {
-      if (this.faceAbsentStartTime === null) {
-        this.faceAbsentStartTime = now
-      } else {
-        const faceAbsentDuration = now - this.faceAbsentStartTime
-        if (faceAbsentDuration > this.FACE_ABSENT_THRESHOLD) {
-          // Only add event once per threshold period (every 5 seconds)
-          const lastFaceAbsentEvent = suspiciousEvents.find(e => e.type === 'face_absent')
-          if (!lastFaceAbsentEvent || (now - lastFaceAbsentEvent.timestamp) > 5000) {
-            suspiciousEvents.push({
-              type: 'face_absent',
-              timestamp: now,
-              severity: 'high',
-              description: `Face not detected for ${Math.round(faceAbsentDuration / 1000)}s`,
-              duration: faceAbsentDuration
-            })
-          }
-        }
-      }
+      this.warningManager.startWarning('face_absent')
     } else {
-      this.faceAbsentStartTime = null
+      this.warningManager.endWarning('face_absent')
     }
 
     // Eye tracking and gaze direction
@@ -172,74 +156,19 @@ export class VisionSecurityService {
     }
 
     // Mobile device detection: Gaze down pattern
-    // Looking down is a strong indicator of mobile phone usage
     const mobileDeviceUsageDetected = faceDetected && gazeDirection === 'down'
-
     if (mobileDeviceUsageDetected) {
-      if (this.mobileDeviceStartTime === null) {
-        this.mobileDeviceStartTime = now
-      } else {
-        const mobileDuration = now - this.mobileDeviceStartTime
-        if (mobileDuration > this.MOBILE_DEVICE_DURATION) {
-          // Only add event once per threshold period to avoid spam
-          const lastMobileEvent = suspiciousEvents.find(e => e.type === 'mobile_device_usage')
-          if (!lastMobileEvent || (now - lastMobileEvent.timestamp) > 5000) {
-            suspiciousEvents.push({
-              type: 'mobile_device_usage',
-              timestamp: now,
-              severity: 'high',
-              description: 'Possible mobile device usage detected (looking down)',
-              duration: mobileDuration
-            })
-          }
-        }
-      }
+      this.warningManager.startWarning('mobile_device_usage')
     } else {
-      // Reset timer if condition is no longer met
-      this.mobileDeviceStartTime = null
+      this.warningManager.endWarning('mobile_device_usage')
     }
 
-    // Gaze away detection (only when face is detected, otherwise face_absent handles it)
-    let gazeAwayDuration = 0
-    if (faceDetected && gazeDirection !== 'center' && gazeDirection !== 'away') {
-      if (this.gazeAwayStartTime === null) {
-        this.gazeAwayStartTime = now
-      } else {
-        gazeAwayDuration = now - this.gazeAwayStartTime
-        // Only add event once per threshold period (every 3 seconds) to avoid spam
-        const lastGazeAwayEvent = suspiciousEvents.find(e => e.type === 'gaze_away')
-        if (gazeAwayDuration > this.GAZE_AWAY_THRESHOLD) {
-          if (!lastGazeAwayEvent || (now - lastGazeAwayEvent.timestamp) > 3000) {
-            suspiciousEvents.push({
-              type: 'gaze_away',
-              timestamp: now,
-              severity: 'medium',
-              description: `Gaze away from screen (${gazeDirection}) for ${Math.round(gazeAwayDuration / 1000)}s`,
-              duration: gazeAwayDuration
-            })
-          }
-        }
-      }
+    // Gaze away detection (only when face is detected)
+    const gazeAway = faceDetected && gazeDirection !== 'center' && gazeDirection !== 'away'
+    if (gazeAway) {
+      this.warningManager.startWarning('gaze_away')
     } else {
-      this.gazeAwayStartTime = null
-    }
-
-    // Log debug info periodically (every 5 seconds) to help diagnose detection issues
-    if (now % 5000 < 100) { // Roughly every 5 seconds
-      console.log('👁️ [Vision Debug] Gaze:', gazeDirection, '| Face:', faceDetected, '| Events:', suspiciousEvents.length)
-      if (suspiciousEvents.length > 0) {
-        console.log('👁️ [Vision Debug] Event details:', suspiciousEvents.map(e => ({
-          type: e.type,
-          severity: e.severity,
-          description: e.description
-        })))
-      }
-    }
-    
-    // Log immediately when new events are detected (not just periodically)
-    if (suspiciousEvents.length > 0) {
-      const eventTypes = suspiciousEvents.map(e => e.type).join(', ')
-      console.log(`🚨 [Vision Security] Detected ${suspiciousEvents.length} suspicious event(s): ${eventTypes}`)
+      this.warningManager.endWarning('gaze_away')
     }
 
     return {
@@ -248,13 +177,13 @@ export class VisionSecurityService {
       faceDetected,
       multipleFacesDetected,
       facePresenceConfidence,
-      gazeAwayDuration,
-      handsDetected: false, // Hand tracking removed
-      handCount: 0, // Hand tracking removed
-      suspiciousHandPatterns: [], // Hand tracking removed
-      handMovementIntensity: 0, // Hand tracking removed
+      gazeAwayDuration: 0,
+      handsDetected: false,
+      handCount: 0,
+      suspiciousHandPatterns: [],
+      handMovementIntensity: 0,
       mobileDeviceUsageDetected,
-      suspiciousEvents,
+      suspiciousEvents: [],
       timestamp: now
     }
   }
@@ -370,6 +299,18 @@ export class VisionSecurityService {
     return blinkRate
   }
 
+  getWarningStats(): any {
+    return this.warningManager.getWarningStats()
+  }
+
+  getActiveWarnings(): any {
+    return this.warningManager.getActiveWarnings()
+  }
+
+  endAllActiveWarnings(): void {
+    this.warningManager.endAllActiveWarnings()
+  }
+
   cleanup(): void {
     if (this.faceLandmarker) {
       this.faceLandmarker.close()
@@ -381,6 +322,7 @@ export class VisionSecurityService {
     }
     this.isInitialized = false
     this.blinkHistory = []
+    this.warningManager.clear()
   }
 }
 

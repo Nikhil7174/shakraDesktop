@@ -1,18 +1,22 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { Alert, Space } from 'antd'
-import { WarningOutlined, EyeOutlined, MobileOutlined, UserDeleteOutlined } from '@ant-design/icons'
+import { Alert, Space, Button, Collapse } from 'antd'
+import { WarningOutlined, EyeOutlined, MobileOutlined, UserDeleteOutlined, BarChartOutlined } from '@ant-design/icons'
 import type { VisionSecurityStatus, SuspiciousEvent } from '../../../../shared/types'
+import { WarningDashboard } from '../WarningDashboard'
 
 interface VisionSecurityAlertProps {
   status: VisionSecurityStatus | null
+  warningStats?: any
   onDismiss?: (eventType: string) => void
 }
 
 export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
   status,
+  warningStats,
   onDismiss
 }) => {
   const [dismissedEvents, setDismissedEvents] = useState<Set<string>>(new Set())
+  const [showDashboard, setShowDashboard] = useState(false)
 
   useEffect(() => {
     // Auto-dismiss low severity events after 5 seconds
@@ -29,38 +33,38 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
   }, [status, dismissedEvents, onDismiss])
 
   // Debug logging
-  useEffect(() => {
-    if (status) {
-      const eventsCount = status.suspiciousEvents?.length || 0
-      console.log('🔔 [VisionSecurityAlert] Status received:', {
-        hasStatus: !!status,
-        eventsCount: eventsCount,
-        faceDetected: status.faceDetected,
-        events: status.suspiciousEvents?.map(e => ({
-          type: e.type,
-          severity: e.severity,
-          timestamp: e.timestamp,
-          description: e.description
-        })) || []
-      })
+  // useEffect(() => {
+  //   if (status) {
+  //     const eventsCount = status.suspiciousEvents?.length || 0
+  //     console.log('🔔 [VisionSecurityAlert] Status received:', {
+  //       hasStatus: !!status,
+  //       eventsCount: eventsCount,
+  //       faceDetected: status.faceDetected,
+  //       events: status.suspiciousEvents?.map(e => ({
+  //         type: e.type,
+  //         severity: e.severity,
+  //         timestamp: e.timestamp,
+  //         description: e.description
+  //       })) || []
+  //     })
       
-      if (eventsCount > 0) {
-        console.log('🔔 [VisionSecurityAlert] Will render alerts for', eventsCount, 'events')
-      } else {
-        console.log('🔔 [VisionSecurityAlert] No events to display')
-      }
-    } else {
-      console.log('🔔 [VisionSecurityAlert] No status received')
-    }
-  }, [status])
+  //     if (eventsCount > 0) {
+  //       console.log('🔔 [VisionSecurityAlert] Will render alerts for', eventsCount, 'events')
+  //     } else {
+  //       console.log('🔔 [VisionSecurityAlert] No events to display')
+  //     }
+  //   } else {
+  //     console.log('🔔 [VisionSecurityAlert] No status received')
+  //   }
+  // }, [status])
 
   if (!status) {
-    console.log('🔔 [VisionSecurityAlert] No status, returning null')
+    // console.log('🔔 [VisionSecurityAlert] No status, returning null')
     return null
   }
 
   if (!status.suspiciousEvents || status.suspiciousEvents.length === 0) {
-    console.log('🔔 [VisionSecurityAlert] No suspicious events, returning null')
+    // console.log('🔔 [VisionSecurityAlert] No suspicious events, returning null')
     return null
   }
 
@@ -90,12 +94,12 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
   
   const activeEvents = Array.from(eventsByType.values())
 
-  console.log('🔔 [VisionSecurityAlert] Active events after filtering:', activeEvents.length, 'out of', status.suspiciousEvents.length, {
-    events: activeEvents.map(e => ({ type: e.type, timestamp: e.timestamp, age: now - e.timestamp }))
-  })
+  // console.log('🔔 [VisionSecurityAlert] Active events after filtering:', activeEvents.length, 'out of', status.suspiciousEvents.length, {
+  //   events: activeEvents.map(e => ({ type: e.type, timestamp: e.timestamp, age: now - e.timestamp }))
+  // })
 
   if (activeEvents.length === 0) {
-    console.log('🔔 [VisionSecurityAlert] No active events after filtering, returning null')
+    // console.log('🔔 [VisionSecurityAlert] No active events after filtering, returning null')
     return null
   }
 
@@ -153,10 +157,28 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
   return (
     <div className="vision-security-alerts">
       <Space direction="vertical" size="small" style={{ width: '100%' }}>
+        {/* Dashboard Toggle Button */}
+        <Button
+          type="primary"
+          icon={<BarChartOutlined />}
+          onClick={() => setShowDashboard(!showDashboard)}
+          size="small"
+        >
+          {showDashboard ? 'Hide' : 'Show'} Warning Stats
+        </Button>
+
+        {/* Warning Dashboard */}
+        {showDashboard && warningStats && (
+          <div className="dashboard-container">
+            <WarningDashboard warningStats={warningStats} />
+          </div>
+        )}
+
+        {/* Active Alerts */}
         {Object.entries(eventGroups).map(([type, events]) => {
           const severity = events[0].severity
           const message = getEventMessage(type as SuspiciousEvent['type'], events)
-          console.log('🔔 [VisionSecurityAlert] Rendering alert:', { type, severity, message })
+          // console.log('🔔 [VisionSecurityAlert] Rendering alert:', { type, severity, message })
           
           return (
             <Alert
@@ -183,8 +205,16 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
           top: 20px;
           right: 20px;
           z-index: 10000;
-          max-width: 400px;
+          max-width: 450px;
           animation: slideIn 0.3s ease-out;
+        }
+
+        .dashboard-container {
+          background: white;
+          border-radius: 8px;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+          max-height: 400px;
+          overflow-y: auto;
         }
 
         @keyframes slideIn {

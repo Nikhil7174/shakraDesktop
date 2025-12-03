@@ -271,32 +271,19 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
 
         // Handle normal evaluation responses
         let responseText = ''
-        let messageType: ConversationMessage['metadata']['type'] = 'feedback'
         if (evaluation.needsFollowUp) {
           // Don't add the follow-up question here - it will be added when askFollowUp event fires
           // Just provide a transition message
           responseText = "Let me ask a follow-up question about that."
-          messageType = 'feedback'
           // Store the follow-up question for hint generation
           this.currentFollowUpQuestion = evaluation.followUpQuestion || null
           console.log('🎯 [LLM] Follow-up question stored for hints:', this.currentFollowUpQuestion?.substring(0, 50))
         } else {
           responseText = this.generatePositiveResponse(evaluation.score)
-          messageType = 'feedback'
         }
 
-        // Add assistant message to conversation with evaluation metadata
-        // Note: Follow-up questions are added separately when askFollowUp event fires
-        this.addConversationMessage('assistant', responseText, {
-          type: messageType,
-          questionId: this.currentQuestion?.id,
-          section: 'theoretical',
-          evaluation: {
-            score: evaluation.score,
-            keyPointsCovered: evaluation.keyPointsCovered,
-            needsFollowUp: evaluation.needsFollowUp
-          }
-        })
+        // Don't record feedback here - it will be recorded in handleEvaluation before speaking
+        // This ensures we record evaluation.feedback (what will be spoken) instead of responseText
 
         return {
           text: responseText,
@@ -418,8 +405,11 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
       return "Good answer! You demonstrated solid understanding of the topic."
     } else if (score >= 70) {
       return "Good answer! You covered the main points well."
+    } else if (score >= 60) {
+      return "Thank you for that answer. You covered the key concepts."
     } else {
-      return "Thank you for that answer. Let me ask a follow-up question."
+      // This should not be reached when needsFollowUp is false, but just in case
+      return "Thank you for that answer."
     }
   }
 

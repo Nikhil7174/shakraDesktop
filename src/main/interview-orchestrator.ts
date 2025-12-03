@@ -146,6 +146,7 @@ export class InterviewOrchestrator extends EventEmitter {
     }
   }> = []
   private allEvaluations: Evaluation[] = []
+  private visionSecurityWarnings: any = {} // Store warning stats from renderer
   
   // Track current problem/question for organizing conversations
   private currentProblemId: string | null = null
@@ -1952,17 +1953,46 @@ export class InterviewOrchestrator extends EventEmitter {
         console.log('🎯 [Interview] No speech playing, skipping wait')
       }
 
-      // Speak feedback if available, but skip if follow-up question is present
-      if (evaluation.feedback && evaluation.feedback.trim().length > 0) {
-        // Only speak feedback if there's no follow-up question
-        if (!evaluation.followUpQuestion) {
-          console.log('🎯 [Interview] 💬 Speaking feedback:', evaluation.feedback.substring(0, 50) + '...')
-          await this.speakWithPolicy(evaluation.feedback, {
-            interruptible: true,
-            bargeInPolicy: 'hard'
-          })
-        } else {
-          console.log('🎯 [Interview] ⏭️ Skipping feedback because follow-up question is present')
+      // Record feedback BEFORE speaking (consistent with other messages like questions, hints, clarifications)
+      const currentQuestion = this.llm.getCurrentQuestion()
+      if (currentQuestion) {
+        if (evaluation.feedback && evaluation.feedback.trim().length > 0) {
+          // Only speak feedback if there's no follow-up question
+          if (!evaluation.followUpQuestion) {
+            // Record the feedback that will be spoken (evaluation.feedback, not responseText)
+            this.llm.addConversationMessage('assistant', evaluation.feedback, {
+              type: 'feedback',
+              questionId: currentQuestion.id,
+              section: 'theoretical',
+              evaluation: {
+                score: evaluation.score,
+                keyPointsCovered: evaluation.keyPointsCovered,
+                needsFollowUp: evaluation.needsFollowUp
+              }
+            } as any)
+            this.syncConversationHistoryFromServices()
+            
+            console.log('🎯 [Interview] 💬 Speaking feedback:', evaluation.feedback.substring(0, 50) + '...')
+            await this.speakWithPolicy(evaluation.feedback, {
+              interruptible: true,
+              bargeInPolicy: 'hard'
+            })
+          } else {
+            // Record the transition message that would have been spoken
+            this.llm.addConversationMessage('assistant', "Let me ask a follow-up question about that.", {
+              type: 'feedback',
+              questionId: currentQuestion.id,
+              section: 'theoretical',
+              evaluation: {
+                score: evaluation.score,
+                keyPointsCovered: evaluation.keyPointsCovered,
+                needsFollowUp: evaluation.needsFollowUp
+              }
+            } as any)
+            this.syncConversationHistoryFromServices()
+            
+            console.log('🎯 [Interview] ⏭️ Skipping feedback because follow-up question is present')
+          }
         }
       }
 
@@ -2600,6 +2630,37 @@ export class InterviewOrchestrator extends EventEmitter {
       }
       // Start silence timer for automatic hints (40 seconds)
       this.stateMachine.startSilenceTimer(40000)
+    }
+  }
+
+  /**
+   * Speak a security warning to the user
+   * This is a public method that can be called from IPC handlers
+   * Uses auto priority and is interruptible to not block interview flow
+   */
+  public async speakSecurityWarning(message: string): Promise<void> {
+    try {
+      if (!message || !message.trim()) {
+        return
+      }
+
+      // Security warnings are interruptible and use auto priority
+      // They won't block interview flow and can be interrupted by user
+      await this.speakWithPolicy(
+        message,
+        {
+          interruptible: true,  // Can be interrupted by user
+          bargeInPolicy: 'hard' // User can interrupt immediately
+        },
+        { 
+          kind: 'system', 
+          priority: 'auto',  // Auto priority (system-generated)
+          source: 'security_warning' 
+        }
+      )
+    } catch (error) {
+      console.error('Failed to speak security warning:', error)
+      // Don't throw - security warnings are non-critical
     }
   }
 
@@ -3429,6 +3490,20 @@ export class InterviewOrchestrator extends EventEmitter {
     if (this.stt.isListening()) {
       this.stt.streamAudio(audioChunk)
     }
+  }
+
+  // Receive vision security warnings from renderer
+  updateVisionSecurityWarnings(warningStats: any): void {
+    console.log('📊 [Orchestrator] Received vision security warnings:', JSON.stringify(warningStats, null, 2))
+    console.log('📊 [Orchestrator] Warning stats keys:', Object.keys(warningStats || {}))
+    this.visionSecurityWarnings = warningStats
+    console.log('📊 [Orchestrator] Stored warnings:', JSON.stringify(this.visionSecurityWarnings, null, 2))
+  }
+
+  // Get vision security warnings for final evaluation
+  getVisionSecurityWarnings(): any {
+    console.log('📊 [Orchestrator] Getting vision security warnings, current value:', JSON.stringify(this.visionSecurityWarnings, null, 2))
+    return this.visionSecurityWarnings
   }
 
   // Clean up resources

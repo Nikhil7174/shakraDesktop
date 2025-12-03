@@ -56,49 +56,134 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   
   const codeEditorRef = useRef<any>(null)
 
+  // Track spoken warnings to prevent duplicate TTS
+  const spokenWarningsRef = useRef<Set<string>>(new Set())
+
   // Initialize vision security tracking that stays active throughout the interview
   // This works even when video windows are hidden (like in coding section)
-  const { status: hiddenVisionStatus } = useVisionSecurity({
+  // Keep it enabled through 'wrap_up' so we can end and persist all active warnings at final evaluation time
+  const { status: hiddenVisionStatus, warningStats, endAllActiveWarnings, getWarningStats } = useVisionSecurity({
     videoElement: hiddenVideoElement,
-    enabled: hiddenVideoElement !== null && currentState !== 'wrap_up' && currentState !== 'connecting',
+    enabled: hiddenVideoElement !== null && currentState !== 'connecting',
     onSecurityAlert: (status) => {
-      if (status.suspiciousEvents.length > 0) {
-        console.warn('🚨 [Vision Security - Hidden] Alert triggered:', {
-          totalEvents: status.suspiciousEvents.length,
-          events: status.suspiciousEvents.map(e => ({
-            type: e.type,
-            severity: e.severity,
-            description: e.description
-          }))
+      // NOTE: status.suspiciousEvents is currently empty; the fact that onSecurityAlert
+      // fired already means thresholds were exceeded in WarningStateManager.
+      // So we don't gate on suspiciousEvents length here.
+      setVisionSecurityStatus(status)
+      
+      // Speak warnings to user via TTS (lightweight IPC to main process)
+      if (status.suspiciousEvents && status.suspiciousEvents.length > 0) {
+        status.suspiciousEvents.forEach(event => {
+          // Map event types to user-friendly messages
+          const warningMessages: Record<string, string> = {
+            'gaze_away': 'Please look back at the screen',
+            'face_absent': 'Please ensure your face is visible',
+            'mobile_device_usage': 'Please put away your mobile device',
+            'multiple_faces': 'Multiple faces detected. Please ensure you are alone',
+            'no_face_detected': 'Face not detected. Please position yourself in front of the camera'
+          }
+          
+          const message = warningMessages[event.type] || event.description || `Security alert: ${event.type}`
+          
+          // Add deduplication to prevent spam (5 second window per event type)
+          const warningKey = `${event.type}-${Math.floor(event.timestamp / 5000)}`
+          if (!spokenWarningsRef.current.has(warningKey)) {
+            spokenWarningsRef.current.add(warningKey)
+            
+            // Send to main process for TTS (lightweight - just a string)
+            if (window.electronAPI?.speakSecurityWarning) {
+              window.electronAPI.speakSecurityWarning(message)
+            }
+            
+            // Clean up old keys after 10 seconds
+            setTimeout(() => {
+              spokenWarningsRef.current.delete(warningKey)
+            }, 10000)
+          }
         })
-        // Update vision security status for UI alerts
-        setVisionSecurityStatus(status)
       }
     }
   })
-
+  
+  // Keep warningStats ref for final evaluation (logging stays in renderer)
+  const warningStatsRef = useRef(warningStats)
+  useEffect(() => {
+    warningStatsRef.current = warningStats
+  }, [warningStats])
+  
   // Update vision security status from hidden tracking
-  // This ensures we always have the latest status, even when events are present
+  // This ensures we always have the latest status for the UI,
+  // but batching for backend is handled via WarningStateManager stats
   useEffect(() => {
     if (hiddenVisionStatus) {
-      // Always update status, not just when events change
       setVisionSecurityStatus(hiddenVisionStatus)
-      
-      // Log when suspicious events are detected for debugging
-      if (hiddenVisionStatus.suspiciousEvents && hiddenVisionStatus.suspiciousEvents.length > 0) {
-        console.log('📢 [VoiceInterviewSession] Hidden tracking detected events:', {
-          count: hiddenVisionStatus.suspiciousEvents.length,
-          events: hiddenVisionStatus.suspiciousEvents.map((e: any) => ({
-            type: e.type,
-            severity: e.severity,
-            timestamp: e.timestamp,
-            description: e.description
-          }))
-        })
-        console.log('📢 [VoiceInterviewSession] Setting visionSecurityStatus state with events')
-      }
     }
   }, [hiddenVisionStatus])
+
+  // Track if vision security data has been sent to prevent duplicates
+  const visionSecurityDataSent = useRef(false)
+  
+  // Modified function to send aggregated vision security data
+  const sendVisionSecurityToServer = useCallback(async () => {
+    const stats = warningStats;
+    console.log('📊 [sendVisionSecurityToServer] Called with warningStats:', JSON.stringify(stats, null, 2));
+    if (!interviewId) return
+    if (!stats || Object.keys(stats).length === 0) {
+      console.log('⚠️ [Renderer] No warning stats available')
+      return
+    }
+    
+    // Prevent duplicate sends
+    if (visionSecurityDataSent.current) {
+      console.log('⚠️ Vision security data already sent, skipping duplicate send')
+      return
+    }
+
+    try {
+      const token = localStorage.getItem('authToken') // Fix: use 'authToken' instead of 'token'
+      const { API_BASE_URL } = await import('../constants/api')
+      
+      // Convert warning stats to events array format for API
+      const eventsArray = Object.entries(stats).flatMap(([type, data]: [string, any]) => 
+        data.events.map((event: any) => ({
+          type,
+          severity: type === 'multiple_faces' || type === 'face_absent' || type === 'mobile_device_usage' ? 'high' : 'medium',
+          description: `${type.replace(/_/g, ' ')} - ${Math.round(event.duration / 1000)}s`,
+          count: 1,
+          firstOccurrence: event.startTime,
+          lastOccurrence: event.endTime,
+          duration: event.duration
+        }))
+      )
+      
+      console.log('📤 [Vision Security] ===== SENDING TO BACKEND =====')
+      console.log('📤 [Vision Security] Total events to send:', eventsArray.length)
+      console.log('📤 [Vision Security] Events array:', JSON.stringify(eventsArray, null, 2))
+      console.log('📤 [Vision Security] ===== END BATCH =====')
+      
+
+      
+      const response = await fetch(`${API_BASE_URL}/interview/${interviewId}/vision-security`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token && { Authorization: `Bearer ${token}` })
+        },
+        body: JSON.stringify({
+          suspiciousEvents: eventsArray
+        })
+      })
+
+      if (!response.ok) {
+        console.error('Failed to send vision security data to server')
+      } else {
+        visionSecurityDataSent.current = true
+        console.log(`✅ Vision security summary sent to server: ${eventsArray.length} events`)
+      }
+    } catch (error) {
+      console.error('Error sending vision security data to server:', error)
+    }
+  }, [interviewId, warningStats])
 
   // Memoize the callback to prevent infinite loops
   const handleVisionStatusChange = useCallback((status: any) => {
@@ -258,32 +343,25 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
       // Final evaluation ready
       window.electronAPI.onFinalEvaluationReady(async (payload: any) => {
-        console.log('📊 [Renderer] Final evaluation payload received from main process')
-        console.log('📊 [Renderer] Payload session ID:', payload?.sessionId)
-        console.log('📊 [Renderer] Payload candidate ID:', payload?.candidateId)
-        console.log('📊 [Renderer] Payload interview link ID:', payload?.interviewLinkId)
-        console.log('📊 [Renderer] Full conversation history length:', payload?.fullConversationHistory?.length || 0)
-        console.log('📊 [Renderer] Theoretical section questions:', payload?.theoreticalSection?.totalQuestions || 0)
-        console.log('📊 [Renderer] Coding section problems:', payload?.codingSection?.totalProblems || 0)
-        
-        if (!payload) {
-          console.error('❌ [Renderer] Final evaluation payload is null or undefined!')
-          return
-        }
-        
-        if (!payload.sessionId) {
-          console.error('❌ [Renderer] Final evaluation payload missing sessionId!')
-          console.error('❌ [Renderer] Payload keys:', Object.keys(payload))
-          return
-        }
-        
         console.log('📊 [Renderer] Submitting final evaluation to backend...')
+        
+        // CRITICAL: End all active warnings BEFORE collecting stats
+        console.log('📊 [Renderer] Ending all active warnings before final stats collection...')
+        endAllActiveWarnings()
+        
+        // Use warningStatsRef.current directly - it's updated via useEffect
+        const visionWarnings = warningStatsRef.current
+        
+        console.log('📊 [Renderer] ===== FINAL VISION WARNINGS BATCH =====')
+        console.log('📊 [Renderer] Warning types:', Object.keys(visionWarnings).length)
+        console.log('📊 [Renderer] Full structure:', JSON.stringify(visionWarnings, null, 2))
+        console.log('📊 [Renderer] ===== END BATCH =====')
+        
+        // Add vision warnings to payload for backend
+        payload.visionSecurityWarnings = visionWarnings
+        
         try {
-          // Import API_BASE_URL
           const { API_BASE_URL } = await import('../constants/api')
-          console.log('📊 [Renderer] API Base URL:', API_BASE_URL)
-          console.log('📊 [Renderer] Endpoint:', `${API_BASE_URL}/interview/final-evaluation`)
-          
           const response = await fetch(`${API_BASE_URL}/interview/final-evaluation`, {
             method: 'POST',
             headers: {
@@ -292,57 +370,26 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
             },
             body: JSON.stringify(payload)
           })
-          
-          console.log('📊 [Renderer] Response status:', response.status)
-          console.log('📊 [Renderer] Response ok:', response.ok)
-          
           const data = await response.json()
-          console.log('📊 [Renderer] Response data:', data)
-          
-          if (!response.ok || !data.success) {
-            console.error('❌ [Renderer] Final evaluation submission failed:')
-            console.error('❌ [Renderer] Status:', response.status)
-            console.error('❌ [Renderer] Error message:', data.message || data.error)
-            throw new Error(data.message || data.error || 'Failed to submit final evaluation')
-          }
-          
-          console.log('✅ [Renderer] Final evaluation submitted successfully!')
-          console.log('✅ [Renderer] Server response:', JSON.stringify(data, null, 2))
-          
-          // Mark payload as sent - this allows clearSession() to fully clear conversations
-          try {
+          if (response.ok && data.success) {
+            console.log('✅ [Renderer] Final evaluation submitted successfully!')
             await window.electronAPI.markPayloadSent()
-            console.log('✅ [Renderer] Marked payload as sent - conversations can now be cleared')
-          } catch (markError) {
-            console.error('❌ [Renderer] Failed to mark payload as sent:', markError)
-            // Non-critical error - payload was sent successfully
+          } else {
+            console.error('❌ [Renderer] Final evaluation submission failed:', data.error)
           }
         } catch (error: any) {
-          console.error('❌ [Renderer] Failed to submit final evaluation:')
-          console.error('❌ [Renderer] Error type:', error?.constructor?.name)
-          console.error('❌ [Renderer] Error message:', error?.message)
-          console.error('❌ [Renderer] Error stack:', error?.stack)
-          if (error?.response) {
-            console.error('❌ [Renderer] Response status:', error.response.status)
-            console.error('❌ [Renderer] Response data:', error.response.data)
-          }
-          
-          // Store payload locally for retry later if needed
-          try {
-            localStorage.setItem('pendingFinalEvaluation', JSON.stringify({
-              payload,
-              timestamp: Date.now(),
-              error: error?.message
-            }))
-            console.log('💾 [Renderer] Stored pending evaluation in localStorage for retry')
-          } catch (e) {
-            console.error('❌ [Renderer] Failed to store pending evaluation:', e)
-          }
+          console.error('❌ [Renderer] Failed to submit final evaluation:', error.message)
         }
       })
 
       // Interview completion
       window.electronAPI.onInterviewCompleted(async (results: any) => {
+        // For now, rely on WarningStateManager stats which are used in onFinalEvaluationReady
+        console.log('📊 [Renderer] Interview completed - final warning stats will be attached in final evaluation payload')
+        
+        // Note: Final stats will be sent to backend via final evaluation payload
+        // No need to send to main process - logging stays in renderer
+        
         // Save results if onSaveResults is provided
         if (onSaveResults && interviewLinkId) {
           try {
@@ -407,7 +454,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     }
 
     setupEventListeners()
-  }, [onComplete, onSaveResults, interviewLinkId, interviewId, questions, codingProblems, evaluations, resumeData, user])
+    
+    // No cleanup needed - IPC listeners are one-time setup
+    // Dependencies are intentionally minimal to avoid re-registration
+  }, [])
 
   // Set up audio visualization
   useEffect(() => {
@@ -500,7 +550,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       processor.onaudioprocess = (e) => {
         // Only stream after STT starts listening
         if (!isListeningRef.current) {
-          console.log('🎤 [Mic] Not listening, skipping audio chunk. Current isListening state:', isListening, 'ref:', isListeningRef.current)
           return
         }
 
@@ -517,20 +566,13 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         // Convert Int16Array to proper PCM s16le format (browser-compatible)
         const buffer = new Uint8Array(pcm16.buffer)
         
-        // Log buffer info for debugging
-        console.log('🎤 [Mic] Buffer size:', buffer.length, 'samples:', pcm16.length)
-        
-        // Log audio activity
-        const audioLevel = Math.sqrt(input.reduce((sum, val) => sum + val * val, 0) / input.length)
-        console.log('🎤 [Mic] Audio level:', audioLevel.toFixed(4), 'chunk size:', buffer.length)
-        
         // Apply volume boost if audio is too quiet
-        if (audioLevel > 0.001) { // If there's any audio at all
-          const boostFactor = 2.0 // 2x volume boost (less aggressive)
+        const audioLevel = Math.sqrt(input.reduce((sum, val) => sum + val * val, 0) / input.length)
+        if (audioLevel > 0.001) {
+          const boostFactor = 2.0
           const boostedInput = input.map(sample => Math.max(-1, Math.min(1, sample * boostFactor)))
           const boostedPcm16 = downsampleTo16k(boostedInput, audioContext.sampleRate)
           const boostedBuffer = new Uint8Array(boostedPcm16.buffer)
-          console.log('🎤 [Mic] Applying volume boost, sending boosted audio')
           window.electronAPI.sendAudioChunk(boostedBuffer)
           return
         }
@@ -882,6 +924,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       {/* Vision Security Alerts - Display warnings for suspicious events */}
       <VisionSecurityAlert 
         status={visionSecurityStatus}
+        warningStats={warningStats}
         onDismiss={(eventType) => {
           console.log('🔕 [Vision Security] Alert dismissed:', eventType)
         }}

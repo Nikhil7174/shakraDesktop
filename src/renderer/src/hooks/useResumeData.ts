@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
-import axios from 'axios';
+import api from '../services/api';
 import { useAuth } from './useAuth';
 import { useAppDispatch } from '../store';
 import { setResumeData as setReduxResumeData, setDetailedResumeData as setReduxDetailedResumeData } from '../store/slices/interviewSlice';
-import { API_BASE_URL } from '../constants/api';
+import { logout as logoutAction } from '../store/slices/authSlice';
 
 export const useResumeData = () => {
   const { token, isAuthenticated } = useAuth();
@@ -22,11 +22,7 @@ export const useResumeData = () => {
       setLoading(true);
       setError(null);
       
-      const response = await axios.get(`${API_BASE_URL}/auth/resume`, {
-        headers: {
-          Authorization: `Bearer ${token}`
-        }
-      });
+      const response = await api.get('/auth/resume');
 
       if (response.data.success) {
         const fetchedResumeData = response.data.resumeData;
@@ -44,12 +40,16 @@ export const useResumeData = () => {
       }
     } catch (error: any) {
       console.error('Failed to fetch resume data:', error);
+      // Handle 401 errors by logging out
+      if (error.response?.status === 401) {
+        dispatch(logoutAction());
+      }
       setError(error.response?.data?.message || 'Failed to fetch resume data');
       setResumeData(null);
     } finally {
       setLoading(false);
     }
-  }, [isAuthenticated, token]);
+  }, [isAuthenticated, token, dispatch]);
 
   const updateResumeData = useCallback(async (newResumeData: any) => {
     if (!isAuthenticated || !token) {
@@ -60,12 +60,8 @@ export const useResumeData = () => {
       setLoading(true);
       setError(null);
       
-      const response = await axios.post(`${API_BASE_URL}/auth/resume`, {
+      const response = await api.post('/auth/resume', {
         resumeData: newResumeData
-      }, {
-        headers: {
-          Authorization: `Bearer ${token}`
-        }
       });
 
       if (response.data.success) {
@@ -81,12 +77,16 @@ export const useResumeData = () => {
       }
     } catch (error: any) {
       console.error('Failed to update resume data:', error);
+      // Handle 401 errors by logging out
+      if (error.response?.status === 401) {
+        dispatch(logoutAction());
+      }
       setError(error.response?.data?.message || 'Failed to update resume data');
       throw error;
     } finally {
       setLoading(false);
     }
-  }, [isAuthenticated, token]);
+  }, [isAuthenticated, token, dispatch]);
 
   useEffect(() => {
     fetchResumeData();

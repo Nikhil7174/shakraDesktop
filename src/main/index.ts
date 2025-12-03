@@ -229,6 +229,11 @@ app.whenReady().then(async () => {
     })
 
     interviewOrchestrator.on('finalEvaluationReady', (payload) => {
+      // Note: Vision security warnings are now handled entirely in renderer
+      // Renderer will add them to the payload before sending to backend
+      // No need to get them from orchestrator anymore
+      console.log('📊 [Main] Final evaluation ready - renderer will add vision warnings')
+      
       mainWindow?.webContents.send('final-evaluation-ready', payload)
     })
 
@@ -484,6 +489,24 @@ app.whenReady().then(async () => {
     }
   })
 
+  // Handle security warning TTS requests from renderer
+  // This is lightweight - just a string message, not heavy JSON
+  ipcMain.on('speak-security-warning', (_event, message: string) => {
+    try {
+      if (interviewOrchestrator && message && typeof message === 'string') {
+        // Fire and forget - don't block IPC, TTS will handle its own queue
+        interviewOrchestrator.speakSecurityWarning(message).catch(err => {
+          console.error('⚠️ [Main] TTS error for security warning:', err)
+        })
+      }
+    } catch (error) {
+      console.error('⚠️ [Main] Failed to handle security warning TTS:', error)
+    }
+  })
+
+  // Note: Removed continuous vision-security-warnings IPC handler
+  // Logging is now handled entirely in renderer and sent to backend at interview end
+
   // Generate temporary token for STT authentication
   ipcMain.handle('get-stt-token', async () => {
     const maxRetries = 3
@@ -620,40 +643,11 @@ app.whenReady().then(async () => {
     }
   })
 
-  // Handle vision security data from renderer
-  ipcMain.on('vision-security-data', (_event, data: any) => {
-    const eventCount = data.suspiciousEvents?.length || 0
-    
-    // Log security data for monitoring (only log if there are events or every 5 seconds)
-    const shouldLog = eventCount > 0 || (Date.now() % 5000 < 1000)
-    if (shouldLog) {
-      console.log('📹 [Vision Security] Data received:', {
-        gazeDirection: data.gazeDirection,
-        faceDetected: data.faceDetected,
-        handsDetected: data.handsDetected,
-        suspiciousEvents: eventCount,
-        blinkRate: data.blinkRate
-      })
-    }
-    
-    // Log all suspicious events (not just high severity)
-    if (eventCount > 0) {
-      console.warn('⚠️ [Vision Security] Events:', data.suspiciousEvents.map((e: any) => ({
-        type: e.type,
-        severity: e.severity,
-        description: e.description,
-        duration: e.duration ? `${Math.round(e.duration / 1000)}s` : undefined
-      })))
-    }
-    
-    // Emit to renderer if there are high-severity events
-    if (data.suspiciousEvents?.some((e: any) => e.severity === 'high')) {
-      mainWindow?.webContents.send('vision-security-alert', {
-        events: data.suspiciousEvents.filter((e: any) => e.severity === 'high'),
-        timestamp: Date.now()
-      })
-    }
-  })
+  // Note: Removed vision-security-data IPC handler
+  // Renderer no longer sends continuous security data to main process
+  // This was causing IPC spam and blocking audio chunks
+  // TTS is now triggered via speak-security-warning when alerts fire
+  // Logging stays in renderer and is sent to backend at interview end
 
   // Handle marking payload as sent (allows clearing conversation data)
   ipcMain.handle('mark-payload-sent', async () => {

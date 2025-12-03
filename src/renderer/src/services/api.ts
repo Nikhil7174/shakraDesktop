@@ -1,6 +1,8 @@
 // src/services/api.ts
 import axios from 'axios';
 import { API_BASE_URL } from '../constants/api';
+import { store } from '../store';
+import { logout as logoutAction } from '../store/slices/authSlice';
 
 // Create axios instance with default config
 const api = axios.create({
@@ -27,8 +29,9 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      // Token expired or invalid
-      localStorage.removeItem('authToken');
+      // Token expired or invalid - dispatch logout to update Redux state
+      store.dispatch(logoutAction());
+      // Redirect to login page
       window.location.hash = '#/login';
     }
     return Promise.reject(error);
