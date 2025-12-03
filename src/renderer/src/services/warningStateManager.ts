@@ -52,13 +52,11 @@ export class WarningStateManager {
         }
 
         this.completedWarnings.push(completedWarning)
-        console.log(`[WarningStateManager] ✅ Stored ${type} warning (${Math.round(duration/1000)}s). Total completed: ${this.completedWarnings.length}`)
         
         if (this.onWarningComplete) {
           this.onWarningComplete(completedWarning)
         }
       } else {
-        console.log(`[WarningStateManager] ⏭️ Skipped ${type} - below threshold (${duration}ms < ${threshold}ms)`)
       }
       
       this.activeWarnings.delete(type)
@@ -80,8 +78,6 @@ export class WarningStateManager {
   getWarningStats(): { [key: string]: { count: number; totalDuration: number; events: WarningEvent[] } } {
     const stats: { [key: string]: { count: number; totalDuration: number; events: WarningEvent[] } } = {}
     
-    console.log(`[WarningStateManager] Getting stats from ${this.completedWarnings.length} completed warnings`)
-    console.log(`[WarningStateManager] Active warnings: ${this.activeWarnings.size}`, Array.from(this.activeWarnings.keys()))
     
     this.completedWarnings.forEach(warning => {
       if (!stats[warning.type]) {
@@ -92,20 +88,12 @@ export class WarningStateManager {
       stats[warning.type].events.push(warning)
     })
     
-    console.log(`[WarningStateManager] Returning stats with ${Object.keys(stats).length} warning types`)
-    Object.keys(stats).forEach(type => {
-      console.log(`[WarningStateManager]   - ${type}: ${stats[type].count} events, ${Math.round(stats[type].totalDuration / 1000)}s total`)
-    })
-    
     return stats
   }
 
   endAllActiveWarnings(): void {
     const activeTypes = Array.from(this.activeWarnings.keys())
-    console.log(`[WarningStateManager] 🚨 endAllActiveWarnings called. Active: ${activeTypes.length}, Completed: ${this.completedWarnings.length}`)
-    console.log(`[WarningStateManager] Active types:`, activeTypes)
     activeTypes.forEach(type => this.endWarning(type))
-    console.log(`[WarningStateManager] ✅ After ending all. Completed: ${this.completedWarnings.length}`)
   }
 
   clear(): void {

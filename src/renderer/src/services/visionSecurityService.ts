@@ -163,8 +163,8 @@ export class VisionSecurityService {
       this.warningManager.endWarning('mobile_device_usage')
     }
 
-    // Gaze away detection (only when face is detected)
-    const gazeAway = faceDetected && gazeDirection !== 'center' && gazeDirection !== 'away'
+    // Gaze away detection (only when face is detected, excluding down which is mobile device)
+    const gazeAway = faceDetected && gazeDirection !== 'center' && gazeDirection !== 'away' && gazeDirection !== 'down'
     if (gazeAway) {
       this.warningManager.startWarning('gaze_away')
     } else {

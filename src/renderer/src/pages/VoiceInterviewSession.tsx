@@ -37,6 +37,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [currentCodingProblem, setCurrentCodingProblem] = useState<CodingProblem | null>(null)
   const [isListening, setIsListening] = useState(false)
   const [isSpeaking, setIsSpeaking] = useState(false)
+  const [isEvaluating, setIsEvaluating] = useState(false)
   const isListeningRef = useRef(false)
   const [progress, setProgress] = useState({ current: 0, total: questions.length })
   const [evaluations, setEvaluations] = useState<any[]>([])
@@ -56,52 +57,17 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   
   const codeEditorRef = useRef<any>(null)
 
-  // Track spoken warnings to prevent duplicate TTS
-  const spokenWarningsRef = useRef<Set<string>>(new Set())
-
   // Initialize vision security tracking that stays active throughout the interview
   // This works even when video windows are hidden (like in coding section)
   // Keep it enabled through 'wrap_up' so we can end and persist all active warnings at final evaluation time
   const { status: hiddenVisionStatus, warningStats, endAllActiveWarnings, getWarningStats } = useVisionSecurity({
     videoElement: hiddenVideoElement,
     enabled: hiddenVideoElement !== null && currentState !== 'connecting',
+    isSpeaking,
+    isEvaluating,
     onSecurityAlert: (status) => {
-      // NOTE: status.suspiciousEvents is currently empty; the fact that onSecurityAlert
-      // fired already means thresholds were exceeded in WarningStateManager.
-      // So we don't gate on suspiciousEvents length here.
+      // Just update UI status - TTS is handled in useVisionSecurity hook
       setVisionSecurityStatus(status)
-      
-      // Speak warnings to user via TTS (lightweight IPC to main process)
-      if (status.suspiciousEvents && status.suspiciousEvents.length > 0) {
-        status.suspiciousEvents.forEach(event => {
-          // Map event types to user-friendly messages
-          const warningMessages: Record<string, string> = {
-            'gaze_away': 'Please look back at the screen',
-            'face_absent': 'Please ensure your face is visible',
-            'mobile_device_usage': 'Please put away your mobile device',
-            'multiple_faces': 'Multiple faces detected. Please ensure you are alone',
-            'no_face_detected': 'Face not detected. Please position yourself in front of the camera'
-          }
-          
-          const message = warningMessages[event.type] || event.description || `Security alert: ${event.type}`
-          
-          // Add deduplication to prevent spam (5 second window per event type)
-          const warningKey = `${event.type}-${Math.floor(event.timestamp / 5000)}`
-          if (!spokenWarningsRef.current.has(warningKey)) {
-            spokenWarningsRef.current.add(warningKey)
-            
-            // Send to main process for TTS (lightweight - just a string)
-            if (window.electronAPI?.speakSecurityWarning) {
-              window.electronAPI.speakSecurityWarning(message)
-            }
-            
-            // Clean up old keys after 10 seconds
-            setTimeout(() => {
-              spokenWarningsRef.current.delete(warningKey)
-            }, 10000)
-          }
-        })
-      }
     }
   })
   
@@ -334,6 +300,11 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       // Evaluations
       window.electronAPI.onEvaluation((evaluation: any) => {
         setEvaluations(prev => [...prev, evaluation])
+      })
+      
+      // Track evaluation state
+      window.electronAPI.onInterviewStateChange((state: string) => {
+        setIsEvaluating(state === 'evaluating_answer' || state === 'evaluating_approach')
       })
 
       // Code analysis

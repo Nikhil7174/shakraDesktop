@@ -382,13 +382,18 @@ export class InterviewOrchestrator extends EventEmitter {
 
     this.stateMachine.on('introStarted', async () => {
       const introText = "Hello! Welcome to your technical interview. I'll be conducting your interview today. Lets start with some theoretical questions."
+      // Keep mic paused between intro and question
+      this.suppressAutoMicResume = true
       const result = await this.speakWithPolicy(introText, {
         interruptible: true,
         bargeInPolicy: 'hard'
       })
       if (result.completed) {
-        // Transition to first question immediately
+        // Transition to first question immediately (mic stays paused)
         await this.stateMachine.transition('begin_questions')
+      } else {
+        // If interrupted, allow mic to resume
+        this.suppressAutoMicResume = false
       }
     })
 
@@ -488,7 +493,8 @@ export class InterviewOrchestrator extends EventEmitter {
       // Only speak transition message if we actually had theoretical questions
       if (this.hadTheoreticalQuestions) {
         console.log('🎯 [Interview] Theoretical questions completed, transitioning to coding phase')
-        // Speak intro to coding section
+        // Speak intro to coding section - keep mic paused until problem intro
+        this.suppressAutoMicResume = true
         const introText = "Great work on the theoretical questions! Now let's move to the coding section."
         const result = await this.speakWithPolicy(introText, {
           interruptible: false,
@@ -496,22 +502,28 @@ export class InterviewOrchestrator extends EventEmitter {
         })
         
         console.log(`🎯 [Interview] ${this.currentSession?.codingProblems?.length || 0} coding problem(s) available`)
-        // Only transition if intro completed
+        // Only transition if intro completed (mic stays paused)
         if (result.completed || result.softStopped) {
           await this.stateMachine.transition('coding_problem_presented')
+        } else {
+          this.suppressAutoMicResume = false
         }
       } else {
         // Coding-only interview - speak welcome message here (centralized, no duplication)
         console.log('🎯 [Interview] Coding-only interview, speaking welcome message')
+        // Keep mic paused until problem intro
+        this.suppressAutoMicResume = true
         const introText = "Welcome! Today we'll focus on coding problems. Let's begin."
         const result = await this.speakWithPolicy(introText, {
           interruptible: false,
           bargeInPolicy: 'soft'
         })
         
-        // Only transition if intro completed
+        // Only transition if intro completed (mic stays paused)
         if (result.completed || result.softStopped) {
           await this.stateMachine.transition('coding_problem_presented')
+        } else {
+          this.suppressAutoMicResume = false
         }
       }
     })
@@ -2574,6 +2586,8 @@ export class InterviewOrchestrator extends EventEmitter {
     try {
       this.currentSpeakOptions = opts
       this.softStopRequested = false
+      // Check if mic resume is already suppressed (for chained TTS calls)
+      const wasSuppressed = this.suppressAutoMicResume
       // Suppress automatic mic resume between sentences; resume once after the whole batch
       this.suppressAutoMicResume = true
       this.setMicPaused(true, 'speech-batch')
@@ -2588,15 +2602,20 @@ export class InterviewOrchestrator extends EventEmitter {
       const softStopped = this.softStopRequested
       const completed = !interrupted && !softStopped
 
-      // Manually resume mic once at the end of batch (if not interrupted early)
-      setTimeout(() => {
-        this.setMicPaused(false, 'speech-batch')
-        console.log('🎯 [Interview] Mic resumed (batch complete)')
-      }, 100)
+      // Only resume mic if this wasn't part of a chained sequence
+      if (!wasSuppressed) {
+        // Manually resume mic once at the end of batch (if not interrupted early)
+        setTimeout(() => {
+          this.setMicPaused(false, 'speech-batch')
+          console.log('🎯 [Interview] Mic resumed (batch complete)')
+        }, 100)
+        this.suppressAutoMicResume = false
+      } else {
+        console.log('🎯 [Interview] Mic resume still suppressed (chained TTS)')
+      }
 
       this.emit('speakingCompleted')
       this.currentSpeakOptions = undefined
-      this.suppressAutoMicResume = false
 
       return { completed, softStopped, interrupted }
 
@@ -2640,9 +2659,20 @@ export class InterviewOrchestrator extends EventEmitter {
    */
   public async speakSecurityWarning(message: string): Promise<void> {
     try {
+      console.log(`🔊 [Security] speakSecurityWarning called with: "${message.substring(0, 50)}..."`)
+      
       if (!message || !message.trim()) {
+        console.log('🔇 [Security] Empty message, skipping')
         return
       }
+
+      // Skip if TTS is already speaking
+      if (this.speechGate.isSpeaking()) {
+        console.log('🔇 [Security] Skipping warning TTS - already speaking')
+        return
+      }
+      
+      console.log('🔊 [Security] Proceeding with TTS...')
 
       // Security warnings are interruptible and use auto priority
       // They won't block interview flow and can be interrupted by user
