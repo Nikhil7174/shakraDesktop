@@ -8,6 +8,7 @@ interface UseVisionSecurityOptions {
   onSecurityAlert?: (status: VisionSecurityStatus) => void
   isSpeaking?: boolean
   isEvaluating?: boolean
+  isListening?: boolean
 }
 
 const WARNING_MESSAGES: Record<string, string[]> = {
@@ -38,7 +39,8 @@ export const useVisionSecurity = ({
   enabled = true,
   onSecurityAlert,
   isSpeaking = false,
-  isEvaluating = false
+  isEvaluating = false,
+  isListening = false
 }: UseVisionSecurityOptions) => {
   const [status, setStatus] = useState<VisionSecurityStatus | null>(null)
   const [isInitialized, setIsInitialized] = useState(false)
@@ -153,8 +155,9 @@ export const useVisionSecurity = ({
 
   // Process warning stack: pop latest warning and speak it, then clear entire stack
   const processWarningStack = useCallback(() => {
-    if (isSpeaking || isEvaluating || isWarningTTSActiveRef.current) {
-      return // Can't speak now
+    // Only speak warnings when AI is not speaking, not evaluating, and actively listening for candidate input
+    if (isSpeaking || isEvaluating || !isListening || isWarningTTSActiveRef.current) {
+      return // Can't speak now - must be listening for candidate to speak warnings
     }
 
     // Find the warning type with the most recent warning (highest timestamp)
@@ -217,7 +220,7 @@ export const useVisionSecurity = ({
         isWarningTTSActiveRef.current = false
       }
     }
-  }, [isSpeaking, isEvaluating])
+  }, [isSpeaking, isEvaluating, isListening])
 
   // Process frames
   useEffect(() => {
@@ -378,7 +381,7 @@ export const useVisionSecurity = ({
       })
       stackProcessTimersRef.current = {}
     }
-  }, [enabled, isInitialized, videoElement, onSecurityAlert, isSpeaking, isEvaluating, processWarningStack])
+  }, [enabled, isInitialized, videoElement, onSecurityAlert, isSpeaking, isEvaluating, isListening, processWarningStack])
 
   const getStatus = useCallback((): VisionSecurityStatus | null => {
     return status

@@ -65,6 +65,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     enabled: hiddenVideoElement !== null && currentState !== 'connecting',
     isSpeaking,
     isEvaluating,
+    isListening,
     onSecurityAlert: (status) => {
       // Just update UI status - TTS is handled in useVisionSecurity hook
       setVisionSecurityStatus(status)
