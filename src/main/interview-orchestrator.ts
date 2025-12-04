@@ -381,7 +381,9 @@ export class InterviewOrchestrator extends EventEmitter {
     })
 
     this.stateMachine.on('introStarted', async () => {
-      const introText = "Hello! Welcome to your technical interview. I'll be conducting your interview today. Lets start with some theoretical questions."
+      // const introText = "Hello! Welcome to your technical interview. I'll be conducting your interview today. Lets start with some theoretical questions."
+      const introText = "Hello!"
+
       // Keep mic paused between intro and question
       this.suppressAutoMicResume = true
       const result = await this.speakWithPolicy(introText, {
@@ -2267,30 +2269,46 @@ export class InterviewOrchestrator extends EventEmitter {
         codeQuality: analysis.codeQuality
       })
       
-      // Provide feedback - shorter for timeout
+      // Generate detailed feedback based on code analysis
       let feedback = ''
       if (isTimeout) {
-        // Brief feedback for timeout - no asking to submit
+        // Brief feedback for timeout
         if (analysis.progress >= 50) {
           feedback = "Time's up. Moving on."
         } else {
           feedback = "Time's up. Let's continue."
         }
       } else {
-        // Normal feedback for manual submission - be specific about the code
-        if (analysis.approach === 'correct' && analysis.progress >= 80) {
-          feedback = "Great work! Your solution looks solid. Let's move on."
-        } else if (analysis.progress >= 50) {
-          // Give specific feedback about what's wrong
-          const issueText = analysis.issues.length > 0 ? analysis.issues[0] : "there are some issues to address"
-          feedback = `You've made good progress. However, ${issueText.toLowerCase()}.`
-        } else if (analysis.progress > 0) {
-          // Low progress - give specific guidance
-          const issueText = analysis.issues.length > 0 ? analysis.issues[0] : "review your approach"
-          feedback = `Your code needs work. ${issueText}.`
-        } else {
-          // No meaningful progress
-          feedback = "I don't see much implementation here. Let's move on."
+        // Generate detailed feedback using LLM service
+        try {
+          feedback = await this.llm.generateSubmissionFeedback(
+            problem,
+            code,
+            {
+              progress: analysis.progress,
+              approach: analysis.approach,
+              issues: analysis.issues,
+              codeQuality: analysis.codeQuality
+            }
+          )
+          console.log('🎯 [Interview] Generated detailed feedback:', feedback)
+        } catch (error) {
+          console.error('🎯 [Interview] Error generating detailed feedback, using fallback:', error)
+          // Fallback to basic feedback if LLM call fails
+          if (analysis.approach === 'correct' && analysis.progress >= 80) {
+            feedback = "Your solution is correct. Well done."
+          } else if (analysis.approach === 'incorrect') {
+            const mainIssue = analysis.issues[0] || "there's a logic error in your approach"
+            feedback = `Your solution has issues. ${mainIssue}.`
+          } else if (analysis.approach === 'incomplete') {
+            const mainIssue = analysis.issues[0] || "some parts are missing"
+            feedback = `Your solution is incomplete. ${mainIssue}.`
+          } else if (analysis.progress >= 50) {
+            const mainIssue = analysis.issues[0] || "there are some issues to address"
+            feedback = `You've made good progress, but ${mainIssue}.`
+          } else {
+            feedback = "Your solution needs more work. Let's move on."
+          }
         }
       }
 
@@ -2312,15 +2330,6 @@ export class InterviewOrchestrator extends EventEmitter {
         const nextProblem = codingProblems[currentProblemIndex + 1]
         console.log('🎯 [Interview] Moving to next coding problem:', nextProblem.title)
         console.log('🎯 [Interview] Current problem being stored:', problem.title, 'ID:', problem.id)
-
-        // Skip "thanks for submitting" message for timeout
-        if (!isTimeout) {
-          const transitionMessage = "Thanks for submitting that solution. Let's move on to the next problem."
-          await this.speakWithPolicy(transitionMessage, {
-            interruptible: false,
-            bargeInPolicy: 'soft'
-          })
-        }
 
         this.stateMachine.clearSilenceTimer()
         

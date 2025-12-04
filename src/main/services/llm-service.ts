@@ -679,6 +679,46 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
     }
   }
 
+  // Generate detailed submission feedback
+  async generateSubmissionFeedback(
+    problem: any,
+    submittedCode: string,
+    analysis: {
+      progress: number
+      approach: 'correct' | 'incorrect' | 'incomplete' | 'unsure'
+      issues: string[]
+      codeQuality: 'good' | 'fair' | 'poor'
+    }
+  ): Promise<string> {
+    try {
+      const response = await this.axios.post(`${this.serverUrl}/api/llm/generate-submission-feedback`, {
+        problem,
+        submittedCode,
+        analysis
+      })
+
+      if (response.data.success) {
+        return response.data.feedback
+      } else {
+        throw new Error(response.data.error || 'Submission feedback generation failed')
+      }
+    } catch (error) {
+      console.error('Error generating submission feedback:', error)
+      // Fallback to basic feedback
+      if (analysis.approach === 'correct' && analysis.progress >= 80) {
+        return "Your solution is correct. Well done."
+      } else if (analysis.approach === 'incorrect') {
+        const mainIssue = analysis.issues[0] || "there's a logic error in your approach"
+        return `Your solution has issues. ${mainIssue}.`
+      } else if (analysis.approach === 'incomplete') {
+        const mainIssue = analysis.issues[0] || "some parts are missing"
+        return `Your solution is incomplete. ${mainIssue}.`
+      } else {
+        return "Your solution needs more work. Let's move on."
+      }
+    }
+  }
+
   // Evaluate follow-up answer with full context
   async evaluateFollowUpAnswer(
     originalQuestion: Question,
