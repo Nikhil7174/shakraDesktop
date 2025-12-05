@@ -1181,3 +1181,11 @@ body {
     display: none;
   }
 }
+
+/* Reduce tooltip size */
+.ant-tooltip-inner {
+  font-size: 12px !important;
+  padding: 4px 8px !important;
+  min-height: auto !important;
+  line-height: 1.4 !important;
+}

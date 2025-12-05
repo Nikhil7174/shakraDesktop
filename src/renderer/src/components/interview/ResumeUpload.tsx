@@ -1,7 +1,7 @@
 // src/components/interview/ResumeUpload.tsx
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { Card, Typography, Space, Upload, Spin, Progress, Button } from 'antd';
-import { UploadOutlined, FileTextOutlined, RobotOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { FileTextOutlined, LoadingOutlined, CheckCircleOutlined, FilePdfOutlined, FileWordOutlined } from '@ant-design/icons';
 import { colors, spacing } from '../../styles';
 import type { ResumeData } from '../../types';
 
@@ -66,13 +66,13 @@ export const ResumeUpload: React.FC<ResumeUploadProps> = ({
 
   const getFileIcon = useCallback((fileName: string) => {
     const extension = fileName.split('.').pop()?.toLowerCase();
-    return extension === 'pdf' ? <FileTextOutlined /> : <FileTextOutlined />; // Using generic file icon for now
+    return extension === 'pdf' ? <FilePdfOutlined /> : extension === 'docx' ? <FileWordOutlined /> : <FileTextOutlined />;
   }, []);
 
   // Memoize processing content
   const processingContent = useMemo(() => (
     <div style={{ textAlign: 'center', padding: spacing.xl }}>
-      <Spin indicator={<RobotOutlined style={{ fontSize: 64, color: colors.primary.main }} spin />} />
+      <Spin indicator={<LoadingOutlined style={{ fontSize: 40, color: colors.primary.main }} spin />} />
       <Title level={4} style={{ color: colors.primary.main, marginTop: spacing.md }}>
         AI is analyzing your resume...
       </Title>
@@ -119,9 +119,13 @@ export const ResumeUpload: React.FC<ResumeUploadProps> = ({
         gap: spacing.md
       }}>
         <Space direction="horizontal" align="center">
-          <Text style={{ fontSize: 48, color: colors.primary.main }}>
-            {getFileIcon(selectedFile.name)}
-          </Text>
+          {loading ? (
+            <Spin indicator={<LoadingOutlined style={{ fontSize: 48, color: colors.primary.main }} spin />} />
+          ) : (
+            <Text style={{ fontSize: 48, color: colors.primary.main }}>
+              {getFileIcon(selectedFile.name)}
+            </Text>
+          )}
           <Space direction="vertical" size={spacing.xs}>
             <Text strong style={{ fontSize: 16 }}>{selectedFile.name}</Text>
             <Text type="secondary" style={{ fontSize: 12 }}>
@@ -146,7 +150,7 @@ export const ResumeUpload: React.FC<ResumeUploadProps> = ({
       disabled={loading}
     >
       <p className="ant-upload-drag-icon">
-        <UploadOutlined style={{ fontSize: 48, color: colors.primary.main }} />
+        <FilePdfOutlined style={{ fontSize: 48, color: colors.primary.main }} />
       </p>
       <p className="ant-upload-text">
         {loading ? 'Processing...' : 'Click or drag file to this area to upload'}

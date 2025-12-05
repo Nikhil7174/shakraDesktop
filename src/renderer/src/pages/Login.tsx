@@ -41,16 +41,27 @@ export const Login: React.FC = () => {
   };
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: `linear-gradient(135deg, ${colors.primary.main} 0%, ${colors.info.main} 100%)`,
-        padding: spacing.lg,
-      }}
-    >
+    <>
+      <style>
+        {`
+          .login-signup-button:hover {
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1) !important;
+          }
+          .login-signup-button:focus {
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1) !important;
+          }
+        `}
+      </style>
+      <div
+        style={{
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: `linear-gradient(135deg, rgb(9, 88, 217) 0%, rgb(208 233 255) 100%)`,
+          padding: spacing.lg,
+        }}
+      >
       <Card
         style={{
           width: '100%',
@@ -115,9 +126,11 @@ export const Login: React.FC = () => {
                 width: '100%',
                 height: 48,
                 borderRadius: 8,
-                background: `linear-gradient(135deg, ${colors.primary.main} 0%, ${colors.info.main} 100%)`,
+                background: `linear-gradient(135deg, rgb(9, 88, 217) 0%, rgb(208 233 255) 100%)`,
                 border: 'none',
+                boxShadow: 'none',
               }}
+              className="login-signup-button"
             >
               Sign In
             </Button>
@@ -142,6 +155,7 @@ export const Login: React.FC = () => {
         </div>
       </Card>
     </div>
+    </>
   );
 };
 

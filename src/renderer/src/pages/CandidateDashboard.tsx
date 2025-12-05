@@ -5,7 +5,6 @@ import {
   Table,
   Typography,
   Space,
-  Tag,
   Row,
   Col,
   Statistic,
@@ -14,7 +13,6 @@ import {
 } from 'antd';
 import {
   ClockCircleOutlined,
-  TrophyOutlined,
   FileTextOutlined,
   LogoutOutlined,
   PlayCircleOutlined,
@@ -144,12 +142,29 @@ export const CandidateDashboard: React.FC = () => {
     [attempts]
   );
 
-  const averageScore = useMemo(() => {
-    if (completedAttempts.length === 0) return 0;
-    return Math.round(
-      completedAttempts.reduce((sum, a) => sum + (a.score || 0), 0) / completedAttempts.length
-    );
+  const totalDuration = useMemo(() => {
+    // Calculate total duration from all completed interviews using startTime and endTime
+    return completedAttempts.reduce((total, attempt) => {
+      if (attempt.startTime && attempt.endTime) {
+        const start = new Date(attempt.startTime).getTime();
+        const end = new Date(attempt.endTime).getTime();
+        const durationMs = end - start;
+        return total + durationMs;
+      }
+      return total;
+    }, 0);
   }, [completedAttempts]);
+  
+  // Format duration in hours and minutes
+  const formatDuration = (ms: number) => {
+    const totalMinutes = Math.round(ms / 1000 / 60);
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`;
+    }
+    return `${minutes}m`;
+  };
 
   const inProgressCount = useMemo(() => 
     attempts.filter((a) => a.status === 'in_progress').length,
@@ -318,18 +333,10 @@ export const CandidateDashboard: React.FC = () => {
           <Col xs={24} sm={8}>
             <Card>
               <Statistic
-                title="Average Score"
-                value={averageScore}
-                suffix="%"
-                prefix={<TrophyOutlined />}
-                valueStyle={{
-                  color:
-                    averageScore >= 70
-                      ? colors.success.main
-                      : averageScore >= 50
-                      ? colors.warning.main
-                      : colors.error.main,
-                }}
+                title="Total Interview Duration"
+                value={formatDuration(totalDuration)}
+                prefix={<ClockCircleOutlined />}
+                valueStyle={{ color: colors.info.main }}
                 loading={loading}
               />
             </Card>
