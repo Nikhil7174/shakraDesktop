@@ -3,6 +3,7 @@ import axios from 'axios';
 import { useAppDispatch, useAppSelector } from '../store';
 import { loginSuccess, registerSuccess, setUser, logout as logoutAction, setLoading, setError } from '../store/slices/authSlice';
 import { API_BASE_URL } from '../constants/api';
+import api from '../services/api'; // Use api instance with interceptors for token expiration handling
 
 export const useAuth = () => {
   const dispatch = useAppDispatch();
@@ -96,26 +97,44 @@ export const useAuth = () => {
   }, [dispatch, token]);
 
   const getCurrentUser = useCallback(async () => {
+    // Prevent multiple simultaneous calls
+    if (loading) {
+      console.log('⏸️ [Auth] getCurrentUser already in progress, skipping...');
+      return;
+    }
+
     try {
       if (!token) {
+        console.log('⏸️ [Auth] No token, skipping getCurrentUser');
         return;
       }
 
-      const response = await axios.get(`${API_BASE_URL}/auth/me`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      console.log('🔄 [Auth] Starting getCurrentUser...');
+      dispatch(setLoading(true));
+
+      // Use api instance which has interceptors for automatic 401 handling
+      // Uses default timeout from api instance (30s)
+      const response = await api.get('/auth/me');
 
       if (response.data.success) {
+        console.log('✅ [Auth] getCurrentUser successful');
         dispatch(setUser(response.data.user));
+      } else {
+        console.warn('⚠️ [Auth] getCurrentUser returned unsuccessful response');
+        // If response is not successful, logout
+        dispatch(logoutAction());
       }
-    } catch (error) {
-      console.error('Get current user error:', error);
-      // If token is invalid, logout
+    } catch (error: any) {
+      console.error('❌ [Auth] Get current user error:', error);
+      console.error('❌ [Auth] Error status:', error.response?.status);
+      console.error('❌ [Auth] Error message:', error.message);
+      // Always logout on error to clear invalid token
       dispatch(logoutAction());
+    } finally {
+      dispatch(setLoading(false));
+      console.log('🏁 [Auth] getCurrentUser completed');
     }
-  }, [dispatch, token]);
+  }, [dispatch, token, loading]);
 
   return {
     user,

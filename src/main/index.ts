@@ -109,7 +109,7 @@ app.whenReady().then(async () => {
         ...details.responseHeaders,
         'Content-Security-Policy': [
           "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; " +
-          "connect-src 'self' https://crisp-3jy7.onrender.com https://localhost:3001 http://localhost:3001 ws://localhost:8765 https://cdn.jsdelivr.net https://storage.googleapis.com; " +
+          "connect-src 'self' https://crisp-server-n0r1.onrender.com https://localhost:3001 http://localhost:3001 ws://localhost:8765 https://cdn.jsdelivr.net https://storage.googleapis.com; " +
           "img-src 'self' data: https:; " +
           "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com; " +
           "script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com; " +
@@ -184,7 +184,7 @@ app.whenReady().then(async () => {
         language: 'en'
       },
       llm: {
-        serverUrl: process.env.SERVER_URL || 'http://localhost:3001'
+        serverUrl: process.env.SERVER_URL || 'https://crisp-server-n0r1.onrender.com'
       },
       tts: {
         provider: 'openai',
@@ -194,7 +194,7 @@ app.whenReady().then(async () => {
         speed: 1.2       // Slightly faster = shorter audio = lower cost
       },
       codeAnalysis: {
-        serverUrl: process.env.SERVER_URL || 'http://localhost:3001'
+        serverUrl: process.env.SERVER_URL || 'https://crisp-server-n0r1.onrender.com'
       }
     })
 

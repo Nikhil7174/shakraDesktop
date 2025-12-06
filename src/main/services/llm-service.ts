@@ -527,7 +527,10 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
   // Intent detection - separate from evaluation
   async detectIntent(candidateInput: string): Promise<IntentDetection> {
     try {
-      const response = await this.axios.post(`${this.serverUrl}/api/llm/detect-intent`, {
+      const url = `${this.serverUrl}/api/llm/detect-intent`
+      console.log('🎯 [LLM] Calling detect-intent endpoint:', url)
+      console.log('🎯 [LLM] Server URL:', this.serverUrl)
+      const response = await this.axios.post(url, {
         candidateInput
       })
 
@@ -536,8 +539,12 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
       } else {
         throw new Error(response.data.error || 'Intent detection failed')
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error detecting intent:', error)
+      console.error('🎯 [LLM] Detect-intent URL was:', `${this.serverUrl}/api/llm/detect-intent`)
+      console.error('🎯 [LLM] Error status:', error.response?.status)
+      console.error('🎯 [LLM] Error data:', error.response?.data)
+      console.error('🎯 [LLM] Error message:', error.message)
       // Default to answer if detection fails
       return { intent: 'answer', confidence: 0.5 }
     }
@@ -567,7 +574,9 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
     console.log('🔍 [LLM] Is follow-up hint:', this.followUpDepth > 0 && !!this.currentFollowUpQuestion);
 
     try {
-      const response = await this.axios.post(`${this.serverUrl}/api/llm/generate-hint`, {
+      const url = `${this.serverUrl}/api/llm/generate-hint`
+      console.log('🔍 [LLM] Calling hint endpoint:', url)
+      const response = await this.axios.post(url, {
         question: questionForHint,
         candidateAnswer: '' // Parameter still required by API but not used
       })
@@ -590,9 +599,14 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
       } else {
         throw new Error(response.data.error || 'Hint generation failed')
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error generating hint:', error)
-      const keyPoint = questionForHint.keyPoints[0] || 'the main topic'
+      console.error('🔍 [LLM] Hint endpoint URL was:', `${this.serverUrl}/api/llm/generate-hint`)
+      console.error('🔍 [LLM] Error status:', error.response?.status)
+      console.error('🔍 [LLM] Error message:', error.message)
+      
+      // Fallback hint if API fails
+      const keyPoint = questionForHint.keyPoints?.[0] || 'the main topic'
       return {
         text: `Think about the key concepts: ${keyPoint}. How would you approach this?`,
         action: 'hint'

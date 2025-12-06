@@ -89,7 +89,8 @@ export class CodeAnalysisService extends EventEmitter {
   private lastCodeHash: string = ''
   // Conversation history for coding section
   private conversationHistory: ConversationMessage[] = []
-  private hintLevel: 1 | 2 = 1
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  private _hintLevel: 1 | 2 = 1
   private finalCode?: string
   private timeComplexity?: string
   private spaceComplexity?: string
@@ -135,7 +136,7 @@ export class CodeAnalysisService extends EventEmitter {
 
   // Add hint provided during coding
   addHint(hintText: string, hintLevel: 1 | 2 = 1): void {
-    this.hintLevel = hintLevel
+    this._hintLevel = hintLevel
     this.addConversationMessage('assistant', hintText, {
       type: 'hint',
       hintLevel
@@ -473,7 +474,7 @@ export class CodeAnalysisService extends EventEmitter {
     this.finalCode = undefined
     this.timeComplexity = undefined
     this.spaceComplexity = undefined
-    this.hintLevel = 1
+    this._hintLevel = 1
     
     // Build complete problem statement with all details
     let problemStatement = `Let's work on: ${problem.title}.\n\n${problem.description}`
@@ -574,7 +575,7 @@ export class CodeAnalysisService extends EventEmitter {
     this.finalCode = undefined
     this.timeComplexity = undefined
     this.spaceComplexity = undefined
-    this.hintLevel = 1
+    this._hintLevel = 1
   }
 
   // Get summary of coding session

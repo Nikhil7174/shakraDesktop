@@ -164,8 +164,10 @@ export class InterviewOrchestrator extends EventEmitter {
   /**
    * Centralized method to add messages to conversation history
    * This maintains a single source of truth for all conversation messages
+   * @deprecated Currently unused - kept for future use
    */
-  private addToConversationHistory(
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  private _addToConversationHistory(
     role: 'user' | 'assistant' | 'system',
     content: string,
     metadata: ConversationMessage['metadata']
