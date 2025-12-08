@@ -120,6 +120,7 @@ export class InterviewOrchestrator extends EventEmitter {
   // Track hint/clarification requests and user speech for auto-hint conditions (reset every 60s interval)
   private currentIntervalHasHintClarification: boolean = false // Track if any hint/clarification requested in current 60s interval
   private currentIntervalHasSubstantialSpeech: boolean = false // Track if any substantial speech (>70 chars) in current 60s interval
+  private pendingSecurityWarning: string | null = null // Queue for security warnings while other TTS is playing
   // Centralized conversation history manager
   // Maintains full conversation history throughout the interview
   private fullConversationHistory: ConversationMessage[] = []
@@ -2605,6 +2606,18 @@ export class InterviewOrchestrator extends EventEmitter {
     opts: SpeakOptions,
     context: SpeechContext = { kind: 'system', priority: 'auto', source: 'general' }
   ): Promise<SpeakResult> {
+    // Prevent interrupting security warnings with other auto-responses
+    if (this.speechGate.isSpeaking() && 
+        this.currentSpeechContext?.source === 'security_warning' && 
+        context.source !== 'security_warning') {
+      console.log('⏳ [Speech] Waiting for security warning to finish before speaking:', text.substring(0, 50))
+      try {
+        await this.speechGate.wait()
+      } catch (e) {
+        // Ignore error from previous speech, just proceed
+      }
+    }
+
     this.currentSpeechContext = context
     try {
       this.currentSpeakOptions = opts
@@ -2629,6 +2642,15 @@ export class InterviewOrchestrator extends EventEmitter {
       await this.speechGate.wait()
 
       const interrupted = this.speechGate.wasInterrupted()
+
+      // Play queued security warning if main speech completed successfully
+      if (this.pendingSecurityWarning && !interrupted && !this.softStopRequested) {
+        const warning = this.pendingSecurityWarning
+        this.pendingSecurityWarning = null
+        console.log('🔊 [Security] Playing queued security warning:', warning.substring(0, 50))
+        await this.speakSecurityWarning(warning)
+      }
+
       const softStopped = this.softStopRequested
       const completed = !interrupted && !softStopped
 
@@ -2698,11 +2720,15 @@ export class InterviewOrchestrator extends EventEmitter {
         return
       }
 
-      // Skip if TTS is already speaking
+      // Queue if TTS is already speaking
       if (this.speechGate.isSpeaking()) {
-        console.log('🔇 [Security] Skipping warning TTS - already speaking')
+        console.log('📝 [Security] Queuing warning TTS (speech active):', message.substring(0, 50))
+        this.pendingSecurityWarning = message
         return
       }
+      
+      // Clear any pending warning since we are speaking now
+      this.pendingSecurityWarning = null
       
       console.log('🔊 [Security] Proceeding with TTS...')
 

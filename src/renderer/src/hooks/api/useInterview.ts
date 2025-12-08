@@ -213,7 +213,7 @@ export const useInterview = () => {
       const errorMessage = error.response?.data?.message || 'Failed to save results';
       throw new Error(errorMessage);
     }
-  }, []);
+  }, [token]);
 
   const validateCode = useCallback(async (questionId: string, code: string) => {
     try {

@@ -157,8 +157,27 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     setVisionSecurityStatus(status)
   }, [])
   const resumeData = useSelector((state: RootState) => state.interview.resumeData)
-  const { user } = useSelector((state: RootState) => state.auth)
+  const { user, token } = useSelector((state: RootState) => state.auth)
   const audioContextRef = useRef<AudioContext | null>(null)
+  
+  // Refs for callbacks/data to avoid stale closures in event listeners
+  const onSaveResultsRef = useRef(onSaveResults)
+  const onCompleteRef = useRef(onComplete)
+  const tokenRef = useRef(token)
+  
+  // Update refs when props/state change
+  useEffect(() => {
+    onSaveResultsRef.current = onSaveResults
+  }, [onSaveResults])
+  
+  useEffect(() => {
+    onCompleteRef.current = onComplete
+  }, [onComplete])
+  
+  useEffect(() => {
+    tokenRef.current = token
+  }, [token])
+
   const analyserRef = useRef<AnalyserNode | null>(null)
   const animationFrameRef = useRef<number | null>(null)
 
@@ -332,13 +351,16 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         // Add vision warnings to payload for backend
         payload.visionSecurityWarnings = visionWarnings
         
-        try {
+          try {
           const { API_BASE_URL } = await import('../constants/api')
+          // Use token from ref to ensure we have the latest one even if localStorage was cleared
+          const authToken = tokenRef.current || localStorage.getItem('authToken')
+          
           const response = await fetch(`${API_BASE_URL}/interview/final-evaluation`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              Authorization: `Bearer ${localStorage.getItem('authToken')}`
+              Authorization: `Bearer ${authToken}`
             },
             body: JSON.stringify(payload)
           })
@@ -363,7 +385,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         // No need to send to main process - logging stays in renderer
         
         // Save results if onSaveResults is provided
-        if (onSaveResults && interviewLinkId) {
+        if (onSaveResultsRef.current && interviewLinkId) {
           try {
             // Create summary similar to InterviewCompletionModal
             const totalQuestions = questions.length + codingProblems.length
@@ -410,7 +432,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
             }
             
             console.log('💾 Saving interview results:', summary)
-            await onSaveResults(summary)
+            await onSaveResultsRef.current(summary)
             console.log('✅ Interview results saved successfully')
           } catch (error) {
             console.error('❌ Failed to save interview results:', error)
@@ -421,7 +443,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         // The main process will clear conversations after payload is successfully sent via markPayloadSent()
         // This event (onInterviewCompleted) fires before the final evaluation payload is sent
         
-        onComplete?.(results)
+        onCompleteRef.current?.(results)
       })
     }
 
