@@ -41,13 +41,24 @@ export class WarningStateManager {
     // Cancel any pending end for this warning type
     const pendingEnd = this.pendingEnds.get(type)
     if (pendingEnd) {
-      // Cancel the pending end - the warning condition is true again
-      // so we want to keep the current warning active (don't end it)
       clearTimeout(pendingEnd.timeoutId)
       this.pendingEnds.delete(type)
-      console.log(`[WarningStateManager] Cancelled pending end for ${type}, keeping warning active`)
-      // If warning is already active, we're done (just keep it active)
-      // If warning is not active, we need to start a new one below
+      
+      // CRITICAL: If we're starting a new warning, the previous one ended prematurely
+      // Check if there's an active warning that should be discarded
+      const activeWarning = this.activeWarnings.get(type)
+      if (activeWarning) {
+        const prematureDuration = now - activeWarning.startTime
+        const threshold = this.thresholds[type] || 0
+        
+        // If the previous warning didn't meet threshold, discard it silently
+        // If it did meet threshold but we're restarting, it means detection flickered
+        // In either case, we should NOT store the previous warning
+        console.log(`[WarningStateManager] Discarding previous ${type} warning (duration=${prematureDuration}ms, threshold=${threshold}ms) due to restart`)
+        
+        // Remove the active warning without storing it
+        this.activeWarnings.delete(type)
+      }
     }
 
     // Check if we should start a new warning (prevent rapid flickering)
@@ -57,7 +68,6 @@ export class WarningStateManager {
       
       // Don't start a new warning if one just ended recently (prevent flickering)
       if (timeSinceLastEnd < this.MIN_WARNING_GAP && lastEndTime > 0) {
-        console.log(`[WarningStateManager] Skipping ${type} start - too soon after last end (${timeSinceLastEnd}ms < ${this.MIN_WARNING_GAP}ms)`)
         // Too soon after last warning ended, skip starting new one
         return
       }
@@ -67,25 +77,20 @@ export class WarningStateManager {
         startTime: now
       }
       this.activeWarnings.set(type, warning)
-      console.log(`[WarningStateManager] ✅ Started warning: ${type} at ${now}`)
+      // Debug log removed to reduce per-frame noise
     }
   }
 
   endWarning(type: string): void {
     const activeWarning = this.activeWarnings.get(type)
     if (!activeWarning) {
-      // console.log(`[WarningStateManager] No active warning to end for ${type}`)
       return // No active warning to end
     }
 
     // If there's already a pending end, don't create another one
     if (this.pendingEnds.has(type)) {
-      // console.log(`[WarningStateManager] Pending end already exists for ${type}`)
       return
     }
-
-    const currentDuration = Date.now() - activeWarning.startTime
-    console.log(`[WarningStateManager] Scheduling end for ${type} (current duration: ${currentDuration}ms, threshold: ${this.thresholds[type]}ms)`)
 
     // Schedule the actual end after debounce duration
     const timeoutId = setTimeout(() => {
@@ -105,35 +110,31 @@ export class WarningStateManager {
       const threshold = this.thresholds[type] || 0
       console.log(`[WarningStateManager] Ending ${type}: duration=${duration}ms, threshold=${threshold}ms, willStore=${duration >= threshold}`)
       
-      // Store warning if it meets threshold
       if (duration >= threshold) {
-          const completedWarning: WarningEvent = {
-            type: activeWarning.type,
-            startTime: activeWarning.startTime,
-            endTime,
-            duration
-          }
+        const completedWarning: WarningEvent = {
+          type: activeWarning.type,
+          startTime: activeWarning.startTime,
+          endTime,
+          duration
+        }
 
-          // Check for duplicate before adding
-          const isDuplicate = this.completedWarnings.some(w => 
-            w.type === completedWarning.type &&
-            w.startTime === completedWarning.startTime &&
-            w.endTime === completedWarning.endTime
-          )
+        // Check for duplicate before adding
+        const isDuplicate = this.completedWarnings.some(w => 
+          w.type === completedWarning.type &&
+          w.startTime === completedWarning.startTime &&
+          w.endTime === completedWarning.endTime
+        )
+        
+        if (!isDuplicate) {
+          this.completedWarnings.push(completedWarning)
           
-          if (!isDuplicate) {
-            this.completedWarnings.push(completedWarning)
-            console.log(`[WarningStateManager] ✅ Stored completed warning: ${type}, duration=${duration}ms, total completed: ${this.completedWarnings.length}`)
-            
-            if (this.onWarningComplete) {
-              this.onWarningComplete(completedWarning)
-            }
-          } else {
-            console.warn(`[WarningStateManager] Duplicate warning detected and skipped: ${type}`, completedWarning)
+          if (this.onWarningComplete) {
+            this.onWarningComplete(completedWarning)
           }
         } else {
-          console.log(`[WarningStateManager] ⏭️ Skipping ${type} - duration ${duration}ms < threshold ${threshold}ms`)
+          console.warn(`[WarningStateManager] Duplicate warning detected and skipped: ${type}`, completedWarning)
         }
+      }
       
       this.activeWarnings.delete(type)
       this.pendingEnds.delete(type)
@@ -160,10 +161,6 @@ export class WarningStateManager {
     return Array.from(this.activeWarnings.values())
   }
 
-  getActiveWarning(type: string): ActiveWarning | undefined {
-    return this.activeWarnings.get(type)
-  }
-
   getCompletedWarnings(): WarningEvent[] {
     return [...this.completedWarnings]
   }
@@ -171,9 +168,8 @@ export class WarningStateManager {
   getWarningStats(): { [key: string]: { count: number; totalDuration: number; events: WarningEvent[] } } {
     const stats: { [key: string]: { count: number; totalDuration: number; events: WarningEvent[] } } = {}
     
-    console.log(`[WarningStateManager] getWarningStats called - total completed warnings: ${this.completedWarnings.length}`)
+    
     this.completedWarnings.forEach(warning => {
-      console.log(`[WarningStateManager] Processing completed warning: ${warning.type}, duration=${warning.duration}ms`)
       if (!stats[warning.type]) {
         stats[warning.type] = { count: 0, totalDuration: 0, events: [] }
       }
@@ -182,13 +178,10 @@ export class WarningStateManager {
       stats[warning.type].events.push(warning)
     })
     
-    console.log(`[WarningStateManager] getWarningStats returning:`, Object.keys(stats).map(type => `${type}: ${stats[type].count} events`).join(', '))
     return stats
   }
 
-  endAllActiveWarnings(): { [key: string]: { count: number; totalDuration: number; events: WarningEvent[] } } {
-    console.log(`[WarningStateManager] endAllActiveWarnings called - active warnings: ${this.activeWarnings.size}`)
-    
+  endAllActiveWarnings(): void {
     // Cancel all pending ends
     this.pendingEnds.forEach(pending => {
       clearTimeout(pending.timeoutId)
@@ -197,7 +190,6 @@ export class WarningStateManager {
 
     // Immediately end all active warnings (no debounce for final cleanup)
     const activeTypes = Array.from(this.activeWarnings.keys())
-    console.log(`[WarningStateManager] Ending ${activeTypes.length} active warnings:`, activeTypes)
     activeTypes.forEach(type => {
       const activeWarning = this.activeWarnings.get(type)
       if (activeWarning) {
@@ -222,25 +214,17 @@ export class WarningStateManager {
           
           if (!isDuplicate) {
             this.completedWarnings.push(completedWarning)
-            console.log(`[WarningStateManager] ✅ Stored final warning: ${type}, duration=${duration}ms, total completed: ${this.completedWarnings.length}`)
             
             if (this.onWarningComplete) {
               this.onWarningComplete(completedWarning)
             }
           }
-        } else {
-          console.log(`[WarningStateManager] ⏭️ Skipping final ${type} - duration ${duration}ms < threshold ${threshold}ms`)
         }
         
         this.activeWarnings.delete(type)
         this.lastWarningEndTime.set(type, endTime)
       }
     })
-    
-    // Return stats after ending all warnings
-    const finalStats = this.getWarningStats()
-    console.log(`[WarningStateManager] endAllActiveWarnings complete - returning stats with ${Object.keys(finalStats).length} warning types`)
-    return finalStats
   }
 
   clear(): void {

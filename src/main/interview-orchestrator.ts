@@ -118,26 +118,6 @@ export class InterviewOrchestrator extends EventEmitter {
   private manualResponseInFlight: { kind: ResponseKind; source: string; startedAt: number } | null = null
   private currentSpeechContext: SpeechContext | null = null
   // Track hint/clarification requests and user speech for auto-hint conditions (reset every 60s interval)
-  
-  // All possible security warning messages (normalized for exact matching)
-  private readonly SECURITY_WARNING_MESSAGES = new Set([
-    // gaze_away messages
-    "please maintain focus on the screen",
-    "i notice you're looking away let's stay focused on the interview",
-    "your attention seems to be drifting please focus on the questions",
-    // face_absent messages
-    "please ensure your face is visible to the camera",
-    "i can't see you clearly please position yourself in front of the camera",
-    "your face is not visible please adjust your camera",
-    // mobile_device_usage messages
-    "please put away your mobile device and focus on the interview",
-    "i notice you may be using a mobile device please focus on the interview",
-    "let's keep our attention on the interview please avoid using other devices",
-    // multiple_faces messages
-    "multiple faces detected please ensure you are alone during the interview",
-    "i see multiple people this should be a solo interview",
-    "please ensure only you are visible during the interview"
-  ])
   private currentIntervalHasHintClarification: boolean = false // Track if any hint/clarification requested in current 60s interval
   private currentIntervalHasSubstantialSpeech: boolean = false // Track if any substantial speech (>70 chars) in current 60s interval
   // Centralized conversation history manager
@@ -676,19 +656,6 @@ export class InterviewOrchestrator extends EventEmitter {
   private setupSTTListeners(): void {
     // STT listeners
     this.stt.on('transcript', async (transcript) => {
-      // Filter out security warning TTS text from transcripts
-      if (transcript.text) {
-        const normalizedTranscript = this.normalizeText(transcript.text)
-        
-        // Check if transcript contains any security warning message
-        for (const warningMessage of this.SECURITY_WARNING_MESSAGES) {
-          if (normalizedTranscript.includes(warningMessage) || warningMessage.includes(normalizedTranscript)) {
-            console.log(`🎤 [Security] Filtering transcript that contains security warning: "${transcript.text}"`)
-            return // Ignore this transcript completely
-          }
-        }
-      }
-      
       this.markUserSpeakingActivity()
       // Clear silence timer as soon as user starts speaking (interim or final)
       const currentState = this.stateMachine.getState()
@@ -735,9 +702,8 @@ export class InterviewOrchestrator extends EventEmitter {
     // TTS listeners
     this.tts.on('playbackStarted', () => {
       // For security warnings, do NOT pause the mic – we want STT to keep hearing the user
-      // We'll filter out the warning text from transcripts instead of stopping STT
       if (this.currentSpeechContext?.source === 'security_warning') {
-        console.log('🎯 [Security] TTS started for security warning - NOT pausing mic or STT (will filter transcript)')
+        console.log('🎯 [Security] TTS started for security warning - NOT pausing mic')
         this.emit('speakingStarted')
         return
       }
@@ -748,9 +714,9 @@ export class InterviewOrchestrator extends EventEmitter {
     })
 
     this.tts.on('playbackCompleted', () => {
-      // For security warnings, we never paused the mic or STT
+      // For security warnings, we never paused the mic, so just emit speakingCompleted
       if (this.currentSpeechContext?.source === 'security_warning') {
-        console.log('🎯 [Security] TTS completed for security warning')
+        console.log('🎯 [Security] TTS completed for security warning - mic was never paused')
         this.emit('speakingCompleted')
         return
       }
@@ -1198,21 +1164,8 @@ export class InterviewOrchestrator extends EventEmitter {
         return
       }
       
-      // Transition to EVALUATING_ANSWER state BEFORE making API call
-      // This ensures isEvaluating is true during the entire API call duration
-      // so warning TTS will be queued and prevented from speaking
-      const stateBeforeTransition = this.stateMachine.getState()
-      if (stateBeforeTransition === InterviewState.WAITING_FOR_ANSWER || 
-          stateBeforeTransition === InterviewState.THEORETICAL_QUESTION) {
-        console.log('🎯 [Interview] Transitioning to EVALUATING_ANSWER before API call')
-        await this.stateMachine.transition('candidate_finished_speaking')
-      }
-      
-      // Get current state after potential transition for follow-up check
-      const currentStateAfterTransition = this.stateMachine.getState()
-      
       // Check if we're in follow-up mode by looking at state or follow-up depth
-      if (followUpDepth > 0 || currentStateAfterTransition === InterviewState.FOLLOW_UP) {
+      if (followUpDepth > 0 || currentState === InterviewState.FOLLOW_UP) {
         // We're evaluating a follow-up answer - use special follow-up evaluation
         console.log('🎯 [Interview] Evaluating follow-up answer with full context')
         const currentEvaluation = this.stateMachine.getCurrentEvaluation()
@@ -1999,12 +1952,9 @@ export class InterviewOrchestrator extends EventEmitter {
     return this.transitionQueue.enqueue(async () => {
       console.log('🎯 [Interview] Processing evaluation in queue')
       // Ensure we are in evaluating state before applying evaluation-driven transitions
-      // Note: We may already be in EVALUATING_ANSWER if transition happened early in handleTranscript
       const currentStateBeforeEval = this.stateMachine.getState()
       if (currentStateBeforeEval === InterviewState.WAITING_FOR_ANSWER) {
         await this.stateMachine.transition('candidate_finished_speaking')
-      } else if (currentStateBeforeEval === InterviewState.EVALUATING_ANSWER) {
-        console.log('🎯 [Interview] Already in EVALUATING_ANSWER state (transitioned early)')
       }
       
       // Track evaluation for final payload
@@ -2757,7 +2707,6 @@ export class InterviewOrchestrator extends EventEmitter {
       console.log('🔊 [Security] Proceeding with TTS...')
 
       // Security warnings are interruptible and use auto priority
-      // Transcript filtering is handled by checking against fixed set of warning messages
       // They won't block interview flow and can be interrupted by user
       await this.speakWithPolicy(
         message,
@@ -3606,7 +3555,6 @@ export class InterviewOrchestrator extends EventEmitter {
       )
 
       // Optional suppression: only drop audio during active non-security TTS playback
-      // For security warnings, we keep STT listening and filter transcripts instead
       if (isTtsSpeaking && !isSecurityWarningSpeech) {
         console.log('🎤 [Main] Dropping audio chunk during non-security TTS playback')
         return
@@ -3620,17 +3568,6 @@ export class InterviewOrchestrator extends EventEmitter {
 
       this.stt.streamAudio(audioChunk)
     }
-
-  /**
-   * Normalize text for comparison: lowercase, remove punctuation, normalize whitespace
-   */
-  private normalizeText(text: string): string {
-    return text
-      .toLowerCase()
-      .replace(/[.,!?'"]/g, '') // Remove punctuation
-      .replace(/\s+/g, ' ')     // Normalize whitespace to single spaces
-      .trim()
-  }
 
   // Receive vision security warnings from renderer
   updateVisionSecurityWarnings(warningStats: any): void {

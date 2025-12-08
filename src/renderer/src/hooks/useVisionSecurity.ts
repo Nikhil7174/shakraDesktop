@@ -48,29 +48,26 @@ export const useVisionSecurity = ({
   const [warningStats, setWarningStats] = useState<any>({})
   
   const serviceRef = useRef<VisionSecurityService | null>(null)
-  const screenshotFilepathRef = useRef<string | null>(null) // Store filepath to survive service cleanup
   const animationFrameRef = useRef<number | null>(null)
   const lastEmitTime = useRef<number>(0)
   const warningOccurrenceCountRef = useRef<Record<string, number>>({})
   const lastSpokenOccurrenceRef = useRef<Record<string, number>>({})
   const isWarningTTSActiveRef = useRef<boolean>(false)
-  const pushedOccurrencesRef = useRef<Record<string, Set<number>>>({}) // Track which occurrences we've queued
+  const pushedOccurrencesRef = useRef<Record<string, Set<number>>>({}) // Track which occurrences we've pushed to stack
   const incrementedWarningsRef = useRef<Record<string, Set<string>>>({}) // Track which warning instances we've incremented (by key: type-startTime)
-  const evaluationEndTimeRef = useRef<number>(0) // Track when evaluation ended to add grace period
-  const prevIsEvaluatingRef = useRef<boolean>(false) // Track previous evaluation state
+  const stackProcessTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({}) // Debounce timers for processing stack
   
-  // Single latest warning queue: only store the most recent warning across all types
-  interface QueuedWarning {
+  // Stack-based warning queue: one stack per warning type (LIFO - latest on top)
+  interface WarningStackItem {
     type: string
     message: string
     occurrenceCount: number
     timestamp: number
-    startTime: number // Store startTime to check if warning is still active
   }
-  const latestQueuedWarningRef = useRef<QueuedWarning | null>(null)
+  const warningStacksRef = useRef<Record<string, WarningStackItem[]>>({})
   
   const EMIT_INTERVAL = 1000 // Emit security data every 1 second
-  const EVALUATION_END_GRACE_PERIOD_MS = 1000 // Wait 1s after evaluation ends before processing warnings (gives time for evaluation TTS to start)
+  const STACK_PROCESS_DEBOUNCE_MS = 300 // Wait 300ms after pushing to stack before processing
 
   // Initialize service
   useEffect(() => {
@@ -156,86 +153,72 @@ export const useVisionSecurity = ({
     }
   }, [enabled])
 
-  // Track evaluation state changes to detect when evaluation ends
-  useEffect(() => {
-    // Detect when evaluation transitions from true to false
-    if (prevIsEvaluatingRef.current && !isEvaluating) {
-      // Evaluation just ended - record the time
-      evaluationEndTimeRef.current = Date.now()
-      console.log('🔊 [Warning TTS] Evaluation ended, starting grace period')
-    }
-    prevIsEvaluatingRef.current = isEvaluating
-  }, [isEvaluating])
-
-  // Reset grace period when TTS starts (evaluation TTS has begun)
-  useEffect(() => {
-    if (isSpeaking && evaluationEndTimeRef.current > 0) {
-      // TTS has started, clear the grace period
-      evaluationEndTimeRef.current = 0
-      console.log('🔊 [Warning TTS] TTS started, grace period cleared')
-    }
-  }, [isSpeaking])
-
-  // Process queued warning: speak it only if still active
-  const processQueuedWarning = useCallback(() => {
-    // Check if we're in the grace period after evaluation ended
-    const timeSinceEvaluationEnd = Date.now() - evaluationEndTimeRef.current
-    const inGracePeriod = evaluationEndTimeRef.current > 0 && timeSinceEvaluationEnd < EVALUATION_END_GRACE_PERIOD_MS
-    
-    // Only speak warnings when AI is not speaking, not evaluating, not in grace period, and actively listening for candidate input
-    if (isSpeaking || isEvaluating || inGracePeriod || !isListening || isWarningTTSActiveRef.current) {
-      if (inGracePeriod) {
-        console.log(`🔊 [Warning TTS] Waiting for grace period to end (${EVALUATION_END_GRACE_PERIOD_MS - timeSinceEvaluationEnd}ms remaining)`)
-      }
+  // Process warning stack: pop latest warning and speak it, then clear entire stack
+  const processWarningStack = useCallback(() => {
+    // Only speak warnings when AI is not speaking, not evaluating, and actively listening for candidate input
+    if (isSpeaking || isEvaluating || !isListening || isWarningTTSActiveRef.current) {
       return // Can't speak now - must be listening for candidate to speak warnings
     }
 
-    // Get the latest queued warning
-    const queuedWarning = latestQueuedWarningRef.current
+    // Find the warning type with the most recent warning (highest timestamp)
+    let latestType: string | null = null
+    let latestTimestamp = 0
     
-    if (!queuedWarning) {
-      return // No warning queued
-    }
+    Object.keys(warningStacksRef.current).forEach(type => {
+      const stack = warningStacksRef.current[type]
+      if (stack.length > 0) {
+        // Get the latest warning (top of stack - LIFO)
+        const latest = stack[stack.length - 1]
+        if (latest.timestamp > latestTimestamp) {
+          latestTimestamp = latest.timestamp
+          latestType = type
+        }
+      }
+    })
     
-    // Store values before clearing
-    const warningType = queuedWarning.type
-    const warningMessage = queuedWarning.message
-    const warningOccurrenceCount = queuedWarning.occurrenceCount
-    const warningStartTime = queuedWarning.startTime
-    
-    // Clear the queued warning (we're processing it now)
-    latestQueuedWarningRef.current = null
-    
-    // Check if the warning is still active before speaking
-    const isStillActive = serviceRef.current?.isWarningStillActive(warningType, warningStartTime) ?? false
-    
-    if (!isStillActive) {
-      console.log(`🔊 [Warning TTS] Queued warning for ${warningType} is no longer active, skipping TTS`)
-      return
-    }
-    
-    // Update last spoken occurrence
-    lastSpokenOccurrenceRef.current[warningType] = warningOccurrenceCount
-    
-    // Clear the pushed occurrence tracking for this occurrence (we've spoken it)
-    if (pushedOccurrencesRef.current[warningType]) {
-      pushedOccurrencesRef.current[warningType].delete(warningOccurrenceCount)
-    }
-    
-    // Mark TTS as active
-    isWarningTTSActiveRef.current = true
-    
-    console.log(`🔊 [QUEUE→TTS] Speaking queued warning for ${warningType} (occurrence ${warningOccurrenceCount})`)
-    
-    if (window.electronAPI?.speakSecurityWarning) {
-      window.electronAPI.speakSecurityWarning(warningMessage)
+    // Process the most recent warning
+    if (latestType) {
+      const stack = warningStacksRef.current[latestType]
+      const stackSizeBefore = stack.length
       
-      // Reset after TTS completes
-      setTimeout(() => {
+      // Clear any pending timer for this type (we're processing now)
+      if (stackProcessTimersRef.current[latestType]) {
+        clearTimeout(stackProcessTimersRef.current[latestType])
+        delete stackProcessTimersRef.current[latestType]
+      }
+      
+      // Pop latest warning (top of stack - LIFO)
+      const latestWarning = stack.pop()!
+      
+      // Clear entire stack for this type (handles race conditions - even if 2 warnings ~50ms apart)
+      warningStacksRef.current[latestType] = []
+      
+      // Update last spoken occurrence
+      lastSpokenOccurrenceRef.current[latestType] = latestWarning.occurrenceCount
+      
+      // Clear the pushed occurrence tracking for this occurrence (we've spoken it)
+      if (pushedOccurrencesRef.current[latestType]) {
+        pushedOccurrencesRef.current[latestType].delete(latestWarning.occurrenceCount)
+      }
+      
+      // Mark TTS as active
+      isWarningTTSActiveRef.current = true
+      
+      const clearedCount = stackSizeBefore - 1
+      console.log(`🔊 [STACK→TTS] Speaking latest warning for ${latestType} (occurrence ${latestWarning.occurrenceCount})${clearedCount > 0 ? `, cleared ${clearedCount} other warning(s)` : ''}`)
+      
+      if (window.electronAPI?.speakSecurityWarning) {
+        window.electronAPI.speakSecurityWarning(latestWarning.message)
+        
+        // Reset after TTS completes
+        setTimeout(() => {
+          isWarningTTSActiveRef.current = false
+          // Try to process next warning in stack if any
+          processWarningStack()
+        }, 3000) // 3s to account for TTS duration
+      } else {
         isWarningTTSActiveRef.current = false
-      }, 3000) // 3s to account for TTS duration
-    } else {
-      isWarningTTSActiveRef.current = false
+      }
     }
   }, [isSpeaking, isEvaluating, isListening])
 
@@ -260,13 +243,6 @@ export const useVisionSecurity = ({
             // Update warning stats periodically
             if (serviceRef.current) {
               setWarningStats(serviceRef.current.getWarningStats())
-              
-              // Cache screenshot filepath periodically so it survives service cleanup
-              const filepath = serviceRef.current.getScreenshotFilepath()
-              if (filepath && filepath !== screenshotFilepathRef.current) {
-                screenshotFilepathRef.current = filepath
-                console.log(`📸 [Hook] Cached screenshot filepath: ${filepath}`)
-              }
             }
 
             // Check active warnings and add to stack when threshold exceeded
@@ -321,40 +297,52 @@ export const useVisionSecurity = ({
                 const shouldSpeak = occurrenceCount % 3 === 1 && occurrenceCount > lastSpoken
                 
                 if (shouldSpeak) {
-                  // Check if we've already queued this occurrence (prevent duplicates)
+                  // Check if we've already pushed this occurrence to the stack (prevent duplicates)
                   if (!pushedOccurrencesRef.current[warning.type]) {
                     pushedOccurrencesRef.current[warning.type] = new Set()
                   }
                   
                   if (pushedOccurrencesRef.current[warning.type].has(occurrenceCount)) {
-                    // Already queued this occurrence, skip
+                    // Already pushed this occurrence, skip
                     return
                   }
                   
                   const messages = WARNING_MESSAGES[warning.type] || []
                   const message = messages[Math.floor(Math.random() * messages.length)] || `Security alert: ${warning.type}`
                   
-                  // Mark this occurrence as queued
+                  // Initialize stack for this warning type if needed
+                  if (!warningStacksRef.current[warning.type]) {
+                    warningStacksRef.current[warning.type] = []
+                  }
+                  
+                  // Mark this occurrence as pushed
                   pushedOccurrencesRef.current[warning.type].add(occurrenceCount)
                   
-                  // Update latest queued warning if this one is newer (or if no warning is queued)
-                  if (!latestQueuedWarningRef.current || now > latestQueuedWarningRef.current.timestamp) {
-                    latestQueuedWarningRef.current = {
-                      type: warning.type,
-                      message,
-                      occurrenceCount,
-                      timestamp: now,
-                      startTime: warning.startTime
-                    }
-                    console.log(`📥 [QUEUE] Queued warning for ${warning.type} (occurrence ${occurrenceCount})`)
-                  } else {
-                    console.log(`📥 [QUEUE] Skipping warning for ${warning.type} (occurrence ${occurrenceCount}) - newer warning already queued`)
+                  // Push latest warning to stack (LIFO - latest on top)
+                  warningStacksRef.current[warning.type].push({
+                    type: warning.type,
+                    message,
+                    occurrenceCount,
+                    timestamp: now
+                  })
+                  
+                  console.log(`📥 [STACK] Pushed warning for ${warning.type} (occurrence ${occurrenceCount}), stack size: ${warningStacksRef.current[warning.type].length}`)
+                  
+                  // Debounce: Wait 300ms before processing stack
+                  // If another warning comes within 300ms, reset the timer (only latest will be processed)
+                  if (stackProcessTimersRef.current[warning.type]) {
+                    clearTimeout(stackProcessTimersRef.current[warning.type])
                   }
+                  
+                  stackProcessTimersRef.current[warning.type] = setTimeout(() => {
+                    processWarningStack()
+                    delete stackProcessTimersRef.current[warning.type]
+                  }, STACK_PROCESS_DEBOUNCE_MS)
                 }
               })
               
-              // Also try to process queued warning in case TTS just became available
-              processQueuedWarning()
+              // Also try to process stack in case TTS just became available
+              processWarningStack()
               
               // Trigger alert callback for UI updates
               if (onSecurityAlert && activeWarnings.some(w => {
@@ -387,10 +375,13 @@ export const useVisionSecurity = ({
         animationFrameRef.current = null
       }
       
-      // Clear any queued warning
-      latestQueuedWarningRef.current = null
+      // Clean up any pending stack process timers
+      Object.values(stackProcessTimersRef.current).forEach(timer => {
+        clearTimeout(timer)
+      })
+      stackProcessTimersRef.current = {}
     }
-  }, [enabled, isInitialized, videoElement, onSecurityAlert, isSpeaking, isEvaluating, isListening, processQueuedWarning])
+  }, [enabled, isInitialized, videoElement, onSecurityAlert, isSpeaking, isEvaluating, isListening, processWarningStack])
 
   const getStatus = useCallback((): VisionSecurityStatus | null => {
     return status
@@ -398,10 +389,8 @@ export const useVisionSecurity = ({
 
   const endAllActiveWarnings = useCallback(() => {
     if (serviceRef.current) {
-      // endAllActiveWarnings() returns the stats directly - use that return value!
-      // Don't call getWarningStats() afterwards because endAllActiveWarnings() may clear the data
-      const stats = serviceRef.current.endAllActiveWarnings()
-      console.log('[Hook] endAllActiveWarnings returned stats:', JSON.stringify(stats, null, 2))
+      serviceRef.current.endAllActiveWarnings()
+      const stats = serviceRef.current.getWarningStats()
       setWarningStats(stats)
       return stats
     }
@@ -429,20 +418,6 @@ export const useVisionSecurity = ({
     return false
   }, [])
 
-  const getScreenshotFilepath = useCallback(() => {
-    // Try to get from service first, if available
-    if (serviceRef.current) {
-      const filepath = serviceRef.current.getScreenshotFilepath()
-      if (filepath) {
-        screenshotFilepathRef.current = filepath // Cache it
-        return filepath
-      }
-    }
-    // If service is gone, return cached filepath
-    console.log(`📸 [Hook] Returning cached screenshot filepath: ${screenshotFilepathRef.current}`)
-    return screenshotFilepathRef.current
-  }, [])
-
   return {
     status,
     isInitialized,
@@ -452,8 +427,7 @@ export const useVisionSecurity = ({
     endAllActiveWarnings,
     getWarningStats,
     getActiveWarnings,
-    isWarningStillActive,
-    getScreenshotFilepath
+    isWarningStillActive
   }
 }
 

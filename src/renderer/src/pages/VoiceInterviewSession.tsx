@@ -5,7 +5,7 @@ import { AudioVisualizer } from '../components/AudioVisualizer'
 import { QuestionDisplay } from '../components/QuestionDisplay'
 import { VideoCapture } from '../components/VideoCapture'
 import { useVisionSecurity } from '../hooks/useVisionSecurity'
-// import { VisionSecurityAlert } from '../components/security/VisionSecurityAlert' // Hidden during interview
+import { VisionSecurityAlert } from '../components/security/VisionSecurityAlert'
 import { ResumeInterviewModal } from '../components/interview/ResumeInterviewModal'
 import { CodingProblem, Question } from '../../../shared/types'
 import type { RootState } from '../store'
@@ -41,7 +41,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const isListeningRef = useRef(false)
   const [progress, setProgress] = useState({ current: 0, total: questions.length })
   const [evaluations, setEvaluations] = useState<any[]>([])
-  // const [codeAnalysis, setCodeAnalysis] = useState<any>(null) // Unused
+  const [codeAnalysis, setCodeAnalysis] = useState<any>(null)
   const [complexityNotes, setComplexityNotes] = useState<Record<string, { time: string; space: string }>>({})
   const [isMonitoring, setIsMonitoring] = useState(false)
   const [currentCode, setCurrentCode] = useState<string>('')
@@ -53,21 +53,23 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [hasCheckedUnfinished, setHasCheckedUnfinished] = useState(false)
   const [userChoseResume, setUserChoseResume] = useState(false)
   const [hiddenVideoElement, setHiddenVideoElement] = useState<HTMLVideoElement | null>(null)
-  // const [visionSecurityStatus, setVisionSecurityStatus] = useState<any>(null) // Unused - UI hidden
+  const [visionSecurityStatus, setVisionSecurityStatus] = useState<any>(null)
   
   const codeEditorRef = useRef<any>(null)
 
   // Initialize vision security tracking that stays active throughout the interview
   // This works even when video windows are hidden (like in coding section)
   // Keep it enabled through 'wrap_up' so we can end and persist all active warnings at final evaluation time
-  // UI alerts are hidden - warnings tracked silently and sent to backend at interview end
-  const { status: hiddenVisionStatus, warningStats, endAllActiveWarnings, getScreenshotFilepath } = useVisionSecurity({
+  const { status: hiddenVisionStatus, warningStats, endAllActiveWarnings, getWarningStats } = useVisionSecurity({
     videoElement: hiddenVideoElement,
     enabled: hiddenVideoElement !== null && currentState !== 'connecting',
     isSpeaking,
     isEvaluating,
-    isListening
-    // onSecurityAlert removed - UI alerts disabled
+    isListening,
+    onSecurityAlert: (status) => {
+      // Just update UI status - TTS is handled in useVisionSecurity hook
+      setVisionSecurityStatus(status)
+    }
   })
   
   // Keep warningStats ref for final evaluation (logging stays in renderer)
@@ -76,24 +78,19 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     warningStatsRef.current = warningStats
   }, [warningStats])
   
-  // Vision security status tracking (UI hidden, but data logged)
-  // Batching for backend is handled via WarningStateManager stats
+  // Update vision security status from hidden tracking
+  // This ensures we always have the latest status for the UI,
+  // but batching for backend is handled via WarningStateManager stats
   useEffect(() => {
     if (hiddenVisionStatus) {
-      // Status tracked but UI alerts disabled
-      console.log('🔒 [Vision Security] Status updated (UI hidden):', {
-        faceDetected: hiddenVisionStatus.faceDetected,
-        gazeDirection: hiddenVisionStatus.gazeDirection,
-        activeWarnings: hiddenVisionStatus.suspiciousEvents?.length || 0
-      })
+      setVisionSecurityStatus(hiddenVisionStatus)
     }
   }, [hiddenVisionStatus])
 
   // Track if vision security data has been sent to prevent duplicates
   const visionSecurityDataSent = useRef(false)
   
-  // Modified function to send aggregated vision security data (called at interview end)
-  // @ts-ignore - Function kept for potential future use
+  // Modified function to send aggregated vision security data
   const sendVisionSecurityToServer = useCallback(async () => {
     const stats = warningStats;
     console.log('📊 [sendVisionSecurityToServer] Called with warningStats:', JSON.stringify(stats, null, 2));
@@ -155,10 +152,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     }
   }, [interviewId, warningStats])
 
-  // Vision status change handler (disabled - UI hidden)
-  // const handleVisionStatusChange = useCallback((status: any) => {
-  //   // Status tracked but UI alerts disabled
-  // }, [])
+  // Memoize the callback to prevent infinite loops
+  const handleVisionStatusChange = useCallback((status: any) => {
+    setVisionSecurityStatus(status)
+  }, [])
   const resumeData = useSelector((state: RootState) => state.interview.resumeData)
   const { user } = useSelector((state: RootState) => state.auth)
   const audioContextRef = useRef<AudioContext | null>(null)
@@ -306,21 +303,14 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         setEvaluations(prev => [...prev, evaluation])
       })
       
-      // Track evaluation state (including hint/clarification processing)
-      // This ensures warning TTS is queued during all LLM API calls
+      // Track evaluation state
       window.electronAPI.onInterviewStateChange((state: string) => {
-        setIsEvaluating(
-          state === 'evaluating_answer' || 
-          state === 'evaluating_approach' ||
-          state === 'handling_theoretical_hint' ||
-          state === 'handling_clarification'
-        )
+        setIsEvaluating(state === 'evaluating_answer' || state === 'evaluating_approach')
       })
 
-      // Code analysis (stored but not used in UI currently)
+      // Code analysis
       window.electronAPI.onCodeAnalysis((analysis: any) => {
-        console.log('📊 [Code Analysis] Received:', analysis)
-        // setCodeAnalysis(analysis) // Commented out - not used
+        setCodeAnalysis(analysis)
       })
 
       // Final evaluation ready
@@ -328,148 +318,19 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         console.log('📊 [Renderer] Submitting final evaluation to backend...')
         
         // CRITICAL: End all active warnings BEFORE collecting stats
-        // Use the return value directly since React state updates are async
         console.log('📊 [Renderer] Ending all active warnings before final stats collection...')
-        const finalStats = endAllActiveWarnings()
+        endAllActiveWarnings()
         
-        console.log('📊 [Renderer] Final stats returned from endAllActiveWarnings():', JSON.stringify(finalStats, null, 2))
-        console.log('📊 [Renderer] Warning types in finalStats:', Object.keys(finalStats))
-        console.log('📊 [Renderer] Warning counts:', Object.entries(finalStats).map(([type, data]: [string, any]) => 
-          `${type}: ${data?.count || 0} events`
-        ).join(', '))
-        
-        // IMPORTANT: Use the returned stats directly, NOT warningStatsRef.current
-        // because React state updates are async and the ref won't be updated yet
-        const visionWarnings = { ...finalStats }
-        
-        console.log('📊 [Renderer] Vision warnings object created (before screenshot):', {
-          types: Object.keys(visionWarnings),
-          counts: Object.entries(visionWarnings).map(([type, data]: [string, any]) => ({
-            type,
-            count: data?.count || 0,
-            events: data?.events?.length || 0
-          }))
-        })
-        
-        // Get screenshot from temp file if available
-        const screenshotFilepath = getScreenshotFilepath()
-        let multipleFacesScreenshot: string | null = null
-        
-        console.log('📸 [Renderer] ===== SCREENSHOT STATUS =====')
-        console.log('📸 [Renderer] Screenshot filepath:', screenshotFilepath)
-        
-        if (screenshotFilepath && window.electronAPI?.readScreenshotFile) {
-          try {
-            const result = await window.electronAPI.readScreenshotFile(screenshotFilepath)
-            if (result.success && result.imageData) {
-              multipleFacesScreenshot = result.imageData
-              const originalSizeKB = (multipleFacesScreenshot.length / 1024).toFixed(1)
-              console.log('📸 [Renderer] Screenshot read from file:', {
-                length: multipleFacesScreenshot.length,
-                sizeKB: originalSizeKB
-              })
-              
-              // Compress screenshot if it's too large (> 1MB)
-              const maxSizeKB = 1024 // 1MB max
-              if (multipleFacesScreenshot.length / 1024 > maxSizeKB) {
-                console.log(`📸 [Renderer] Screenshot is large (${originalSizeKB} KB), compressing...`)
-                try {
-                  // Create an image element to compress
-                  const img = new Image()
-                  await new Promise((resolve, reject) => {
-                    img.onload = resolve
-                    img.onerror = reject
-                    img.src = multipleFacesScreenshot!
-                  })
-                  
-                  // Create canvas and compress
-                  const canvas = document.createElement('canvas')
-                  const ctx = canvas.getContext('2d')
-                  
-                  // Reduce dimensions if needed
-                  const maxDimension = 800
-                  let width = img.width
-                  let height = img.height
-                  
-                  if (width > maxDimension || height > maxDimension) {
-                    if (width > height) {
-                      height = (height / width) * maxDimension
-                      width = maxDimension
-                    } else {
-                      width = (width / height) * maxDimension
-                      height = maxDimension
-                    }
-                  }
-                  
-                  canvas.width = width
-                  canvas.height = height
-                  ctx?.drawImage(img, 0, 0, width, height)
-                  
-                  // Compress to JPEG with quality 0.7
-                  multipleFacesScreenshot = canvas.toDataURL('image/jpeg', 0.7)
-                  const compressedSizeKB = (multipleFacesScreenshot.length / 1024).toFixed(1)
-                  console.log(`📸 [Renderer] Screenshot compressed: ${originalSizeKB} KB → ${compressedSizeKB} KB`)
-                } catch (compressionError) {
-                  console.error('📸 [Renderer] Error compressing screenshot:', compressionError)
-                  console.log('📸 [Renderer] Using original screenshot despite size')
-                }
-              }
-              
-              // Add screenshot to multiple_faces warning data ONLY if multiple_faces exists
-              if (visionWarnings.multiple_faces) {
-                visionWarnings.multiple_faces.screenshot = multipleFacesScreenshot
-                console.log('📸 [Renderer] Screenshot added to existing multiple_faces warning')
-              } else {
-                console.log('📸 [Renderer] ⚠️ No multiple_faces warning found, but screenshot was captured')
-                console.log('📸 [Renderer] Creating multiple_faces entry with screenshot')
-                visionWarnings.multiple_faces = { 
-                  count: 0, 
-                  totalDuration: 0, 
-                  events: [],
-                  screenshot: multipleFacesScreenshot
-                }
-              }
-            } else {
-              console.error('📸 [Renderer] Failed to read screenshot:', result.error)
-            }
-          } catch (error) {
-            console.error('📸 [Renderer] Error reading screenshot file:', error)
-          }
-        } else {
-          console.log('📸 [Renderer] ⚠️ NO SCREENSHOT FILE AVAILABLE - was not captured during interview')
-        }
-        
-        console.log('📸 [Renderer] ===== END SCREENSHOT STATUS =====')
+        // Use warningStatsRef.current directly - it's updated via useEffect
+        const visionWarnings = warningStatsRef.current
         
         console.log('📊 [Renderer] ===== FINAL VISION WARNINGS BATCH =====')
-        console.log('📊 [Renderer] Warning types:', Object.keys(visionWarnings))
-        console.log('📊 [Renderer] Has screenshot:', !!multipleFacesScreenshot)
-        console.log('📊 [Renderer] Screenshot length:', multipleFacesScreenshot?.length || 0)
-        // Log summary without full screenshot data
-        const warningSummary = Object.entries(visionWarnings).map(([type, data]: [string, any]) => ({
-          type,
-          count: data?.count || 0,
-          totalDuration: data?.totalDuration || 0,
-          eventsCount: data?.events?.length || 0,
-          hasScreenshot: !!data?.screenshot,
-          screenshotLength: data?.screenshot?.length || 0
-        }))
-        console.log('📊 [Renderer] Summary:', JSON.stringify(warningSummary, null, 2))
+        console.log('📊 [Renderer] Warning types:', Object.keys(visionWarnings).length)
+        console.log('📊 [Renderer] Full structure:', JSON.stringify(visionWarnings, null, 2))
         console.log('📊 [Renderer] ===== END BATCH =====')
         
         // Add vision warnings to payload for backend
         payload.visionSecurityWarnings = visionWarnings
-        
-        // Calculate payload size before sending
-        const payloadString = JSON.stringify(payload)
-        const payloadSizeMB = (payloadString.length / (1024 * 1024)).toFixed(2)
-        console.log(`📦 [Renderer] Payload size: ${payloadSizeMB} MB`)
-        
-        // Check if payload exceeds server limit (10MB)
-        if (parseFloat(payloadSizeMB) > 9.5) {
-          console.warn(`⚠️ [Renderer] Payload size (${payloadSizeMB} MB) is close to or exceeds 10MB limit!`)
-          console.warn('⚠️ [Renderer] This may cause the request to fail. Consider compressing the screenshot.')
-        }
         
         try {
           const { API_BASE_URL } = await import('../constants/api')
@@ -479,30 +340,12 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               'Content-Type': 'application/json',
               Authorization: `Bearer ${localStorage.getItem('authToken')}`
             },
-            body: payloadString
+            body: JSON.stringify(payload)
           })
-          
-          if (!response.ok) {
-            const errorText = await response.text()
-            console.error('❌ [Renderer] Server responded with error:', response.status, response.statusText)
-            console.error('❌ [Renderer] Error details:', errorText)
-            throw new Error(`Server error: ${response.status} ${response.statusText}`)
-          }
-          
           const data = await response.json()
-          if (data.success) {
+          if (response.ok && data.success) {
             console.log('✅ [Renderer] Final evaluation submitted successfully!')
             await window.electronAPI.markPayloadSent()
-            
-            // Clean up screenshot temp file
-            if (screenshotFilepath && window.electronAPI?.deleteScreenshotFile) {
-              try {
-                await window.electronAPI.deleteScreenshotFile(screenshotFilepath)
-                console.log('📸 [Renderer] Screenshot temp file cleaned up')
-              } catch (error) {
-                console.error('📸 [Renderer] Error cleaning up screenshot file:', error)
-              }
-            }
           } else {
             console.error('❌ [Renderer] Final evaluation submission failed:', data.error)
           }
@@ -739,8 +582,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       })
 
       if (result.success) {
-        console.log('📊 [Code Analysis] Success:', result.analysis)
-        // setCodeAnalysis(result.analysis) // Commented out - not used
+        setCodeAnalysis(result.analysis)
       }
     } catch (error) {
       console.error('Code analysis failed:', error)
@@ -915,6 +757,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               isListening={isListening}
               isSpeaking={isSpeaking}
               progress={progress}
+              onVisionStatusChange={handleVisionStatusChange}
             />
           </div>
         )
@@ -933,6 +776,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               isListening={isListening}
               isSpeaking={isSpeaking}
               progress={progress}
+              onVisionStatusChange={handleVisionStatusChange}
             />
           </div>
         )
@@ -1049,15 +893,14 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         {renderCurrentSection()}
       </div>
 
-      {/* Vision Security Alerts - Hidden during interview to avoid distraction */}
-      {/* Warnings are still tracked and sent to backend at interview end */}
-      {/* <VisionSecurityAlert 
+      {/* Vision Security Alerts - Display warnings for suspicious events */}
+      <VisionSecurityAlert 
         status={visionSecurityStatus}
         warningStats={warningStats}
         onDismiss={(eventType) => {
           console.log('🔕 [Vision Security] Alert dismissed:', eventType)
         }}
-      /> */}
+      />
 
       {/* Hidden video capture for security tracking during coding section and throughout interview */}
       <div className="hidden-video-tracker">
