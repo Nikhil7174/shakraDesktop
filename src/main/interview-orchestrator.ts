@@ -1359,6 +1359,25 @@ export class InterviewOrchestrator extends EventEmitter {
         if (result.completed) {
           await this.stateMachine.transition('clarification_provided')
         }
+      } else if (response.action === 'skip') {
+        console.log('🎯 [Interview] ⏭️ Skipping question')
+        
+        // If there's text to speak, speak it first (if not included in evaluation feedback)
+        // If evaluation is present, handleEvaluation will speak the feedback
+        if (response.text && (!response.evaluation || !response.evaluation.feedback)) {
+           await this.speakWithPolicy(response.text, {
+            interruptible: false,
+            bargeInPolicy: 'soft'
+          })
+        }
+        
+        // Handle evaluation if present (records score 0 and transitions)
+        if (response.evaluation) {
+           await this.handleEvaluation(response.evaluation)
+        } else {
+           // Fallback if no evaluation provided
+           await this.forceMoveToNextQuestion()
+        }
       } else if (response.action === 'evaluate' && response.evaluation) {
         console.log('🎯 [Interview] 📊 Handling evaluation:', response.evaluation)
         await this.handleEvaluation(response.evaluation)
