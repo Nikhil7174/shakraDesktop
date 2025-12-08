@@ -398,8 +398,10 @@ export const useVisionSecurity = ({
 
   const endAllActiveWarnings = useCallback(() => {
     if (serviceRef.current) {
-      serviceRef.current.endAllActiveWarnings()
-      const stats = serviceRef.current.getWarningStats()
+      // endAllActiveWarnings() returns the stats directly - use that return value!
+      // Don't call getWarningStats() afterwards because endAllActiveWarnings() may clear the data
+      const stats = serviceRef.current.endAllActiveWarnings()
+      console.log('[Hook] endAllActiveWarnings returned stats:', JSON.stringify(stats, null, 2))
       setWarningStats(stats)
       return stats
     }
