@@ -184,7 +184,9 @@ app.whenReady().then(async () => {
         language: 'en'
       },
       llm: {
+        // serverUrl: process.env.SERVER_URL || 'https://crisp-server-n0r1.onrender.com'
         serverUrl: process.env.SERVER_URL || 'https://crisp-server-n0r1.onrender.com'
+
       },
       tts: {
         provider: 'openai',
@@ -501,6 +503,107 @@ app.whenReady().then(async () => {
       }
     } catch (error) {
       console.error('⚠️ [Main] Failed to handle security warning TTS:', error)
+    }
+  })
+
+  // Handle screenshot capture request from renderer
+  ipcMain.handle('capture-screenshot', async (_event, options: { videoFrame?: boolean } = {}) => {
+    try {
+      if (!mainWindow) {
+        return { success: false, error: 'Main window not available' }
+      }
+
+      if (options.videoFrame) {
+        // For video frame, we'll capture from renderer and send the data
+        // This handler is just for acknowledgment
+        return { success: true, message: 'Video frame capture requested' }
+      } else {
+        // Capture full screen screenshot
+        const image = await mainWindow.webContents.capturePage()
+        const buffer = image.toPNG()
+        
+        // Save to a file in user's documents or temp directory
+        const { app } = require('electron')
+        const path = require('path')
+        const fs = require('fs').promises
+        
+        const screenshotsDir = path.join(app.getPath('documents'), 'CrispInterview', 'screenshots')
+        await fs.mkdir(screenshotsDir, { recursive: true })
+        
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+        const filename = `multiple-faces-${timestamp}.png`
+        const filepath = path.join(screenshotsDir, filename)
+        
+        await fs.writeFile(filepath, buffer)
+        
+        console.log(`📸 [Screenshot] Saved to: ${filepath}`)
+        return { success: true, filepath, filename }
+      }
+    } catch (error: any) {
+      console.error('⚠️ [Main] Failed to capture screenshot:', error)
+      return { success: false, error: error.message || 'Failed to capture screenshot' }
+    }
+  })
+
+  // Handle video frame screenshot (data sent from renderer) - save to temp file
+  ipcMain.handle('save-video-frame-screenshot', async (_event, imageData: string, filename?: string) => {
+    try {
+      const { app } = require('electron')
+      const path = require('path')
+      const fs = require('fs').promises
+      const os = require('os')
+      
+      // Save to temp directory
+      const tempDir = os.tmpdir()
+      const screenshotFilename = filename || 'interview_multiple_faces_screenshot.png'
+      const filepath = path.join(tempDir, screenshotFilename)
+      
+      // Convert base64 to buffer
+      const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '')
+      const buffer = Buffer.from(base64Data, 'base64')
+      
+      // Write to temp file
+      await fs.writeFile(filepath, buffer)
+      
+      console.log(`📸 [Screenshot] Saved to temp file: ${filepath} (${(buffer.length / 1024).toFixed(1)}KB)`)
+      return { success: true, filepath: filepath }
+    } catch (error: any) {
+      console.error('⚠️ [Main] Failed to save video frame screenshot:', error)
+      return { success: false, error: error.message || 'Failed to save screenshot' }
+    }
+  })
+
+  // Read screenshot from temp file
+  ipcMain.handle('read-screenshot-file', async (_event, filepath: string) => {
+    try {
+      const fs = require('fs').promises
+      
+      // Read file and convert to base64
+      const buffer = await fs.readFile(filepath)
+      const base64Data = `data:image/png;base64,${buffer.toString('base64')}`
+      
+      console.log(`📸 [Screenshot] Read from temp file: ${filepath} (${(buffer.length / 1024).toFixed(1)}KB)`)
+      return { success: true, imageData: base64Data }
+    } catch (error: any) {
+      console.error('⚠️ [Main] Failed to read screenshot file:', error)
+      return { success: false, error: error.message || 'Failed to read screenshot' }
+    }
+  })
+
+  // Delete screenshot temp file
+  ipcMain.handle('delete-screenshot-file', async (_event, filepath: string) => {
+    try {
+      const fs = require('fs').promises
+      
+      await fs.unlink(filepath)
+      console.log(`📸 [Screenshot] Deleted temp file: ${filepath}`)
+      return { success: true }
+    } catch (error: any) {
+      // Don't log error if file doesn't exist
+      if (error.code !== 'ENOENT') {
+        console.error('⚠️ [Main] Failed to delete screenshot file:', error)
+      }
+      return { success: false, error: error.message || 'Failed to delete screenshot' }
     }
   })
 

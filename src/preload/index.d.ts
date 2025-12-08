@@ -15,6 +15,10 @@ type InterviewAPI = {
   sendAudioChunk: (data: Uint8Array) => void
   sendVisionSecurityData: (data: any) => void
   speakSecurityWarning: (message: string) => void
+  captureScreenshot: (options?: { videoFrame?: boolean }) => Promise<{ success: boolean; filepath?: string; filename?: string; error?: string }>
+  saveVideoFrameScreenshot: (imageData: string, filename?: string) => Promise<{ success: boolean; filepath?: string; filename?: string; error?: string }>
+  readScreenshotFile: (filepath: string) => Promise<{ success: boolean; imageData?: string; error?: string }>
+  deleteScreenshotFile: (filepath: string) => Promise<{ success: boolean; error?: string }>
   onVisionSecurityAlert: (callback: (alert: any) => void) => void
   getSTTToken: () => Promise<{ success: boolean; token?: string; error?: string }>
   updateSTTToken: (token: string) => Promise<{ success: boolean; error?: string }>

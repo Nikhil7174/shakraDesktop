@@ -45,6 +45,10 @@ const interviewAPI = {
   // Vision security
   sendVisionSecurityData: (data: any) => ipcRenderer.send('vision-security-data', data),
   speakSecurityWarning: (message: string) => ipcRenderer.send('speak-security-warning', message),
+  captureScreenshot: (options?: { videoFrame?: boolean }) => ipcRenderer.invoke('capture-screenshot', options),
+  saveVideoFrameScreenshot: (imageData: string, filename?: string) => ipcRenderer.invoke('save-video-frame-screenshot', imageData, filename),
+  readScreenshotFile: (filepath: string) => ipcRenderer.invoke('read-screenshot-file', filepath),
+  deleteScreenshotFile: (filepath: string) => ipcRenderer.invoke('delete-screenshot-file', filepath),
   onVisionSecurityAlert: (callback: (alert: any) => void) => {
     ipcRenderer.on('vision-security-alert', (_event, alert) => callback(alert))
   },

@@ -204,14 +204,6 @@ export const JoinInterview: React.FC = () => {
                 <div>
                   <Text strong>Title:</Text> {linkInfo.title}
                 </div>
-                {linkInfo.description && (
-                  <div>
-                    <Text strong>Description:</Text> {linkInfo.description}
-                  </div>
-                )}
-                <div>
-                  <Text strong>Max Attempts:</Text> {linkInfo.maxAttempts}
-                </div>
               </Space>
             </Card>
           )}

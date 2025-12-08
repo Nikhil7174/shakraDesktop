@@ -19,6 +19,9 @@ export class VisionSecurityService {
   private lastProcessTime = 0
   private readonly PROCESS_INTERVAL = 100 // Process every 100ms (10 FPS)
   private warningManager: WarningStateManager
+  private videoElement: HTMLVideoElement | null = null
+  private screenshotCaptureInProgress: Set<string> = new Set() // Track warning types currently being captured (prevents concurrent captures)
+  private screenshotFilepath: string | null = null // Store filepath to temp screenshot file
 
   // Thresholds
   private readonly GAZE_AWAY_THRESHOLD = 3000 // 3 seconds
@@ -89,6 +92,9 @@ export class VisionSecurityService {
     if (!this.isInitialized || !videoElement || videoElement.readyState !== 4) {
       return null
     }
+    
+    // Store video element reference for screenshot capture
+    this.videoElement = videoElement
 
     const now = Date.now()
     if (now - this.lastProcessTime < this.PROCESS_INTERVAL) {
@@ -134,6 +140,31 @@ export class VisionSecurityService {
     // Multiple faces warning management
     if (multipleFacesDetected) {
       this.warningManager.startWarning('multiple_faces')
+      
+      // IMMEDIATELY capture screenshot when multiple faces detected (don't wait for threshold)
+      // This ensures we get evidence even if detection flickers
+      const warningType = 'multiple_faces'
+      const hasScreenshot = !!this.screenshotFilepath
+      const captureInProgress = this.screenshotCaptureInProgress.has(warningType)
+      
+      console.log(`📸 [Screenshot] Check: hasScreenshot=${hasScreenshot}, captureInProgress=${captureInProgress}`)
+      
+      if (!hasScreenshot && !captureInProgress) {
+        console.log(`📸 [Screenshot] Multiple faces detected - capturing and saving to temp file`)
+        this.screenshotCaptureInProgress.add(warningType)
+        
+        this.captureMultipleFacesScreenshot({ startTime: now })
+          .then(() => {
+            this.screenshotCaptureInProgress.delete(warningType)
+            console.log(`📸 [Screenshot] ✅ Screenshot saved to temp file: ${this.screenshotFilepath}`)
+          })
+          .catch(err => {
+            console.error('📸 [Screenshot] Error capturing:', err)
+            this.screenshotCaptureInProgress.delete(warningType)
+          })
+      } else {
+        console.log(`📸 [Screenshot] Skipping capture - already have screenshot or capture in progress`)
+      }
     } else {
       this.warningManager.endWarning('multiple_faces')
     }
@@ -171,6 +202,49 @@ export class VisionSecurityService {
       this.warningManager.endWarning('gaze_away')
     }
 
+    // Build suspicious events array from active warnings
+    const suspiciousEvents: any[] = []
+    const activeWarnings = this.warningManager.getActiveWarnings()
+    
+    if (activeWarnings.length > 0) {
+      console.log(`🚨 [VisionSecurity] Active warnings: ${activeWarnings.length}`, activeWarnings.map(w => w.type))
+    }
+    
+    activeWarnings.forEach(warning => {
+      const duration = now - warning.startTime
+      
+      // Determine severity based on warning type and duration
+      let severity: 'low' | 'medium' | 'high' = 'low'
+      let description = ''
+      
+      switch (warning.type) {
+        case 'multiple_faces':
+          severity = 'high'
+          description = 'Multiple faces detected in frame'
+          break
+        case 'face_absent':
+          severity = duration > 10000 ? 'high' : duration > 5000 ? 'medium' : 'low'
+          description = `Face not detected for ${Math.round(duration / 1000)}s`
+          break
+        case 'gaze_away':
+          severity = duration > 10000 ? 'high' : duration > 5000 ? 'medium' : 'low'
+          description = `Gaze away from screen for ${Math.round(duration / 1000)}s`
+          break
+        case 'mobile_device_usage':
+          severity = duration > 10000 ? 'high' : duration > 5000 ? 'medium' : 'low'
+          description = `Possible mobile device usage detected for ${Math.round(duration / 1000)}s`
+          break
+      }
+      
+      suspiciousEvents.push({
+        type: warning.type,
+        severity,
+        description,
+        timestamp: warning.startTime,
+        duration
+      })
+    })
+
     return {
       gazeDirection,
       blinkRate,
@@ -183,7 +257,7 @@ export class VisionSecurityService {
       suspiciousHandPatterns: [],
       handMovementIntensity: 0,
       mobileDeviceUsageDetected,
-      suspiciousEvents: [],
+      suspiciousEvents,
       timestamp: now
     }
   }
@@ -300,19 +374,83 @@ export class VisionSecurityService {
   }
 
   getWarningStats(): any {
-    return this.warningManager.getWarningStats()
+    const stats = this.warningManager.getWarningStats()
+    console.log('[VisionSecurityService] getWarningStats called, returning:', JSON.stringify(stats, null, 2))
+    return stats
   }
 
   getActiveWarnings(): any {
     return this.warningManager.getActiveWarnings()
   }
 
+  isWarningActive(type: string): boolean {
+    return this.warningManager.isWarningActive(type)
+  }
+
+  getActiveWarning(type: string): any {
+    return this.warningManager.getActiveWarning(type)
+  }
+
   isWarningStillActive(type: string, startTime: number): boolean {
     return this.warningManager.isWarningStillActive(type, startTime)
   }
 
-  endAllActiveWarnings(): void {
-    this.warningManager.endAllActiveWarnings()
+  endAllActiveWarnings(): any {
+    console.log('[VisionSecurityService] endAllActiveWarnings called')
+    const result = this.warningManager.endAllActiveWarnings()
+    console.log('[VisionSecurityService] endAllActiveWarnings result:', JSON.stringify(result, null, 2))
+    return result
+  }
+
+  /**
+   * Capture screenshot when multiple faces are detected
+   * Saves to temp file via Electron IPC
+   * Captures while the violation is happening (not after it ends)
+   */
+  private async captureMultipleFacesScreenshot(activeWarning: any): Promise<void> {
+    try {
+      // Capture video frame (shows what camera sees)
+      if (this.videoElement && this.videoElement.videoWidth > 0 && this.videoElement.videoHeight > 0) {
+        const canvas = document.createElement('canvas')
+        canvas.width = this.videoElement.videoWidth
+        canvas.height = this.videoElement.videoHeight
+        const ctx = canvas.getContext('2d')
+        
+        if (ctx) {
+          ctx.drawImage(this.videoElement, 0, 0, canvas.width, canvas.height)
+          const imageData = canvas.toDataURL('image/png') // base64 string
+          
+          // Save to temp file via Electron IPC
+          if (window.electronAPI?.saveVideoFrameScreenshot) {
+            const result = await window.electronAPI.saveVideoFrameScreenshot(imageData, 'interview_screenshot.png')
+            if (result.success && result.filepath) {
+              this.screenshotFilepath = result.filepath
+              console.log(`📸 [Screenshot] ✅ CAPTURED and saved:`, {
+                size: `${(imageData.length / 1024).toFixed(1)}KB`,
+                dimensions: `${canvas.width}x${canvas.height}`,
+                filepath: result.filepath,
+                warningDuration: `${Date.now() - activeWarning.startTime}ms`
+              })
+            } else {
+              console.error('📸 [Screenshot] Failed to save:', result.error)
+            }
+          }
+          return
+        }
+      }
+      
+      console.warn('📸 [Screenshot] Video element not available for capture')
+    } catch (error) {
+      console.error('📸 [Screenshot] Error capturing screenshot:', error)
+    }
+  }
+
+  /**
+   * Get the filepath to the stored screenshot temp file
+   */
+  getScreenshotFilepath(): string | null {
+    console.log(`📸 [Screenshot] getScreenshotFilepath called, filepath: ${this.screenshotFilepath}`)
+    return this.screenshotFilepath
   }
 
   cleanup(): void {
