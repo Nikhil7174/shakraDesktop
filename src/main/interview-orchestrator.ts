@@ -121,6 +121,7 @@ export class InterviewOrchestrator extends EventEmitter {
   private currentIntervalHasHintClarification: boolean = false // Track if any hint/clarification requested in current 60s interval
   private currentIntervalHasSubstantialSpeech: boolean = false // Track if any substantial speech (>70 chars) in current 60s interval
   private pendingSecurityWarning: string | null = null // Queue for security warnings while other TTS is playing
+  private isSecurityWarningInProgress = false // Flag to prevent concurrent security warning TTS
   // Centralized conversation history manager
   // Maintains full conversation history throughout the interview
   private fullConversationHistory: ConversationMessage[] = []
@@ -1558,6 +1559,55 @@ export class InterviewOrchestrator extends EventEmitter {
         return
       }
       
+      // Handle skip_question intent during approach phase (when user says "I don't know" or "skip")
+      if (intent.intent === 'skip_question') {
+        console.log('🎯 [Interview] ✨ Handling skip question request during approach phase')
+        await this.withManualResponse('system', 'approach_skip_question', async () => {
+          // Acknowledge the skip
+          const skipMessage = "Understood. Let's move on to the next problem."
+          
+          // Record in conversation history
+          this.codeAnalysis.addConversationMessage('assistant', skipMessage, {
+            type: 'feedback',
+            codingProblemId: problem.id,
+            section: 'coding'
+          } as any)
+          this.syncConversationHistoryFromServices()
+          
+          await this.speakWithPolicy(
+            skipMessage,
+            {
+              interruptible: false,
+              bargeInPolicy: 'soft'
+            },
+            { kind: 'system', priority: 'manual', source: 'approach_skip_question' }
+          )
+          
+          // Submit an empty solution with score 0 to move to the next problem
+          // This properly handles the transition to next problem or end of coding section
+          try {
+            await this.submitCodingSolution('// Skipped by candidate', false)
+          } catch (error) {
+            console.error('🎯 [Interview] Error during skip submission:', error)
+            // Fallback: try to transition to next problem or end interview
+            const codingProblems = this.currentSession?.codingProblems || []
+            const currentProblemIndex = codingProblems.findIndex(p => p.id === problem.id)
+            const hasNextProblem = currentProblemIndex >= 0 && currentProblemIndex < codingProblems.length - 1
+            
+            if (hasNextProblem) {
+              const nextProblem = codingProblems[currentProblemIndex + 1]
+              this.codeAnalysis.setCurrentProblem(nextProblem)
+              this.currentProblemId = nextProblem.id
+              await this.stateMachine.setState(InterviewState.CODING_PROBLEM)
+            } else {
+              // No more problems - go to wrap up
+              await this.stateMachine.setState(InterviewState.WRAP_UP)
+            }
+          }
+        })
+        return
+      }
+      
       // For other intents (answer/approach), proceed with normal approach evaluation
       // Transition to evaluating approach FIRST (before length check)
       // This allows sentiment analysis to detect hints/clarifications even for short text
@@ -1943,6 +1993,62 @@ export class InterviewOrchestrator extends EventEmitter {
           
           if (result.completed || result.softStopped) {
             this.stateMachine.startSilenceTimer(120000)
+          }
+        })
+        return
+      }
+      
+      // Handle skip_question intent during coding phase (when user says "I don't know" or "skip")
+      if (intent.intent === 'skip_question') {
+        console.log('🎯 [Interview] ✨ Handling skip question request during coding phase')
+        await this.withManualResponse('system', 'coding_skip_question', async () => {
+          const problem = this.getCurrentCodingProblem()
+          
+          // Acknowledge the skip
+          const skipMessage = "Understood. Let's move on to the next problem."
+          
+          // Record in conversation history
+          if (problem) {
+            this.codeAnalysis.addConversationMessage('assistant', skipMessage, {
+              type: 'feedback',
+              codingProblemId: problem.id,
+              section: 'coding'
+            } as any)
+            this.syncConversationHistoryFromServices()
+          }
+          
+          await this.speakWithPolicy(
+            skipMessage,
+            {
+              interruptible: false,
+              bargeInPolicy: 'soft'
+            },
+            { kind: 'system', priority: 'manual', source: 'coding_skip_question' }
+          )
+          
+          // Get current code (or empty if none) and submit to move to next problem
+          const currentCode = this.currentCode || this.stateMachine.getPreviousCode() || '// Skipped by candidate'
+          
+          try {
+            await this.submitCodingSolution(currentCode, false)
+          } catch (error) {
+            console.error('🎯 [Interview] Error during skip submission:', error)
+            // Fallback: try to transition to next problem or end interview
+            if (problem) {
+              const codingProblems = this.currentSession?.codingProblems || []
+              const currentProblemIndex = codingProblems.findIndex(p => p.id === problem.id)
+              const hasNextProblem = currentProblemIndex >= 0 && currentProblemIndex < codingProblems.length - 1
+              
+              if (hasNextProblem) {
+                const nextProblem = codingProblems[currentProblemIndex + 1]
+                this.codeAnalysis.setCurrentProblem(nextProblem)
+                this.currentProblemId = nextProblem.id
+                await this.stateMachine.setState(InterviewState.CODING_PROBLEM)
+              } else {
+                // No more problems - go to wrap up
+                await this.stateMachine.setState(InterviewState.WRAP_UP)
+              }
+            }
           }
         })
         return
@@ -2762,34 +2868,43 @@ export class InterviewOrchestrator extends EventEmitter {
         return
       }
 
-      // Queue if TTS is already speaking
-      if (this.speechGate.isSpeaking()) {
-        console.log('📝 [Security] Queuing warning TTS (speech active):', message.substring(0, 50))
+      // Queue if TTS is already speaking OR if another security warning is in progress
+      if (this.speechGate.isSpeaking() || this.isSecurityWarningInProgress) {
+        console.log('📝 [Security] Queuing warning TTS (speech active or warning in progress):', message.substring(0, 50))
         this.pendingSecurityWarning = message
         return
       }
+      
+      // Mark security warning as in progress immediately (before async TTS starts)
+      this.isSecurityWarningInProgress = true
       
       // Clear any pending warning since we are speaking now
       this.pendingSecurityWarning = null
       
       console.log('🔊 [Security] Proceeding with TTS...')
 
-      // Security warnings are interruptible and use auto priority
-      // They won't block interview flow and can be interrupted by user
-      await this.speakWithPolicy(
-        message,
-        {
-          interruptible: true,  // Can be interrupted by user
-          bargeInPolicy: 'hard' // User can interrupt immediately
-        },
-        { 
-          kind: 'system', 
-          priority: 'auto',  // Auto priority (system-generated)
-          source: 'security_warning' 
-        }
-      )
+      try {
+        // Security warnings are interruptible and use auto priority
+        // They won't block interview flow and can be interrupted by user
+        await this.speakWithPolicy(
+          message,
+          {
+            interruptible: true,  // Can be interrupted by user
+            bargeInPolicy: 'hard' // User can interrupt immediately
+          },
+          { 
+            kind: 'system', 
+            priority: 'auto',  // Auto priority (system-generated)
+            source: 'security_warning' 
+          }
+        )
+      } finally {
+        // Always reset the flag when done
+        this.isSecurityWarningInProgress = false
+      }
     } catch (error) {
       console.error('Failed to speak security warning:', error)
+      this.isSecurityWarningInProgress = false
       // Don't throw - security warnings are non-critical
     }
   }

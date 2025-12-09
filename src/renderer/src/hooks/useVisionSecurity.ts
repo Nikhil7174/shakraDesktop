@@ -153,7 +153,7 @@ export const useVisionSecurity = ({
     }
   }, [enabled])
 
-  // Process warning stack: pop latest warning and speak it, then clear entire stack
+  // Process warning stack: pop latest warning and speak it, then clear ALL stacks
   const processWarningStack = useCallback(() => {
     // Only speak warnings when AI is not speaking, not evaluating, and actively listening for candidate input
     if (isSpeaking || isEvaluating || !isListening || isWarningTTSActiveRef.current) {
@@ -181,17 +181,20 @@ export const useVisionSecurity = ({
       const stack = warningStacksRef.current[latestType]
       const stackSizeBefore = stack.length
       
-      // Clear any pending timer for this type (we're processing now)
-      if (stackProcessTimersRef.current[latestType]) {
-        clearTimeout(stackProcessTimersRef.current[latestType])
-        delete stackProcessTimersRef.current[latestType]
-      }
+      // Clear ALL pending timers for ALL types (prevent other types from firing during this TTS)
+      Object.keys(stackProcessTimersRef.current).forEach(type => {
+        clearTimeout(stackProcessTimersRef.current[type])
+        delete stackProcessTimersRef.current[type]
+      })
       
       // Pop latest warning (top of stack - LIFO)
       const latestWarning = stack.pop()!
       
-      // Clear entire stack for this type (handles race conditions - even if 2 warnings ~50ms apart)
-      warningStacksRef.current[latestType] = []
+      // Clear ALL stacks for ALL types to prevent multiple TTS calls
+      // This ensures only ONE warning is spoken at a time, even across different types
+      Object.keys(warningStacksRef.current).forEach(type => {
+        warningStacksRef.current[type] = []
+      })
       
       // Update last spoken occurrence
       lastSpokenOccurrenceRef.current[latestType] = latestWarning.occurrenceCount
@@ -205,7 +208,7 @@ export const useVisionSecurity = ({
       isWarningTTSActiveRef.current = true
       
       const clearedCount = stackSizeBefore - 1
-      console.log(`🔊 [STACK→TTS] Speaking latest warning for ${latestType} (occurrence ${latestWarning.occurrenceCount})${clearedCount > 0 ? `, cleared ${clearedCount} other warning(s)` : ''}`)
+      console.log(`🔊 [STACK→TTS] Speaking latest warning for ${latestType} (occurrence ${latestWarning.occurrenceCount})${clearedCount > 0 ? `, cleared ${clearedCount} other warning(s)` : ''}, cleared all stacks`)
       
       if (window.electronAPI?.speakSecurityWarning) {
         window.electronAPI.speakSecurityWarning(latestWarning.message)
