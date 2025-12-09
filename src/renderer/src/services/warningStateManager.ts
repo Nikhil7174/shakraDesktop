@@ -26,7 +26,7 @@ export class WarningStateManager {
   private lastWarningEndTime: Map<string, number> = new Map()
   
   // Debounce: Only end warning if condition is false for this duration
-  private readonly DEBOUNCE_DURATION = 500 // 500ms
+  private readonly DEBOUNCE_DURATION = 200 // 200ms
   // Minimum gap between warnings of the same type to prevent rapid flickering
   private readonly MIN_WARNING_GAP = 1000 // 1 second
 
@@ -49,19 +49,20 @@ export class WarningStateManager {
       const activeWarning = this.activeWarnings.get(type)
       if (activeWarning) {
         const prematureDuration = now - activeWarning.startTime
-        const threshold = this.thresholds[type] || 0
+        // const threshold = this.thresholds[type] || 0
         
         // If the previous warning didn't meet threshold, discard it silently
         // If it did meet threshold but we're restarting, it means detection flickered
-        // In either case, we should NOT store the previous warning
-        console.log(`[WarningStateManager] Discarding previous ${type} warning (duration=${prematureDuration}ms, threshold=${threshold}ms) due to restart`)
+        // In this case, we should KEEP the active warning to merge the events (debounce behavior)
+        console.log(`[WarningStateManager] Resuming ${type} warning (current duration=${prematureDuration}ms) - debounce merge`)
         
-        // Remove the active warning without storing it
-        this.activeWarnings.delete(type)
+        // Do NOT remove the active warning - let it continue accumulating duration
+        // this.activeWarnings.delete(type) 
       }
     }
 
     // Check if we should start a new warning (prevent rapid flickering)
+    // Only start if one isn't already active (or resumed above)
     if (!this.activeWarnings.has(type)) {
       const lastEndTime = this.lastWarningEndTime.get(type) || 0
       const timeSinceLastEnd = now - lastEndTime

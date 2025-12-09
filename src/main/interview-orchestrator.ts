@@ -377,10 +377,35 @@ export class InterviewOrchestrator extends EventEmitter {
     }
   }
 
+  private updateListeningState(state: InterviewState): void {
+    const shouldListen = 
+      state === InterviewState.WAITING_FOR_ANSWER ||
+      state === InterviewState.WAITING_FOR_APPROACH ||
+      state === InterviewState.INTRO || // Allow listening during intro for "ready"
+      state === InterviewState.HANDLING_THEORETICAL_HINT || // Allow listening for hint interaction
+      state === InterviewState.HANDLING_CLARIFICATION || // Allow listening for clarification interaction
+      state === InterviewState.MONITORING_CODE || // Allow listening during coding
+      state === InterviewState.CODING_PROBLEM ||
+      state === InterviewState.FOLLOW_UP
+
+    console.log(`🎤 [Main] Setting listening to ${shouldListen} for ${state} state`)
+    
+    if (shouldListen) {
+      // ensure mic is unpaused if we're supposed to be listening
+      // Force unpause to prevent stuck state from previous TTS interactions
+      this.setMicPaused(false, 'state-change-to-listening')
+      this.suppressAutoMicResume = false // Reset suppression state just in case
+    }
+    // NOTE: We do NOT stop STT listening here - STT should stay connected throughout
+    // the interview. We only manage mic pause state to control audio streaming.
+  }
+
   private setupStateMachineListeners(): void {
     // Re-emit state changes so main process can forward to renderer
     this.stateMachine.on('stateChanged', (payload: any) => {
       this.emit('stateChanged', payload)
+      // Automatically update listening state based on interview state
+      this.updateListeningState(payload.to)
     })
 
     this.stateMachine.on('introStarted', async () => {
@@ -2646,13 +2671,13 @@ export class InterviewOrchestrator extends EventEmitter {
       // Check if mic resume is already suppressed (for chained TTS calls)
       const wasSuppressed = this.suppressAutoMicResume
 
-      // For non-security speech, pause mic and use speech-batch suppression
-      if (!isSecurityWarning) {
-        this.suppressAutoMicResume = true
-        this.setMicPaused(true, 'speech-batch')
-        this.emit('speakingStarted')
-      } else {
-        console.log('🎯 [Security] speakWithPolicy for security warning - leaving mic unpaused')
+      // Pause mic for ALL speech (including security warnings) to prevent self-transcription
+      this.suppressAutoMicResume = true
+      this.setMicPaused(true, 'speech-batch')
+      this.emit('speakingStarted')
+
+      if (isSecurityWarning) {
+        console.log('🎯 [Security] speakWithPolicy for security warning - pausing mic to prevent self-transcription')
       }
 
       // Always send entire text as one TTS call to avoid delays between sentences
@@ -2673,16 +2698,14 @@ export class InterviewOrchestrator extends EventEmitter {
       const softStopped = this.softStopRequested
       const completed = !interrupted && !softStopped
 
-      // Only resume mic if this wasn't part of a chained sequence and this is not a security warning
-      if (!wasSuppressed && !isSecurityWarning) {
+      // Only resume mic if this wasn't part of a chained sequence
+      if (!wasSuppressed) {
         // Manually resume mic once at the end of batch (if not interrupted early)
         setTimeout(() => {
           this.setMicPaused(false, 'speech-batch')
           console.log('🎯 [Interview] Mic resumed (batch complete)')
         }, 100)
         this.suppressAutoMicResume = false
-      } else if (isSecurityWarning) {
-        console.log('🎯 [Security] Security warning TTS completed - mic was never paused by speakWithPolicy')
       } else {
         console.log('🎯 [Interview] Mic resume still suppressed (chained TTS)')
       }
@@ -3598,6 +3621,14 @@ export class InterviewOrchestrator extends EventEmitter {
         'isTtsSpeaking =', isTtsSpeaking,
         'sttListening =', this.stt?.isListening()
       )
+
+      // CRITICAL FIX: Respect micPaused flag
+      // If the mic is paused (e.g. during TTS), we MUST NOT stream audio to STT
+      // This prevents self-transcription of TTS output
+      if (this.micPaused) {
+        // console.log('🎤 [Main] Mic is paused, dropping audio chunk')
+        return
+      }
 
       // Optional suppression: only drop audio during active non-security TTS playback
       if (isTtsSpeaking && !isSecurityWarningSpeech) {

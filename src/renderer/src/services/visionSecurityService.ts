@@ -19,6 +19,7 @@ export class VisionSecurityService {
   private lastProcessTime = 0
   private readonly PROCESS_INTERVAL = 100 // Process every 100ms (10 FPS)
   private warningManager: WarningStateManager
+  private capturedScreenshot: string | null = null
 
   // Thresholds
   private readonly GAZE_AWAY_THRESHOLD = 3000 // 3 seconds
@@ -111,7 +112,9 @@ export class VisionSecurityService {
       const faceDetections = this.faceDetector?.detect(imageData)
       const faceLandmarks = this.faceLandmarker?.detect(imageData)
 
-      return this.analyzeResults(faceDetections, faceLandmarks)
+      const getScreenshot = () => canvas.toDataURL('image/jpeg', 0.5)
+
+      return this.analyzeResults(faceDetections, faceLandmarks, getScreenshot)
     } catch (error) {
       console.error('Error processing frame:', error)
       return null
@@ -120,7 +123,8 @@ export class VisionSecurityService {
 
   private analyzeResults(
     faceDetections: any,
-    faceLandmarks: any
+    faceLandmarks: any,
+    getScreenshot?: () => string
   ): VisionSecurityStatus {
     const now = Date.now()
 
@@ -134,6 +138,12 @@ export class VisionSecurityService {
     // Multiple faces warning management
     if (multipleFacesDetected) {
       this.warningManager.startWarning('multiple_faces')
+      
+      // Capture screenshot if not already captured
+      if (!this.capturedScreenshot && getScreenshot) {
+        this.capturedScreenshot = getScreenshot()
+        console.log('📸 [VisionSecurity] Captured screenshot for multiple faces detected')
+      }
     } else {
       this.warningManager.endWarning('multiple_faces')
     }
@@ -300,7 +310,18 @@ export class VisionSecurityService {
   }
 
   getWarningStats(): any {
-    return this.warningManager.getWarningStats()
+    const stats = this.warningManager.getWarningStats()
+    
+      // Attach screenshot to multiple_faces stats if available
+    if (this.capturedScreenshot) {
+      if (!stats['multiple_faces']) {
+         // Create placeholder if no completed events yet
+         stats['multiple_faces'] = { count: 0, totalDuration: 0, events: [] }
+      }
+      (stats['multiple_faces'] as any).screenshot = this.capturedScreenshot
+    }
+    
+    return stats
   }
 
   getActiveWarnings(): any {
@@ -327,6 +348,7 @@ export class VisionSecurityService {
     this.isInitialized = false
     this.blinkHistory = []
     this.warningManager.clear()
+    this.capturedScreenshot = null
   }
 }
 
