@@ -825,6 +825,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         return renderCodingWorkspace(true)
 
       case 'wrap_up':
+      case 'completed':
         return (
           <div className="loading-section">
             <div className="glassmorphic-card wrap-up-card">
@@ -834,7 +835,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
                 </div>
               </div>
               <h2 className="loading-title">Interview Complete</h2>
-              <p className="loading-subtitle">Thanks for the great conversation. We’ll review everything and update you shortly.</p>
+              <p className="loading-subtitle">Thanks for the great conversation. We'll review everything and update you shortly.</p>
             </div>
           </div>
         )

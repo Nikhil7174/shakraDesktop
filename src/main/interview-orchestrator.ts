@@ -3657,8 +3657,8 @@ export class InterviewOrchestrator extends EventEmitter {
     this.tts?.removeAllListeners()
     this.llm?.removeAllListeners()
     this.codeAnalysis?.removeAllListeners()
-    this.stateMachine.removeAllListeners()
-    this.removeAllListeners()
+    // this.stateMachine.removeAllListeners()
+    // this.removeAllListeners()
   }
 
   // Public methods for external control
