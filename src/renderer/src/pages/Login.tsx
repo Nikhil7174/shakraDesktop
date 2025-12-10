@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { Form, Input, Button, Card, Typography, Divider, App } from 'antd';
-import { UserOutlined, LockOutlined, LeftOutlined } from '@ant-design/icons';
+import { UserOutlined, LockOutlined } from '@ant-design/icons';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { colors, spacing } from '../styles';
 import { useAuth } from '../hooks/useAuth';
@@ -17,10 +17,6 @@ export const Login: React.FC = () => {
   // Get return to path from navigation state
   const returnTo = (location.state as any)?.returnTo;
 
-  const handleBack = () => {
-    // Always navigate to home page
-    navigate('/', { replace: true });
-  };
 
   // Redirect if already authenticated
   useEffect(() => {
@@ -70,11 +66,6 @@ export const Login: React.FC = () => {
           borderRadius: 16,
         }}
       >
-        <div style={{ marginBottom: spacing.md }}>
-          <Button type="text" onClick={handleBack} icon={<LeftOutlined />} style={{ padding: 0 }}>
-            Back
-          </Button>
-        </div>
         <div style={{ textAlign: 'center', marginBottom: spacing.xl }}>
           <Title level={2} style={{ color: colors.primary.main, marginBottom: spacing.sm }}>
             Welcome Back

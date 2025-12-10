@@ -14,11 +14,15 @@ export const Header: React.FC = () => {
   const { isAuthenticated, logout } = useAuth();
 
   const handleTitleClick = () => {
-    navigate('/');
+    if (isAuthenticated) {
+      navigate('/candidate/dashboard');
+    } else {
+      navigate('/');
+    }
   };
 
   const handleLoginClick = () => {
-    navigate('/login');
+    navigate('/');
   };
 
   const handleLogoutClick = async () => {

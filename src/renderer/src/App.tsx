@@ -9,7 +9,6 @@ import { theme } from './styles/theme';
 import { Layout } from './components/layout/Layout';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { AuthInitializer } from './components/AuthInitializer';
-import Home from './pages/Home';
 import InterviewChat from './pages/InterviewChat';
 import { PublicRoute } from './components/PublicRoute';
 import { Login } from './pages/Login';
@@ -28,17 +27,17 @@ const App: React.FC = () => {
             <Router>
               <SessionCleanup />
               <Routes>
-                {/* Public Routes */}
-                <Route path="/" element={<Layout />}>
-                  <Route index element={
-                    <PublicRoute>
-                      <Home />
-                    </PublicRoute>
-                  } />
-                </Route>
-
-                {/* Auth Routes */}
-                <Route path="/login" element={<Login />} />
+                {/* Home/Auth Routes - Login is now the home page */}
+                <Route path="/" element={
+                  <PublicRoute>
+                    <Login />
+                  </PublicRoute>
+                } />
+                <Route path="/login" element={
+                  <PublicRoute>
+                    <Login />
+                  </PublicRoute>
+                } />
                 <Route path="/register" element={<Register />} />
 
                 {/* Join Interview - Public but requires validation */}
