@@ -1,5 +1,4 @@
 import processList from 'node-processlist'
-import { WebSocketServer } from './websocket-server'
 import * as os from 'os'
 import { exec } from 'child_process'
 import { promisify } from 'util'
@@ -11,228 +10,226 @@ export class ProcessMonitor {
   private interval: NodeJS.Timeout | null = null
   private lastStableDetection: Array<{ name: string; pid: number; reason: string }> = []
   private lastProcessSnapshot: Set<string> = new Set() // Track unique process identifiers
-  private lastBroadcastedDetection: Array<{ name: string; pid: number; reason: string }> = []
-  private hasInitialBroadcast: boolean = false // Track if we've done the initial broadcast
   // private _killedProcesses: Set<string> = new Set() // Track killed processes to avoid duplicate kills
   
   // Blacklist of applications that should be blocked (comprehensive list of major user applications)
-  private readonly blockedApps = [
-    // Browsers (all major browsers)
-    'chrome', 'firefox', 'edge', 'opera', 'brave', 'safari', 'vivaldi', 'tor',
-    'chromium', 'msedge', 'iexplore', 'waterfox', 'pale moon',
+  // private readonly blockedApps = [
+  //   // Browsers (all major browsers)
+  //   'chrome', 'firefox', 'edge', 'opera', 'brave', 'safari', 'vivaldi', 'tor',
+  //   'chromium', 'msedge', 'iexplore', 'waterfox', 'pale moon',
     
-    // AI/Chat applications and assistants
-    'chatgpt', 'claude', 'copilot', 'gemini', 'bard', 'openai', 'anthropic',
-    'perplexity', 'poe', 'character.ai', 'cursor', 'github copilot',
-    'chatgpt desktop', 'claude desktop', 'chatgpt app', 'claude app',
-    'bing chat', 'microsoft copilot', 'copilot chat', 'chatgpt plus',
-    'you.com', 'phind', 'hugging chat', 'huggingface', 'replicate',
-    'together ai', 'cohere', 'ai21', 'jasper', 'copy.ai', 'writesonic',
-    'grammarly', 'grammarly desktop', 'quillbot', 'wordtune', 'rytr',
-    'julius ai', 'monkeylearn', 'textio', 'crystal', 'x.ai', 'grok',
+  //   // AI/Chat applications and assistants
+  //   'chatgpt', 'claude', 'copilot', 'gemini', 'bard', 'openai', 'anthropic',
+  //   'perplexity', 'poe', 'character.ai', 'cursor', 'github copilot',
+  //   'chatgpt desktop', 'claude desktop', 'chatgpt app', 'claude app',
+  //   'bing chat', 'microsoft copilot', 'copilot chat', 'chatgpt plus',
+  //   'you.com', 'phind', 'hugging chat', 'huggingface', 'replicate',
+  //   'together ai', 'cohere', 'ai21', 'jasper', 'copy.ai', 'writesonic',
+  //   'grammarly', 'grammarly desktop', 'quillbot', 'wordtune', 'rytr',
+  //   'julius ai', 'monkeylearn', 'textio', 'crystal', 'x.ai', 'grok',
     
-    // Interview cheating tools and AI assistants
-    'cluely', 'finalround', 'interviewbuddy', 'interviewbit', 'interviewcake',
-    'pramp', 'interviewing.io', 'gainlo', 'mockinterview', 'interviewing',
-    'leetcode', 'hackerrank', 'codewars', 'codeforces', 'topcoder',
-    'geeksforgeeks', 'interviewbit', 'interviewcake', 'algoexpert',
-    'structy', 'neetcode', 'blind 75', 'grind 75', 'tech interview handbook',
-    'system design primer', 'designgurus', 'excalidraw', 'draw.io',
-    'lucidchart', 'whimsical', 'miro', 'figma', 'sketch',
-    'interviewing.com', 'interviewing.io', 'interview kickstart', 'interview master',
-    'interview prep', 'interview practice', 'mock interview', 'interview simulator',
-    'interview genie', 'interview ace', 'interview success', 'big interview',
-    'interview masterclass', 'interview prep pro', 'interview coach',
-    'interview mentor', 'interview guru', 'interview pro', 'interview expert',
-    'glassdoor interview', 'indeed interview', 'linkedin interview',
-    'interview questions', 'interview answers', 'interview solutions',
-    'coding interview', 'tech interview', 'software interview', 'faang interview',
-    'system design interview', 'behavioral interview', 'interview prep app',
+  //   // Interview cheating tools and AI assistants
+  //   'cluely', 'finalround', 'interviewbuddy', 'interviewbit', 'interviewcake',
+  //   'pramp', 'interviewing.io', 'gainlo', 'mockinterview', 'interviewing',
+  //   'leetcode', 'hackerrank', 'codewars', 'codeforces', 'topcoder',
+  //   'geeksforgeeks', 'interviewbit', 'interviewcake', 'algoexpert',
+  //   'structy', 'neetcode', 'blind 75', 'grind 75', 'tech interview handbook',
+  //   'system design primer', 'designgurus', 'excalidraw', 'draw.io',
+  //   'lucidchart', 'whimsical', 'miro', 'figma', 'sketch',
+  //   'interviewing.com', 'interviewing.io', 'interview kickstart', 'interview master',
+  //   'interview prep', 'interview practice', 'mock interview', 'interview simulator',
+  //   'interview genie', 'interview ace', 'interview success', 'big interview',
+  //   'interview masterclass', 'interview prep pro', 'interview coach',
+  //   'interview mentor', 'interview guru', 'interview pro', 'interview expert',
+  //   'glassdoor interview', 'indeed interview', 'linkedin interview',
+  //   'interview questions', 'interview answers', 'interview solutions',
+  //   'coding interview', 'tech interview', 'software interview', 'faang interview',
+  //   'system design interview', 'behavioral interview', 'interview prep app',
     
-    // AI coding assistants and tools
-    'tabnine', 'kite', 'codota', 'intellicode', 'github copilot',
-    'amazon codeguru', 'deepcode', 'sourcery', 'codeium', 'aider',
-    'continue', 'cody', 'codeium chat', 'code whisperer', 'codex',
-    'replit ghostwriter', 'codeium', 'blackbox', 'ai code', 'ai assistant',
-    'github copilot chat', 'copilot x', 'copilot labs', 'copilot for business',
-    'amazon codewhisperer', 'aws codewhisperer', 'code whisperer',
-    'sourcegraph cody', 'cody ai', 'cody by sourcegraph', 'cody assistant',
-    'codeium ai', 'codeium chat', 'codeium autocomplete', 'codeium ide',
-    'tabnine ai', 'tabnine chat', 'tabnine pro', 'tabnine enterprise',
-    'kite ai', 'kite copilot', 'kite autocomplete', 'kite pro',
-    'aider ai', 'aider coding', 'aider chat', 'aider assistant',
-    'continue ai', 'continue.dev', 'continue extension', 'continue chat',
-    'blackbox ai', 'blackbox code', 'blackbox chat', 'blackbox assistant',
-    'replit ghostwriter', 'replit ai', 'replit copilot', 'replit chat',
-    'cursor ai', 'cursor chat', 'cursor copilot', 'cursor assistant',
-    'ai pair programming', 'ai code completion', 'ai code review',
-    'ai code generator', 'ai code assistant', 'ai programming',
-    'ai coding', 'ai developer', 'ai dev tools', 'ai code tools',
+  //   // AI coding assistants and tools
+  //   'tabnine', 'kite', 'codota', 'intellicode', 'github copilot',
+  //   'amazon codeguru', 'deepcode', 'sourcery', 'codeium', 'aider',
+  //   'continue', 'cody', 'codeium chat', 'code whisperer', 'codex',
+  //   'replit ghostwriter', 'codeium', 'blackbox', 'ai code', 'ai assistant',
+  //   'github copilot chat', 'copilot x', 'copilot labs', 'copilot for business',
+  //   'amazon codewhisperer', 'aws codewhisperer', 'code whisperer',
+  //   'sourcegraph cody', 'cody ai', 'cody by sourcegraph', 'cody assistant',
+  //   'codeium ai', 'codeium chat', 'codeium autocomplete', 'codeium ide',
+  //   'tabnine ai', 'tabnine chat', 'tabnine pro', 'tabnine enterprise',
+  //   'kite ai', 'kite copilot', 'kite autocomplete', 'kite pro',
+  //   'aider ai', 'aider coding', 'aider chat', 'aider assistant',
+  //   'continue ai', 'continue.dev', 'continue extension', 'continue chat',
+  //   'blackbox ai', 'blackbox code', 'blackbox chat', 'blackbox assistant',
+  //   'replit ghostwriter', 'replit ai', 'replit copilot', 'replit chat',
+  //   'cursor ai', 'cursor chat', 'cursor copilot', 'cursor assistant',
+  //   'ai pair programming', 'ai code completion', 'ai code review',
+  //   'ai code generator', 'ai code assistant', 'ai programming',
+  //   'ai coding', 'ai developer', 'ai dev tools', 'ai code tools',
     
-    // AI search and research tools
-    'you.com', 'phind', 'andisearch', 'komo', 'brave search',
-    'ecosia', 'duckduckgo', 'startpage', 'searx', 'metager',
+  //   // AI search and research tools
+  //   'you.com', 'phind', 'andisearch', 'komo', 'brave search',
+  //   'ecosia', 'duckduckgo', 'startpage', 'searx', 'metager',
     
-    // AI writing and content tools
-    'jasper', 'copy.ai', 'writesonic', 'rytr', 'contentbot', 'copy.ai',
-    'frase', 'surfer seo', 'marketmuse', 'clearscope', 'outranking',
-    'inkforall', 'neuraltext', 'growthbar', 'wordai', 'article forge',
+  //   // AI writing and content tools
+  //   'jasper', 'copy.ai', 'writesonic', 'rytr', 'contentbot', 'copy.ai',
+  //   'frase', 'surfer seo', 'marketmuse', 'clearscope', 'outranking',
+  //   'inkforall', 'neuraltext', 'growthbar', 'wordai', 'article forge',
     
-    // AI voice assistants
-    'alexa', 'google assistant', 'siri', 'cortana', 'bixby',
-    'alexa app', 'google home', 'homepod', 'echo', 'google nest',
+  //   // AI voice assistants
+  //   'alexa', 'google assistant', 'siri', 'cortana', 'bixby',
+  //   'alexa app', 'google home', 'homepod', 'echo', 'google nest',
     
-    // AI image and video tools
-    'midjourney', 'dall-e', 'stable diffusion', 'runway', 'synthesia',
-    'descript', 'murf', 'elevenlabs', 'play.ht', 'wellsaid', 'lovo',
-    'pictory', 'invideo', 'synthesys', 'deepfake', 'face swap',
+  //   // AI image and video tools
+  //   'midjourney', 'dall-e', 'stable diffusion', 'runway', 'synthesia',
+  //   'descript', 'murf', 'elevenlabs', 'play.ht', 'wellsaid', 'lovo',
+  //   'pictory', 'invideo', 'synthesys', 'deepfake', 'face swap',
     
-    // Remote access tools
-    'anydesk', 'teamviewer', 'chrome remote', 'vnc', 'rdp', 'remote desktop',
-    'logmein', 'gotomypc', 'splashtop', 'ultraviewer', 'ammyy', 'supremo',
-    'rustdesk', 'getscreen', 'parsec', 'moonlight',
+  //   // Remote access tools
+  //   'anydesk', 'teamviewer', 'chrome remote', 'vnc', 'rdp', 'remote desktop',
+  //   'logmein', 'gotomypc', 'splashtop', 'ultraviewer', 'ammyy', 'supremo',
+  //   'rustdesk', 'getscreen', 'parsec', 'moonlight',
     
-    // Communication apps
-    'telegram', 'whatsapp', 'discord', 'slack', 'skype', 'zoom', 'teams',
-    'hangouts', 'messenger', 'signal', 'wechat', 'viber', 'line',
-    'microsoft teams', 'webex', 'gotomeeting', 'bluejeans',
+  //   // Communication apps
+  //   'telegram', 'whatsapp', 'discord', 'slack', 'skype', 'zoom', 'teams',
+  //   'hangouts', 'messenger', 'signal', 'wechat', 'viber', 'line',
+  //   'microsoft teams', 'webex', 'gotomeeting', 'bluejeans',
     
-    // Office and productivity suites
-    'word', 'excel', 'powerpoint', 'outlook', 'onenote', 'access', 'publisher',
-    'libreoffice', 'openoffice', 'wps', 'pages', 'numbers', 'keynote',
-    'notion', 'evernote', 'onenote',
+  //   // Office and productivity suites
+  //   'word', 'excel', 'powerpoint', 'outlook', 'onenote', 'access', 'publisher',
+  //   'libreoffice', 'openoffice', 'wps', 'pages', 'numbers', 'keynote',
+  //   'notion', 'evernote', 'onenote',
     
-    // Code editors and IDEs
-    'code', 'vscode', 'visual studio', 'intellij', 'pycharm', 'webstorm',
-    'android studio', 'xcode', 'sublime', 'atom', 'brackets', 'vim', 'emacs',
-    'notepad++', 'notepad', 'gedit', 'kate',
+  //   // Code editors and IDEs
+  //   'code', 'vscode', 'visual studio', 'intellij', 'pycharm', 'webstorm',
+  //   'android studio', 'xcode', 'sublime', 'atom', 'brackets', 'vim', 'emacs',
+  //   'notepad++', 'notepad', 'gedit', 'kate',
     
-    // Media players
-    'vlc', 'media player', 'quicktime', 'itunes', 'spotify', 'winamp',
-    'foobar', 'mpc', 'potplayer', 'kmplayer',
+  //   // Media players
+  //   'vlc', 'media player', 'quicktime', 'itunes', 'spotify', 'winamp',
+  //   'foobar', 'mpc', 'potplayer', 'kmplayer',
     
-    // Image and video editing
-    'photoshop', 'illustrator', 'premiere', 'after effects', 'lightroom',
-    'gimp', 'inkscape', 'blender', 'maya', '3ds max', 'cinema 4d',
-    'davinci resolve', 'final cut', 'imovie',
+  //   // Image and video editing
+  //   'photoshop', 'illustrator', 'premiere', 'after effects', 'lightroom',
+  //   'gimp', 'inkscape', 'blender', 'maya', '3ds max', 'cinema 4d',
+  //   'davinci resolve', 'final cut', 'imovie',
     
-    // Screen sharing/recording tools
-    'obs', 'streamlabs', 'xsplit', 'bandicam', 'fraps', 'camtasia',
-    'screencast', 'screen recorder', 'sharex', 'greenshot',
+  //   // Screen sharing/recording tools
+  //   'obs', 'streamlabs', 'xsplit', 'bandicam', 'fraps', 'camtasia',
+  //   'screencast', 'screen recorder', 'sharex', 'greenshot',
     
-    // Virtual machines and containers
-    'virtualbox', 'vmware', 'qemu', 'hyper-v', 'parallels', 'virtual machine',
-    'docker', 'podman', 'kubernetes', 'kubectl',
+  //   // Virtual machines and containers
+  //   'virtualbox', 'vmware', 'qemu', 'hyper-v', 'parallels', 'virtual machine',
+  //   'docker', 'podman', 'kubernetes', 'kubectl',
     
-    // Browser automation and testing
-    'selenium', 'puppeteer', 'playwright', 'cypress', 'automation', 'bot',
-    'scraper', 'webdriver', 'nightwatch',
+  //   // Browser automation and testing
+  //   'selenium', 'puppeteer', 'playwright', 'cypress', 'automation', 'bot',
+  //   'scraper', 'webdriver', 'nightwatch',
     
-    // File sharing and cloud storage
-    'dropbox', 'google drive', 'onedrive', 'icloud', 'mega', 'box', 'sync',
-    'sharefile', 'nextcloud', 'owncloud',
+  //   // File sharing and cloud storage
+  //   'dropbox', 'google drive', 'onedrive', 'icloud', 'mega', 'box', 'sync',
+  //   'sharefile', 'nextcloud', 'owncloud',
     
-    // Gaming platforms
-    'steam', 'epic games', 'origin', 'uplay', 'battle.net', 'gog',
-    'xbox', 'playstation', 'nvidia', 'amd',
+  //   // Gaming platforms
+  //   'steam', 'epic games', 'origin', 'uplay', 'battle.net', 'gog',
+  //   'xbox', 'playstation', 'nvidia', 'amd',
     
-    // Social media and messaging
-    'facebook', 'twitter', 'instagram', 'linkedin', 'reddit', 'tiktok',
-    'snapchat', 'pinterest', 'tumblr',
+  //   // Social media and messaging
+  //   'facebook', 'twitter', 'instagram', 'linkedin', 'reddit', 'tiktok',
+  //   'snapchat', 'pinterest', 'tumblr',
     
-    // Development tools
-    'git', 'github desktop', 'gitkraken', 'sourcetree', 'tortoisegit',
-    'postman', 'insomnia', 'fiddler', 'wireshark', 'burp',
+  //   // Development tools
+  //   'git', 'github desktop', 'gitkraken', 'sourcetree', 'tortoisegit',
+  //   'postman', 'insomnia', 'fiddler', 'wireshark', 'burp',
     
-    // System utilities that could be misused
-    'taskmgr', 'process explorer', 'process hacker', 'hijackthis',
-    'regedit', 'gpedit', 'cmd', 'powershell', 'terminal',
+  //   // System utilities that could be misused
+  //   'taskmgr', 'process explorer', 'process hacker', 'hijackthis',
+  //   'regedit', 'gpedit', 'cmd', 'powershell', 'terminal',
     
-    // Cheating tools, memory editors, and trainers
-    'cheat engine', 'artmoney', 'game guardian', 'lucky patcher',
-    'game killer', 'game hacker', 'memory editor', 'cheat',
-    'process hacker', 'process explorer', 'hijackthis', 'ollydbg',
-    'x64dbg', 'x32dbg', 'ida pro', 'ghidra', 'radare2', 'gdb',
-    'windbg', 'immunity debugger', 'wireshark', 'fiddler', 'burp suite',
-    'charles proxy', 'mitmproxy', 'proxyman', 'http toolkit',
-    'memory scanner', 'hex editor', 'hxd', '010 editor', 'hexplorer',
-    'cheat tool', 'trainer', 'game trainer', 'memory hack', 'process inject',
-    'dll inject', 'code inject', 'hook', 'api hook', 'detour', 'patch',
+  //   // Cheating tools, memory editors, and trainers
+  //   'cheat engine', 'artmoney', 'game guardian', 'lucky patcher',
+  //   'game killer', 'game hacker', 'memory editor', 'cheat',
+  //   'process hacker', 'process explorer', 'hijackthis', 'ollydbg',
+  //   'x64dbg', 'x32dbg', 'ida pro', 'ghidra', 'radare2', 'gdb',
+  //   'windbg', 'immunity debugger', 'wireshark', 'fiddler', 'burp suite',
+  //   'charles proxy', 'mitmproxy', 'proxyman', 'http toolkit',
+  //   'memory scanner', 'hex editor', 'hxd', '010 editor', 'hexplorer',
+  //   'cheat tool', 'trainer', 'game trainer', 'memory hack', 'process inject',
+  //   'dll inject', 'code inject', 'hook', 'api hook', 'detour', 'patch',
     
-    // Screen sharing and remote assistance (potential cheating)
-    'screen share', 'screen sharing', 'remote assistance', 'quick assist',
-    'windows quick assist', 'remote help', 'assist', 'support',
+  //   // Screen sharing and remote assistance (potential cheating)
+  //   'screen share', 'screen sharing', 'remote assistance', 'quick assist',
+  //   'windows quick assist', 'remote help', 'assist', 'support',
     
-    // Browser extensions that could be used for cheating (if running as separate processes)
-    'browser extension', 'chrome extension', 'firefox extension', 'edge extension',
+  //   // Browser extensions that could be used for cheating (if running as separate processes)
+  //   'browser extension', 'chrome extension', 'firefox extension', 'edge extension',
     
-    // Virtual audio/video devices (could be used to hide real audio/video)
-    'virtual audio', 'vb audio', 'voicemeeter', 'virtual cable', 'obs virtual',
-    'manycam', 'snap camera', 'xsplit vcam', 'nvidia broadcast', 'rtx voice',
+  //   // Virtual audio/video devices (could be used to hide real audio/video)
+  //   'virtual audio', 'vb audio', 'voicemeeter', 'virtual cable', 'obs virtual',
+  //   'manycam', 'snap camera', 'xsplit vcam', 'nvidia broadcast', 'rtx voice',
     
-    // Screen mirroring and casting tools
-    'airplay', 'miracast', 'chromecast', 'screen mirror', 'screen cast',
-    'scrcpy', 'vysor', 'airdroid', 'mobizen', 'apowermirror',
+  //   // Screen mirroring and casting tools
+  //   'airplay', 'miracast', 'chromecast', 'screen mirror', 'screen cast',
+  //   'scrcpy', 'vysor', 'airdroid', 'mobizen', 'apowermirror',
     
-    // Keyloggers and monitoring tools (obvious cheating tools)
-    'keylogger', 'keystroke', 'key capture', 'key monitor', 'key spy',
-    'activity monitor', 'employee monitor', 'spy software', 'monitoring',
-    'screen capture', 'screen spy', 'screen monitor', 'activity tracker',
+  //   // Keyloggers and monitoring tools (obvious cheating tools)
+  //   'keylogger', 'keystroke', 'key capture', 'key monitor', 'key spy',
+  //   'activity monitor', 'employee monitor', 'spy software', 'monitoring',
+  //   'screen capture', 'screen spy', 'screen monitor', 'activity tracker',
     
-    // AI-powered interview preparation and practice tools
-    'interviewing.io', 'pramp', 'interviewbuddy', 'interviewbit', 'interviewcake',
-    'gainlo', 'mockinterview', 'interview prep', 'interview practice',
-    'big interview', 'interview masterclass', 'interview success', 'interview ace',
+  //   // AI-powered interview preparation and practice tools
+  //   'interviewing.io', 'pramp', 'interviewbuddy', 'interviewbit', 'interviewcake',
+  //   'gainlo', 'mockinterview', 'interview prep', 'interview practice',
+  //   'big interview', 'interview masterclass', 'interview success', 'interview ace',
     
-    // Code sharing and collaboration during interviews
-    'codeshare', 'code together', 'tmate', 'teletype', 'live share',
-    'code with me', 'pair programming', 'screenhero', 'tuple', 'use together',
+  //   // Code sharing and collaboration during interviews
+  //   'codeshare', 'code together', 'tmate', 'teletype', 'live share',
+  //   'code with me', 'pair programming', 'screenhero', 'tuple', 'use together',
     
-    // Note-taking and documentation tools that could store answers
-    'onenote', 'evernote', 'notion', 'obsidian', 'roam research', 'logseq',
-    'remnote', 'mem', 'reflect', 'craft', 'bear', 'ulysses', 'scrivener',
+  //   // Note-taking and documentation tools that could store answers
+  //   'onenote', 'evernote', 'notion', 'obsidian', 'roam research', 'logseq',
+  //   'remnote', 'mem', 'reflect', 'craft', 'bear', 'ulysses', 'scrivener',
     
-    // Translation and language tools
-    'google translate', 'deepl', 'microsoft translator', 'translate',
-    'lingvanex', 'reverso', 'promt', 'systran', 'babylon',
-    'google translate app', 'deepl app', 'microsoft translator app',
-    'translate app', 'translation', 'translator', 'language translator',
+  //   // Translation and language tools
+  //   'google translate', 'deepl', 'microsoft translator', 'translate',
+  //   'lingvanex', 'reverso', 'promt', 'systran', 'babylon',
+  //   'google translate app', 'deepl app', 'microsoft translator app',
+  //   'translate app', 'translation', 'translator', 'language translator',
     
-    // Text-to-speech and speech-to-text (could be used for communication)
-    'text to speech', 'speech to text', 'voice typing', 'dictation',
-    'dragon', 'nuance', 'windows speech recognition', 'speech recognition',
-    'natural reader', 'read aloud', 'voice dream', 'balabolka', 'textaloud',
-    'nvda', 'jaws', 'window eyes', 'system access', 'zoomtext',
-    'screen reader', 'voice over', 'talkback', 'orca', 'orca screen reader',
+  //   // Text-to-speech and speech-to-text (could be used for communication)
+  //   'text to speech', 'speech to text', 'voice typing', 'dictation',
+  //   'dragon', 'nuance', 'windows speech recognition', 'speech recognition',
+  //   'natural reader', 'read aloud', 'voice dream', 'balabolka', 'textaloud',
+  //   'nvda', 'jaws', 'window eyes', 'system access', 'zoomtext',
+  //   'screen reader', 'voice over', 'talkback', 'orca', 'orca screen reader',
     
-    // Accessibility tools that could be misused
-    'magnifier', 'screen magnifier', 'zoom', 'magnify', 'bigger text',
-    'high contrast', 'color contrast', 'accessibility', 'ease of access',
+  //   // Accessibility tools that could be misused
+  //   'magnifier', 'screen magnifier', 'zoom', 'magnify', 'bigger text',
+  //   'high contrast', 'color contrast', 'accessibility', 'ease of access',
     
-    // Clipboard managers (could store answers)
-    'clipboard', 'clipboard manager', 'clipboard history', 'clipboard plus',
-    'ditto', 'clipx', 'clipboard fusion', '1clipboard', 'clipboard master',
+  //   // Clipboard managers (could store answers)
+  //   'clipboard', 'clipboard manager', 'clipboard history', 'clipboard plus',
+  //   'ditto', 'clipx', 'clipboard fusion', '1clipboard', 'clipboard master',
     
-    // Search engines and research tools
-    'google', 'bing', 'yahoo', 'duckduckgo', 'brave search', 'ecosia',
-    'startpage', 'searx', 'metager', 'qwant', 'swisscows', 'mojeek',
+  //   // Search engines and research tools
+  //   'google', 'bing', 'yahoo', 'duckduckgo', 'brave search', 'ecosia',
+  //   'startpage', 'searx', 'metager', 'qwant', 'swisscows', 'mojeek',
     
-    // Knowledge bases and wikis
-    'wikipedia', 'wikimedia', 'wiki', 'stack overflow', 'stackexchange',
-    'reddit', 'quora', 'medium', 'dev.to', 'hashnode', 'freecodecamp',
-    'w3schools', 'mdn', 'developer.mozilla', 'docs.microsoft', 'docs.google',
+  //   // Knowledge bases and wikis
+  //   'wikipedia', 'wikimedia', 'wiki', 'stack overflow', 'stackexchange',
+  //   'reddit', 'quora', 'medium', 'dev.to', 'hashnode', 'freecodecamp',
+  //   'w3schools', 'mdn', 'developer.mozilla', 'docs.microsoft', 'docs.google',
     
-    // Documentation and reference sites (if running as apps)
-    'documentation', 'api docs', 'reference', 'manual', 'guide', 'tutorial',
+  //   // Documentation and reference sites (if running as apps)
+  //   'documentation', 'api docs', 'reference', 'manual', 'guide', 'tutorial',
     
-    // Other productivity tools
-    'adobe', 'autocad', 'solidworks', 'matlab', 'mathematica',
-    'tableau', 'power bi', 'qlik',
+  //   // Other productivity tools
+  //   'adobe', 'autocad', 'solidworks', 'matlab', 'mathematica',
+  //   'tableau', 'power bi', 'qlik',
     
-    // Note: System processes like winlogon, csrss, svchost, explorer, etc. are NOT in this list
-    // so they will NOT be blocked, keeping the system functional
-  ]
-  
+  //   // Note: System processes like winlogon, csrss, svchost, explorer, etc. are NOT in this list
+  //   // so they will NOT be blocked, keeping the system functional
+  // ]
+  private readonly blockedApps = []
   // System processes that should NEVER be blocked (safety check)
   private readonly systemProcesses = [
     'winlogon', 'csrss', 'smss', 'lsass', 'services', 'svchost', 'dwm',
@@ -243,7 +240,20 @@ export class ProcessMonitor {
     'dllhost', 'kernel', 'init', 'systemd'
   ]
 
-  constructor(private wsServer: WebSocketServer) {}
+  // Whitelist: Shakra app processes that should NEVER be blocked
+  private readonly whitelistedApps = [
+    // Main executable names
+    'shakra-ai-interview', 'shakra', 'shakra-interview-app',
+    'crisp-interview-app', 'crisp-interview',
+    // Electron processes (part of the app)
+    'electron', 'electron.exe',
+    // Process name variations
+    'shakra-ai-interview.exe', 'shakra.exe',
+    // Package name
+    'com.shakra.interview'
+  ]
+
+  constructor() {}
 
   // Cross-platform process killing method
   private async _killProcess(pid: number, processName: string): Promise<{ success: boolean; error?: string }> {
@@ -368,6 +378,30 @@ export class ProcessMonitor {
     })
   }
 
+  // Check if process is whitelisted (Shakra app itself)
+  private isWhitelisted(processName: string, processPath: string): boolean {
+    const processNameLower = processName.toLowerCase()
+    const processPathLower = (processPath || '').toLowerCase()
+    
+    // Check if process name matches whitelist
+    const nameMatches = this.whitelistedApps.some(whitelisted => {
+      const whitelistedLower = whitelisted.toLowerCase()
+      return processNameLower === whitelistedLower ||
+             processNameLower.includes(whitelistedLower) ||
+             processNameLower.startsWith(whitelistedLower + '.') ||
+             processNameLower.startsWith(whitelistedLower + ' ') ||
+             processNameLower.startsWith(whitelistedLower + '-')
+    })
+    
+    // Check if process path contains whitelisted app names
+    const pathMatches = processPathLower ? this.whitelistedApps.some(whitelisted => {
+      const whitelistedLower = whitelisted.toLowerCase()
+      return processPathLower.includes(whitelistedLower)
+    }) : false
+    
+    return nameMatches || pathMatches
+  }
+
   // Detection method: Block all user applications (Windows: .exe in user directories, or in blacklist)
   private detectBlockedProcesses(processes: any[]): Array<{ name: string; pid: number; reason: string }> {
     const detected: Array<{ name: string; pid: number; reason: string }> = []
@@ -380,9 +414,14 @@ export class ProcessMonitor {
       const processPath = proc.path || proc.exe || '' // Try different path properties
       const pid = proc.pid || 0
 
-      // Skip current process (Shakra itself)
+      // Skip current process (Shakra itself) - primary safeguard
       if (pid === currentPid) {
         return
+      }
+
+      // Safety check: NEVER block whitelisted apps (Shakra app itself) - additional safeguard
+      if (this.isWhitelisted(processName, processPath)) {
+        return // Skip whitelisted apps - never block them
       }
 
       // Safety check: NEVER block system processes by name
@@ -746,51 +785,9 @@ export class ProcessMonitor {
       try {
         const status = await this.checkProcesses()
         
-        // Always broadcast if this is the first time or if the count is different
-        const currentCount = status.blockedAppsDetected.length
-        const lastCount = this.lastBroadcastedDetection.length
-        const shouldBroadcast = !this.hasInitialBroadcast || currentCount !== lastCount
-        
-        // console.log(`Debug - hasInitialBroadcast: ${this.hasInitialBroadcast}, current: ${currentCount}, last: ${lastCount}, shouldBroadcast: ${shouldBroadcast}`)
-        
-        if (shouldBroadcast) {
-          this.lastBroadcastedDetection = status.blockedAppsDetected.map(app => ({
-            name: app.name,
-            pid: app.pid,
-            reason: app.reason || 'Unknown'
-          }))
-          
-          // Enhanced status with blocking information
-          const enhancedStatus = {
-            ...status,
-            blockedAndKilled: status.blockedAppsDetected.length > 0,
-            message: status.blockedAppsDetected.length > 0 
-              ? `${status.blockedAppsDetected.length} blocked application(s) detected and terminated`
-              : 'No blocked applications detected'
-          }
-          
-          this.wsServer.broadcast({
-            type: 'status',
-            data: enhancedStatus
-          })
-          
-          this.hasInitialBroadcast = true
-          // console.log(`Broadcasting status update: ${status.blockedAppsDetected.length} blocked applications detected and terminated`)
-        } else {
-          // console.log(`No broadcast needed: ${status.blockedAppsDetected.length} blocked applications (unchanged)`)
-        }
+        // Process monitoring completed (no UI updates needed)
       } catch (error) {
         // console.error('Error in process monitoring interval:', error)
-        // Send error status
-        this.wsServer.broadcast({
-          type: 'status',
-          data: {
-            totalProcesses: 0,
-            blockedAppsDetected: [],
-            timestamp: Date.now(),
-            error: 'Process monitoring error'
-          }
-        })
       }
     }, 3000) // Increased from 2000ms to 3000ms
 
@@ -801,7 +798,6 @@ export class ProcessMonitor {
     if (this.interval) {
       clearInterval(this.interval)
       this.interval = null
-      this.hasInitialBroadcast = false // Reset for next start
       console.log('✗ Process monitoring stopped')
     }
   }

@@ -3,11 +3,9 @@ import * as dotenv from 'dotenv'
 import { join, resolve } from 'path'
 import { existsSync, writeFileSync, mkdirSync } from 'fs'
 import { homedir } from 'os'
-import { WebSocketServer } from './websocket-server'
 import { ProcessMonitor } from './process-monitor'
 import { InterviewOrchestrator } from './interview-orchestrator'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import { ProcessStatsData } from '../shared/types'
 
 // Load environment variables from .env at project root (dev and prod)
 dotenv.config()
@@ -17,7 +15,6 @@ console.log('🔧 [Main] OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? `${proce
 
 let tray: Tray | null = null
 let mainWindow: BrowserWindow | null = null
-let wsServer: WebSocketServer | null = null
 let monitor: ProcessMonitor | null = null
 let interviewOrchestrator: InterviewOrchestrator | null = null
 
@@ -89,8 +86,8 @@ function createWindow(): void {
     fullscreen: false, // Allow fullscreen toggle
     maximizable: true,
     resizable: true,
-    frame: false, // Hide title bar (workaround for Wayland icon issue)
-    autoHideMenuBar: true, // Hide menu bar
+    // frame: false, // Hide title bar (workaround for Wayland icon issue)
+    // autoHideMenuBar: true, // Hide menu bar
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       // SECURITY BEST PRACTICES:
@@ -246,7 +243,6 @@ function createTray(): void {
     { 
       label: 'Quit', 
       click: () => {
-        wsServer?.stop()
         monitor?.stop()
         app.quit()
       }
@@ -341,7 +337,7 @@ app.whenReady().then(async () => {
         ...details.responseHeaders,
         'Content-Security-Policy': [
           "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; " +
-          "connect-src 'self' https://crisp-server-n0r1.onrender.com https://localhost:3001 http://localhost:3001 ws://localhost:8765 https://cdn.jsdelivr.net https://storage.googleapis.com; " +
+          "connect-src 'self' https://crisp-server-n0r1.onrender.com https://localhost:3001 http://localhost:3001 https://cdn.jsdelivr.net https://storage.googleapis.com; " +
           "img-src 'self' data: https:; " +
           "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com; " +
           "script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com; " +
@@ -375,35 +371,8 @@ app.whenReady().then(async () => {
   createTray()
 
   // Start security services
-  wsServer = new WebSocketServer(8765)
-  wsServer.start()
-
-  monitor = new ProcessMonitor(wsServer)
+  monitor = new ProcessMonitor()
   monitor.start()
-
-  // Set up IPC handlers for process stats
-  ipcMain.handle('get-process-stats', async (): Promise<ProcessStatsData> => {
-    if (monitor) {
-      return await monitor.getDetailedProcessStats()
-    }
-    throw new Error('Process monitor not available')
-  })
-
-  // Set up IPC handler for status
-  ipcMain.handle('get-status', async () => {
-    if (monitor) {
-      const status = await monitor.checkProcesses()
-      return {
-        connected: true,
-        blockedApps: status.blockedAppsDetected.map(app => app.name),
-        timestamp: status.timestamp,
-        error: status.error,
-        blockedAndKilled: status.blockedAndKilled,
-        message: status.message
-      }
-    }
-    throw new Error('Process monitor not available')
-  })
 
   // Initialize interview orchestrator
   try {
@@ -897,31 +866,9 @@ app.whenReady().then(async () => {
   })
 
 
-  // Send process stats updates to renderer (reduced frequency to prevent crashes)
-  setInterval(async () => {
-    if (monitor && mainWindow && !mainWindow.isDestroyed()) {
-      try {
-        const stats = await monitor.getDetailedProcessStats()
-        mainWindow.webContents.send('process-stats-update', stats)
-      } catch (error) {
-        console.error('Error sending process stats update:', error)
-        // Only send error if window is still valid
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('process-stats-update', {
-            totalProcesses: 0,
-            blockedAppsDetected: [],
-            systemInfo: { cpuUsage: 0, memoryUsage: 0, uptime: 0 },
-            recentProcesses: [],
-            timestamp: Date.now(),
-            error: 'Failed to get process stats'
-          })
-        }
-      }
-    }
-  }, 5000) // Update every 5 seconds (reduced from 3 seconds)
 
 
-  console.log('✓ Security Agent started on port 8765')
+  console.log('✓ Security Agent started')
 })
 
 // macOS - keep app running
@@ -942,7 +889,6 @@ app.on('activate', () => {
 app.on('before-quit', () => {
   console.log('Cleaning up resources...')
   globalShortcut.unregisterAll()
-  wsServer?.stop()
   monitor?.stop()
   interviewOrchestrator?.destroy()
 })
@@ -950,7 +896,6 @@ app.on('before-quit', () => {
 // Handle app termination
 process.on('SIGINT', () => {
   console.log('Received SIGINT, cleaning up...')
-  wsServer?.stop()
   monitor?.stop()
   interviewOrchestrator?.destroy()
   process.exit(0)
@@ -958,7 +903,6 @@ process.on('SIGINT', () => {
 
 process.on('SIGTERM', () => {
   console.log('Received SIGTERM, cleaning up...')
-  wsServer?.stop()
   monitor?.stop()
   interviewOrchestrator?.destroy()
   process.exit(0)

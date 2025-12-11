@@ -14,9 +14,7 @@ import { useResumeUpload } from '../hooks/api/useResumeUpload';
 import { useInterview } from '../hooks/api/useInterview';
 import { useResumeData } from '../hooks/useResumeData';
 import { useSession } from '../hooks/useSession';
-import { useWebSocket } from '../hooks/useWebSocket';
 import { resetInterview, setResumeData, setDetailedResumeData, setError } from '../store/slices/interviewSlice';
-import { SecurityWarning } from '../components/security/SecurityWarning';
 // SESSION_CONFIG removed - using Redux-only session management
 
 type Step = 'upload' | 'info' | 'interview';
@@ -100,11 +98,6 @@ export const InterviewChat: React.FC = () => {
     clearAllSessions,
     resetPageVisibilityTracking
   } = useSession();
-
-  // WebSocket connection for security monitoring (only connect during interview)
-  useWebSocket(
-    (currentStep === 'interview') ? currentSession?.sessionId : undefined
-  );
 
   // Effect 1: Handle welcome back modal display
   useEffect(() => {
@@ -540,8 +533,6 @@ export const InterviewChat: React.FC = () => {
         </div>
       </div>
       <Space direction="vertical" size="large" style={{ width: '100%' }}>
-        {/* Security Warning */}
-        <SecurityWarning />
 
         {/* Main Content */}
         {renderCurrentStep()}
