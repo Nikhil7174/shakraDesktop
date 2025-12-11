@@ -19,6 +19,7 @@ interface VoiceInterviewSessionProps {
   interviewLinkId?: number
   onComplete?: (results: any) => void
   onSaveResults?: (summary: any) => Promise<void>
+  onStateChange?: (state: string) => void
 }
 
 export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
@@ -29,7 +30,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   skipIntro,
   interviewLinkId,
   onComplete,
-  onSaveResults
+  onSaveResults,
+  onStateChange
 }) => {
   const [currentState, setCurrentState] = useState<string>('connecting')
   const [currentQuestion, setCurrentQuestion] = useState<Question | null>(null)
@@ -56,6 +58,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [visionSecurityStatus, setVisionSecurityStatus] = useState<any>(null)
   
   const codeEditorRef = useRef<any>(null)
+  const hasInitializedRef = useRef(false)
+  const hasCompletedRef = useRef(false)
 
   // Initialize vision security tracking that stays active throughout the interview
   // This works even when video windows are hidden (like in coding section)
@@ -209,8 +213,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   useEffect(() => {
     // Don't initialize until we've checked for unfinished interviews
     if (!hasCheckedUnfinished) return
+    if (hasInitializedRef.current || hasCompletedRef.current) return
 
     const initializeInterview = async () => {
+      hasInitializedRef.current = true
       try {
         // Request audio permissions
         const hasPermission = await window.electronAPI.requestAudioPermissions()
@@ -278,6 +284,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       // Interview state changes
       window.electronAPI.onInterviewStateChange((state: string) => {
         setCurrentState(state)
+        onStateChange?.(state)
       })
 
       // Question changes - this fires for NEW questions only (not follow-ups)
@@ -378,6 +385,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
       // Interview completion
       window.electronAPI.onInterviewCompleted(async (results: any) => {
+        hasCompletedRef.current = true
         // For now, rely on WarningStateManager stats which are used in onFinalEvaluationReady
         console.log('📊 [Renderer] Interview completed - final warning stats will be attached in final evaluation payload')
         
@@ -911,7 +919,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         onCancel={handleCancelModal}
       />
       
-      <div className="voice-interview-session">
+        <div
+          className="voice-interview-session"
+          style={{ height: currentState === 'connecting' ? '100vh' : '86vh' }}
+        >
         <div className="interview-content">
         {renderCurrentSection()}
       </div>
