@@ -60,7 +60,7 @@ export const Header: React.FC = () => {
         >
           <img
             src={crispLogo}
-            alt="Crisp Logo"
+            alt="Shakra Logo"
             style={{
               height: 32,
               width: 'auto'
@@ -71,7 +71,7 @@ export const Header: React.FC = () => {
             fontWeight: 600,
             color: colors.neutral[900]
           }}>
-            Crisp
+            Shakra
           </span>
         </div>
 

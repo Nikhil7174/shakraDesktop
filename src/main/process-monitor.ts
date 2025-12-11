@@ -15,110 +15,417 @@ export class ProcessMonitor {
   private hasInitialBroadcast: boolean = false // Track if we've done the initial broadcast
   // private _killedProcesses: Set<string> = new Set() // Track killed processes to avoid duplicate kills
   
-  // List of blocked applications - all others are considered legitimate
-  // Made more specific to avoid false positives
+  // Blacklist of applications that should be blocked (comprehensive list of major user applications)
   private readonly blockedApps = [
-    // AI/Chat applications (exact matches)
-    'chatgpt', 'claude', 'copilot', 'gemini', 'bard',
-    'openai', 'anthropic', 'perplexity', 'poe', 'character.ai',
-    //'cursor', // AI-powered code editor
+    // Browsers (all major browsers)
+    'chrome', 'firefox', 'edge', 'opera', 'brave', 'safari', 'vivaldi', 'tor',
+    'chromium', 'msedge', 'iexplore', 'waterfox', 'pale moon',
     
-    // Remote access tools (exact matches)
-    'anydesk', 'teamviewer', 'chrome remote', 'vnc', 'rdp',
-    'remote desktop', 'logmein', 'gotomypc', 'splashtop',
-    'ultraviewer', 'ammyy', 'supremo', 'rustdesk', 'getscreen',
+    // AI/Chat applications and assistants
+    'chatgpt', 'claude', 'copilot', 'gemini', 'bard', 'openai', 'anthropic',
+    'perplexity', 'poe', 'character.ai', 'cursor', 'github copilot',
+    'chatgpt desktop', 'claude desktop', 'chatgpt app', 'claude app',
+    'bing chat', 'microsoft copilot', 'copilot chat', 'chatgpt plus',
+    'you.com', 'phind', 'hugging chat', 'huggingface', 'replicate',
+    'together ai', 'cohere', 'ai21', 'jasper', 'copy.ai', 'writesonic',
+    'grammarly', 'grammarly desktop', 'quillbot', 'wordtune', 'rytr',
+    'julius ai', 'monkeylearn', 'textio', 'crystal', 'x.ai', 'grok',
     
-    // Communication apps that could be used for cheating (exact matches)
-    'telegram', 'whatsapp', 'discord', 'slack', 'skype',
-    'zoom', 'teams', 'hangouts', 'messenger',
+    // Interview cheating tools and AI assistants
+    'cluely', 'finalround', 'interviewbuddy', 'interviewbit', 'interviewcake',
+    'pramp', 'interviewing.io', 'gainlo', 'mockinterview', 'interviewing',
+    'leetcode', 'hackerrank', 'codewars', 'codeforces', 'topcoder',
+    'geeksforgeeks', 'interviewbit', 'interviewcake', 'algoexpert',
+    'structy', 'neetcode', 'blind 75', 'grind 75', 'tech interview handbook',
+    'system design primer', 'designgurus', 'excalidraw', 'draw.io',
+    'lucidchart', 'whimsical', 'miro', 'figma', 'sketch',
+    'interviewing.com', 'interviewing.io', 'interview kickstart', 'interview master',
+    'interview prep', 'interview practice', 'mock interview', 'interview simulator',
+    'interview genie', 'interview ace', 'interview success', 'big interview',
+    'interview masterclass', 'interview prep pro', 'interview coach',
+    'interview mentor', 'interview guru', 'interview pro', 'interview expert',
+    'glassdoor interview', 'indeed interview', 'linkedin interview',
+    'interview questions', 'interview answers', 'interview solutions',
+    'coding interview', 'tech interview', 'software interview', 'faang interview',
+    'system design interview', 'behavioral interview', 'interview prep app',
     
-    // Cheating tools and trainers (exact matches)
+    // AI coding assistants and tools
+    'tabnine', 'kite', 'codota', 'intellicode', 'github copilot',
+    'amazon codeguru', 'deepcode', 'sourcery', 'codeium', 'aider',
+    'continue', 'cody', 'codeium chat', 'code whisperer', 'codex',
+    'replit ghostwriter', 'codeium', 'blackbox', 'ai code', 'ai assistant',
+    'github copilot chat', 'copilot x', 'copilot labs', 'copilot for business',
+    'amazon codewhisperer', 'aws codewhisperer', 'code whisperer',
+    'sourcegraph cody', 'cody ai', 'cody by sourcegraph', 'cody assistant',
+    'codeium ai', 'codeium chat', 'codeium autocomplete', 'codeium ide',
+    'tabnine ai', 'tabnine chat', 'tabnine pro', 'tabnine enterprise',
+    'kite ai', 'kite copilot', 'kite autocomplete', 'kite pro',
+    'aider ai', 'aider coding', 'aider chat', 'aider assistant',
+    'continue ai', 'continue.dev', 'continue extension', 'continue chat',
+    'blackbox ai', 'blackbox code', 'blackbox chat', 'blackbox assistant',
+    'replit ghostwriter', 'replit ai', 'replit copilot', 'replit chat',
+    'cursor ai', 'cursor chat', 'cursor copilot', 'cursor assistant',
+    'ai pair programming', 'ai code completion', 'ai code review',
+    'ai code generator', 'ai code assistant', 'ai programming',
+    'ai coding', 'ai developer', 'ai dev tools', 'ai code tools',
+    
+    // AI search and research tools
+    'you.com', 'phind', 'andisearch', 'komo', 'brave search',
+    'ecosia', 'duckduckgo', 'startpage', 'searx', 'metager',
+    
+    // AI writing and content tools
+    'jasper', 'copy.ai', 'writesonic', 'rytr', 'contentbot', 'copy.ai',
+    'frase', 'surfer seo', 'marketmuse', 'clearscope', 'outranking',
+    'inkforall', 'neuraltext', 'growthbar', 'wordai', 'article forge',
+    
+    // AI voice assistants
+    'alexa', 'google assistant', 'siri', 'cortana', 'bixby',
+    'alexa app', 'google home', 'homepod', 'echo', 'google nest',
+    
+    // AI image and video tools
+    'midjourney', 'dall-e', 'stable diffusion', 'runway', 'synthesia',
+    'descript', 'murf', 'elevenlabs', 'play.ht', 'wellsaid', 'lovo',
+    'pictory', 'invideo', 'synthesys', 'deepfake', 'face swap',
+    
+    // Remote access tools
+    'anydesk', 'teamviewer', 'chrome remote', 'vnc', 'rdp', 'remote desktop',
+    'logmein', 'gotomypc', 'splashtop', 'ultraviewer', 'ammyy', 'supremo',
+    'rustdesk', 'getscreen', 'parsec', 'moonlight',
+    
+    // Communication apps
+    'telegram', 'whatsapp', 'discord', 'slack', 'skype', 'zoom', 'teams',
+    'hangouts', 'messenger', 'signal', 'wechat', 'viber', 'line',
+    'microsoft teams', 'webex', 'gotomeeting', 'bluejeans',
+    
+    // Office and productivity suites
+    'word', 'excel', 'powerpoint', 'outlook', 'onenote', 'access', 'publisher',
+    'libreoffice', 'openoffice', 'wps', 'pages', 'numbers', 'keynote',
+    'notion', 'evernote', 'onenote',
+    
+    // Code editors and IDEs
+    'code', 'vscode', 'visual studio', 'intellij', 'pycharm', 'webstorm',
+    'android studio', 'xcode', 'sublime', 'atom', 'brackets', 'vim', 'emacs',
+    'notepad++', 'notepad', 'gedit', 'kate',
+    
+    // Media players
+    'vlc', 'media player', 'quicktime', 'itunes', 'spotify', 'winamp',
+    'foobar', 'mpc', 'potplayer', 'kmplayer',
+    
+    // Image and video editing
+    'photoshop', 'illustrator', 'premiere', 'after effects', 'lightroom',
+    'gimp', 'inkscape', 'blender', 'maya', '3ds max', 'cinema 4d',
+    'davinci resolve', 'final cut', 'imovie',
+    
+    // Screen sharing/recording tools
+    'obs', 'streamlabs', 'xsplit', 'bandicam', 'fraps', 'camtasia',
+    'screencast', 'screen recorder', 'sharex', 'greenshot',
+    
+    // Virtual machines and containers
+    'virtualbox', 'vmware', 'qemu', 'hyper-v', 'parallels', 'virtual machine',
+    'docker', 'podman', 'kubernetes', 'kubectl',
+    
+    // Browser automation and testing
+    'selenium', 'puppeteer', 'playwright', 'cypress', 'automation', 'bot',
+    'scraper', 'webdriver', 'nightwatch',
+    
+    // File sharing and cloud storage
+    'dropbox', 'google drive', 'onedrive', 'icloud', 'mega', 'box', 'sync',
+    'sharefile', 'nextcloud', 'owncloud',
+    
+    // Gaming platforms
+    'steam', 'epic games', 'origin', 'uplay', 'battle.net', 'gog',
+    'xbox', 'playstation', 'nvidia', 'amd',
+    
+    // Social media and messaging
+    'facebook', 'twitter', 'instagram', 'linkedin', 'reddit', 'tiktok',
+    'snapchat', 'pinterest', 'tumblr',
+    
+    // Development tools
+    'git', 'github desktop', 'gitkraken', 'sourcetree', 'tortoisegit',
+    'postman', 'insomnia', 'fiddler', 'wireshark', 'burp',
+    
+    // System utilities that could be misused
+    'taskmgr', 'process explorer', 'process hacker', 'hijackthis',
+    'regedit', 'gpedit', 'cmd', 'powershell', 'terminal',
+    
+    // Cheating tools, memory editors, and trainers
     'cheat engine', 'artmoney', 'game guardian', 'lucky patcher',
-    'game killer', 'game hacker', 'memory editor',
+    'game killer', 'game hacker', 'memory editor', 'cheat',
+    'process hacker', 'process explorer', 'hijackthis', 'ollydbg',
+    'x64dbg', 'x32dbg', 'ida pro', 'ghidra', 'radare2', 'gdb',
+    'windbg', 'immunity debugger', 'wireshark', 'fiddler', 'burp suite',
+    'charles proxy', 'mitmproxy', 'proxyman', 'http toolkit',
+    'memory scanner', 'hex editor', 'hxd', '010 editor', 'hexplorer',
+    'cheat tool', 'trainer', 'game trainer', 'memory hack', 'process inject',
+    'dll inject', 'code inject', 'hook', 'api hook', 'detour', 'patch',
     
-    // Screen sharing/recording tools (exact matches)
-    'obs', 'streamlabs', 'xsplit', 'bandicam', 'fraps',
-    'camtasia', 'screencast', 'screen recorder',
+    // Screen sharing and remote assistance (potential cheating)
+    'screen share', 'screen sharing', 'remote assistance', 'quick assist',
+    'windows quick assist', 'remote help', 'assist', 'support',
     
-    // Virtual machines and containers (exact matches)
-    'virtualbox', 'vmware', 'qemu', 'hyper-v',
-    'parallels', 'virtual machine',
+    // Browser extensions that could be used for cheating (if running as separate processes)
+    'browser extension', 'chrome extension', 'firefox extension', 'edge extension',
     
-    // Browser automation (exact matches)
-    'selenium', 'puppeteer', 'playwright', 'cypress',
-    'automation', 'bot', 'scraper',
+    // Virtual audio/video devices (could be used to hide real audio/video)
+    'virtual audio', 'vb audio', 'voicemeeter', 'virtual cable', 'obs virtual',
+    'manycam', 'snap camera', 'xsplit vcam', 'nvidia broadcast', 'rtx voice',
     
-    // File sharing and cloud storage (exact matches)
-    'dropbox', 'google drive', 'onedrive', 'icloud',
-    'mega', 'box', 'sync', 'sharefile'
+    // Screen mirroring and casting tools
+    'airplay', 'miracast', 'chromecast', 'screen mirror', 'screen cast',
+    'scrcpy', 'vysor', 'airdroid', 'mobizen', 'apowermirror',
+    
+    // Keyloggers and monitoring tools (obvious cheating tools)
+    'keylogger', 'keystroke', 'key capture', 'key monitor', 'key spy',
+    'activity monitor', 'employee monitor', 'spy software', 'monitoring',
+    'screen capture', 'screen spy', 'screen monitor', 'activity tracker',
+    
+    // AI-powered interview preparation and practice tools
+    'interviewing.io', 'pramp', 'interviewbuddy', 'interviewbit', 'interviewcake',
+    'gainlo', 'mockinterview', 'interview prep', 'interview practice',
+    'big interview', 'interview masterclass', 'interview success', 'interview ace',
+    
+    // Code sharing and collaboration during interviews
+    'codeshare', 'code together', 'tmate', 'teletype', 'live share',
+    'code with me', 'pair programming', 'screenhero', 'tuple', 'use together',
+    
+    // Note-taking and documentation tools that could store answers
+    'onenote', 'evernote', 'notion', 'obsidian', 'roam research', 'logseq',
+    'remnote', 'mem', 'reflect', 'craft', 'bear', 'ulysses', 'scrivener',
+    
+    // Translation and language tools
+    'google translate', 'deepl', 'microsoft translator', 'translate',
+    'lingvanex', 'reverso', 'promt', 'systran', 'babylon',
+    'google translate app', 'deepl app', 'microsoft translator app',
+    'translate app', 'translation', 'translator', 'language translator',
+    
+    // Text-to-speech and speech-to-text (could be used for communication)
+    'text to speech', 'speech to text', 'voice typing', 'dictation',
+    'dragon', 'nuance', 'windows speech recognition', 'speech recognition',
+    'natural reader', 'read aloud', 'voice dream', 'balabolka', 'textaloud',
+    'nvda', 'jaws', 'window eyes', 'system access', 'zoomtext',
+    'screen reader', 'voice over', 'talkback', 'orca', 'orca screen reader',
+    
+    // Accessibility tools that could be misused
+    'magnifier', 'screen magnifier', 'zoom', 'magnify', 'bigger text',
+    'high contrast', 'color contrast', 'accessibility', 'ease of access',
+    
+    // Clipboard managers (could store answers)
+    'clipboard', 'clipboard manager', 'clipboard history', 'clipboard plus',
+    'ditto', 'clipx', 'clipboard fusion', '1clipboard', 'clipboard master',
+    
+    // Search engines and research tools
+    'google', 'bing', 'yahoo', 'duckduckgo', 'brave search', 'ecosia',
+    'startpage', 'searx', 'metager', 'qwant', 'swisscows', 'mojeek',
+    
+    // Knowledge bases and wikis
+    'wikipedia', 'wikimedia', 'wiki', 'stack overflow', 'stackexchange',
+    'reddit', 'quora', 'medium', 'dev.to', 'hashnode', 'freecodecamp',
+    'w3schools', 'mdn', 'developer.mozilla', 'docs.microsoft', 'docs.google',
+    
+    // Documentation and reference sites (if running as apps)
+    'documentation', 'api docs', 'reference', 'manual', 'guide', 'tutorial',
+    
+    // Other productivity tools
+    'adobe', 'autocad', 'solidworks', 'matlab', 'mathematica',
+    'tableau', 'power bi', 'qlik',
+    
+    // Note: System processes like winlogon, csrss, svchost, explorer, etc. are NOT in this list
+    // so they will NOT be blocked, keeping the system functional
+  ]
+  
+  // System processes that should NEVER be blocked (safety check)
+  private readonly systemProcesses = [
+    'winlogon', 'csrss', 'smss', 'lsass', 'services', 'svchost', 'dwm',
+    'explorer', 'system', 'ntoskrnl', 'hal', 'wininit', 'spoolsv',
+    'taskhost', 'taskhostw', 'sihost', 'runtimebroker', 'conhost',
+    'audiodg', 'dwm', 'systemsettings', 'applicationframehost',
+    'shellexperiencehost', 'wsmprovhost', 'wudfhost', 'wmiprvse',
+    'dllhost', 'kernel', 'init', 'systemd'
   ]
 
   constructor(private wsServer: WebSocketServer) {}
 
-  // Cross-platform process killing method - DISABLED
-  // private async _killProcess(_pid: number, _processName: string): Promise<{ success: boolean; error?: string }> {
-  //   try {
-  //     const platform = os.platform()
-  //     let command: string
+  // Cross-platform process killing method
+  private async _killProcess(pid: number, processName: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const platform = os.platform()
+      let command: string
 
-  //     if (platform === 'win32') {
-  //       // Windows: Use taskkill
-  //       command = `taskkill /F /PID ${_pid}`
-  //     } else {
-  //       // Unix-like systems (Linux, macOS): Use kill
-  //       command = `kill -9 ${_pid}`
-  //     }
+      if (platform === 'win32') {
+        // Windows: Use taskkill
+        command = `taskkill /F /PID ${pid}`
+      } else {
+        // Unix-like systems (Linux, macOS): Use kill
+        command = `kill -9 ${pid}`
+      }
 
-  //     // console.log(`Attempting to kill process: ${_processName} (PID: ${_pid}) with command: ${command}`)
+      console.log(`Attempting to kill process: ${processName} (PID: ${pid})`)
       
-  //     const { stderr } = await execAsync(command)
+      const { stderr } = await execAsync(command)
       
-  //     if (stderr && !stderr.includes('No such process')) {
-  //       // console.error(`Error killing process ${_processName} (PID: ${_pid}):`, stderr)
-  //       return { success: false, error: stderr }
-  //     }
+      if (stderr && !stderr.includes('No such process') && !stderr.includes('not found')) {
+        console.error(`Error killing process ${processName} (PID: ${pid}):`, stderr)
+        return { success: false, error: stderr }
+      }
 
-  //     // console.log(`✓ Successfully killed process: ${_processName} (PID: ${_pid})`)
-  //     return { success: true }
-  //   } catch (error) {
-  //     const errorMsg = error instanceof Error ? error.message : String(error)
-  //     // console.error(`Failed to kill process ${_processName} (PID: ${_pid}):`, errorMsg)
-  //     return { success: false, error: errorMsg }
-  //   }
-  // }
+      console.log(`✓ Successfully killed process: ${processName} (PID: ${pid})`)
+      return { success: true }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error)
+      // Ignore "process not found" errors as the process may have already terminated
+      if (errorMsg.includes('not found') || errorMsg.includes('No such process')) {
+        return { success: true } // Consider it successful if process doesn't exist
+      }
+      console.error(`Failed to kill process ${processName} (PID: ${pid}):`, errorMsg)
+      return { success: false, error: errorMsg }
+    }
+  }
 
-  // Kill all detected blocked processes - DISABLED FOR NOW
-  // private async _killBlockedProcesses(detected: Array<{ name: string; pid: number; reason: string }>): Promise<Array<{ name: string; pid: number; reason: string; killed: boolean; error?: string }>> {
-  //   // Function disabled to avoid build errors
-  //   return detected.map(process => ({ ...process, killed: false, error: 'Function disabled' }))
-  // }
+  // Kill all detected non-whitelisted processes
+  private async _killBlockedProcesses(detected: Array<{ name: string; pid: number; reason: string }>): Promise<Array<{ name: string; pid: number; reason: string; killed: boolean; error?: string }>> {
+    const killPromises = detected.map(async (process) => {
+      const result = await this._killProcess(process.pid, process.name)
+      return {
+        ...process,
+        killed: result.success,
+        error: result.error
+      }
+    })
+    
+    return Promise.all(killPromises)
+  }
 
-  // Detection method that only checks against blocked apps - all others are considered legitimate
+  // Check if a process path is a system process (Windows-specific)
+  private isSystemProcessPath(processPath: string): boolean {
+    if (!processPath) return false
+    
+    const pathLower = processPath.toLowerCase()
+    
+    // Windows system directories - these are system processes
+    const systemDirs = [
+      '\\windows\\system32\\',
+      '\\windows\\syswow64\\',
+      '\\windows\\winsxs\\',
+      '\\windows\\servicing\\',
+      '\\program files\\windows defender\\',
+      '\\program files\\windows nt\\',
+      '\\program files (x86)\\windows defender\\',
+      '\\program files (x86)\\windows nt\\',
+      '\\windows\\',
+      '\\system32\\',
+      '\\syswow64\\'
+    ]
+    
+    return systemDirs.some(dir => pathLower.includes(dir))
+  }
+
+  // Check if a process is a user application (Windows-specific)
+  private isUserApplication(processPath: string, processName: string): boolean {
+    if (!processPath) {
+      // If no path, fall back to blacklist check
+      return this.isInBlacklist(processName)
+    }
+    
+    const pathLower = processPath.toLowerCase()
+    const processNameLower = processName.toLowerCase()
+    
+    // Must be a .exe file
+    if (!pathLower.endsWith('.exe')) {
+      return false
+    }
+    
+    // User application directories (Windows)
+    const userAppDirs = [
+      '\\program files\\',
+      '\\program files (x86)\\',
+      '\\users\\',
+      '\\appdata\\',
+      '\\local\\',
+      '\\roaming\\',
+      '\\programdata\\'
+    ]
+    
+    // Check if it's in a user directory
+    const isInUserDir = userAppDirs.some(dir => pathLower.includes(dir))
+    
+    // Also check blacklist as additional filter
+    const isInBlacklist = this.isInBlacklist(processName)
+    
+    // Block if it's in user directory OR in blacklist (but not if it's a system process)
+    return (isInUserDir || isInBlacklist) && !this.isSystemProcessPath(processPath)
+  }
+
+  // Check if process name is in blacklist
+  private isInBlacklist(processName: string): boolean {
+    const processNameLower = processName.toLowerCase()
+    return this.blockedApps.some(blockedApp => {
+      const blockedAppLower = blockedApp.toLowerCase()
+      return processNameLower === blockedAppLower || 
+             processNameLower.includes(blockedAppLower) ||
+             processNameLower.startsWith(blockedAppLower + '.') ||
+             processNameLower.startsWith(blockedAppLower + ' ') ||
+             processNameLower.startsWith(blockedAppLower + '-')
+    })
+  }
+
+  // Detection method: Block all user applications (Windows: .exe in user directories, or in blacklist)
   private detectBlockedProcesses(processes: any[]): Array<{ name: string; pid: number; reason: string }> {
     const detected: Array<{ name: string; pid: number; reason: string }> = []
     const seenProcesses = new Set<string>() // Track unique processes to avoid duplicates
+    const currentPid = process.pid // Get current process PID to exclude Shakra itself
+    const platform = os.platform()
 
-    processes.forEach(process => {
-      const processName = process.name.toLowerCase()
-      const pid = process.pid || 0
+    processes.forEach(proc => {
+      const processName = proc.name || ''
+      const processPath = proc.path || proc.exe || '' // Try different path properties
+      const pid = proc.pid || 0
 
-      // Check for blocked app matches - use exact matches to avoid false positives
-      const blockedMatch = this.blockedApps.find(app => {
-        // Use exact match or process name starts with the blocked app name
-        return processName === app || processName.startsWith(app + ' ') || processName.startsWith(app + '.')
+      // Skip current process (Shakra itself)
+      if (pid === currentPid) {
+        return
+      }
+
+      // Safety check: NEVER block system processes by name
+      const isSystemProcessByName = this.systemProcesses.some(systemProc => {
+        const systemProcLower = systemProc.toLowerCase()
+        const processNameLower = processName.toLowerCase()
+        return processNameLower === systemProcLower || 
+               processNameLower.includes(systemProcLower) ||
+               processNameLower.startsWith(systemProcLower + '.') ||
+               processNameLower.startsWith(systemProcLower + ' ')
       })
-      
-      if (blockedMatch) {
-        // Create unique identifier to avoid duplicate entries
-        const uniqueId = `${process.name}-${pid}`
-        
-        if (!seenProcesses.has(uniqueId)) {
-          seenProcesses.add(uniqueId)
-          detected.push({
-            name: process.name,
-            pid,
-            reason: `Blocked application: ${blockedMatch}`
-          })
+
+      if (isSystemProcessByName) {
+        return // Skip system processes - never block them
+      }
+
+      // Windows-specific: Block all .exe files in user directories
+      if (platform === 'win32') {
+        if (this.isUserApplication(processPath, processName) && pid > 0) {
+          const uniqueId = `${processName}-${pid}`
+          
+          if (!seenProcesses.has(uniqueId)) {
+            seenProcesses.add(uniqueId)
+            detected.push({
+              name: processName,
+              pid,
+              reason: processPath ? `User application: ${processPath}` : `Blacklisted application: ${processName}`
+            })
+          }
+        }
+      } else {
+        // For Linux/macOS: Use blacklist approach
+        if (this.isInBlacklist(processName) && pid > 0) {
+          const uniqueId = `${processName}-${pid}`
+          
+          if (!seenProcesses.has(uniqueId)) {
+            seenProcesses.add(uniqueId)
+            detected.push({
+              name: processName,
+              pid,
+              reason: `Blacklisted application: ${processName}`
+            })
+          }
         }
       }
     })
@@ -126,6 +433,44 @@ export class ProcessMonitor {
     return detected
   }
 
+
+  // Enrich processes with paths on Windows (if not already present)
+  private async enrichProcessesWithPaths(processes: any[]): Promise<any[]> {
+    if (os.platform() !== 'win32') {
+      return processes // Only needed on Windows
+    }
+
+    // If processes already have path information, return as-is
+    if (processes.length > 0 && (processes[0].path || processes[0].exe || processes[0].commandLine)) {
+      return processes
+    }
+
+    // Try to get paths using wmic (Windows Management Instrumentation)
+    try {
+      const enrichedProcesses = await Promise.all(
+        processes.map(async (proc) => {
+          if (proc.pid && proc.pid > 0) {
+            try {
+              // Use wmic to get process executable path
+              const { stdout } = await execAsync(`wmic process where "ProcessId=${proc.pid}" get ExecutablePath /format:value`)
+              const match = stdout.match(/ExecutablePath=(.+)/i)
+              if (match && match[1]) {
+                proc.path = match[1].trim()
+                proc.exe = match[1].trim()
+              }
+            } catch (error) {
+              // Ignore errors for individual processes
+            }
+          }
+          return proc
+        })
+      )
+      return enrichedProcesses
+    } catch (error) {
+      console.warn('Failed to enrich processes with paths, using process list as-is')
+      return processes
+    }
+  }
 
   // Check if the current process snapshot has changed from the last one
   private hasProcessSnapshotChanged(currentSnapshot: Set<string>): boolean {
@@ -164,23 +509,26 @@ export class ProcessMonitor {
         // console.log(`Found ${processes.length} processes using fallback method`)
       }
       
+      // Enrich processes with paths on Windows
+      processes = await this.enrichProcessesWithPaths(processes)
+      
       const detected = this.detectBlockedProcesses(processes)
       
-      // Kill detected blocked processes
+      // Kill detected blacklisted applications
       if (detected.length > 0) {
-        // console.log(`🚫 Detected ${detected.length} blocked applications, attempting to kill them...`)
-        // const killResults = await this.killBlockedProcesses(detected)
+        console.log(`🚫 Detected ${detected.length} blacklisted applications, attempting to kill them...`)
+        const killResults = await this._killBlockedProcesses(detected)
         
         // Log kill results
-        // const killedCount = killResults.filter(r => r.killed).length
-        // const failedCount = killResults.filter(r => !r.killed).length
+        const killedCount = killResults.filter(r => r.killed).length
+        const failedCount = killResults.filter(r => !r.killed).length
         
-        // console.log(`✓ Killed ${killedCount} processes, ${failedCount} failed to kill`)
+        console.log(`✓ Killed ${killedCount} blacklisted applications, ${failedCount} failed to kill`)
         
         // Log failed kills
-        // killResults.filter(r => !r.killed).forEach(_result => {
-        //   console.log(`❌ Failed to kill ${result.name} (PID: ${result.pid}): ${result.error}`)
-        // })
+        killResults.filter(r => !r.killed).forEach(result => {
+          console.log(`❌ Failed to kill ${result.name} (PID: ${result.pid}): ${result.error}`)
+        })
       }
       
       // Create a snapshot of current blocked processes (unique identifiers)
@@ -239,18 +587,21 @@ export class ProcessMonitor {
         // console.log(`Found ${processes.length} processes using fallback method`)
       }
       
+      // Enrich processes with paths on Windows
+      processes = await this.enrichProcessesWithPaths(processes)
+      
       const detected = this.detectBlockedProcesses(processes)
 
-      // Kill detected blocked processes
+      // Kill detected blacklisted applications
       if (detected.length > 0) {
-        console.log(`🚫 Detected ${detected.length} blocked applications in stats, attempting to kill them...`)
-        // const killResults = await this.killBlockedProcesses(detected)
+        console.log(`🚫 Detected ${detected.length} blacklisted applications in stats, attempting to kill them...`)
+        const killResults = await this._killBlockedProcesses(detected)
         
         // Log kill results
-        // const killedCount = killResults.filter(r => r.killed).length
-        // const failedCount = killResults.filter(r => !r.killed).length
+        const killedCount = killResults.filter(r => r.killed).length
+        const failedCount = killResults.filter(r => !r.killed).length
         
-        // console.log(`✓ Killed ${killedCount} processes, ${failedCount} failed to kill`)
+        console.log(`✓ Killed ${killedCount} blacklisted applications, ${failedCount} failed to kill`)
       }
 
       // Get system information
@@ -348,7 +699,48 @@ export class ProcessMonitor {
     }
   }
 
+  // Kill all blacklisted applications on startup
+  async killAllOnStartup(): Promise<void> {
+    try {
+      console.log('🚫 [Startup] Checking for blacklisted applications...')
+      
+      let processes: any[] = []
+      try {
+        const processPromise = processList.getProcesses()
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Process list timeout')), 10000)
+        )
+        processes = await Promise.race([processPromise, timeoutPromise]) as any[]
+      } catch (error) {
+        console.warn('Failed to get process list on startup, using fallback')
+        processes = await this.getProcessesFallback()
+      }
+      
+      // Enrich processes with paths on Windows
+      processes = await this.enrichProcessesWithPaths(processes)
+      
+      const detected = this.detectBlockedProcesses(processes)
+      
+      if (detected.length > 0) {
+        console.log(`🚫 [Startup] Found ${detected.length} blacklisted applications to kill`)
+        const killResults = await this._killBlockedProcesses(detected)
+        const killedCount = killResults.filter(r => r.killed).length
+        const failedCount = killResults.filter(r => !r.killed).length
+        console.log(`✓ [Startup] Killed ${killedCount} blacklisted applications on startup, ${failedCount} failed`)
+      } else {
+        console.log('✓ [Startup] No blacklisted applications found')
+      }
+    } catch (error) {
+      console.error('❌ [Startup] Error killing processes on startup:', error)
+    }
+  }
+
   start(): void {
+    // Kill all non-whitelisted processes immediately on startup
+    this.killAllOnStartup().catch(err => {
+      console.error('Failed to kill processes on startup:', err)
+    })
+    
     // Check every 3 seconds (reduced frequency to prevent crashes)
     this.interval = setInterval(async () => {
       try {

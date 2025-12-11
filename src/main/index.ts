@@ -1,6 +1,8 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, globalShortcut, session } from 'electron'
 import * as dotenv from 'dotenv'
-import { join } from 'path'
+import { join, resolve } from 'path'
+import { existsSync, writeFileSync, mkdirSync } from 'fs'
+import { homedir } from 'os'
 import { WebSocketServer } from './websocket-server'
 import { ProcessMonitor } from './process-monitor'
 import { InterviewOrchestrator } from './interview-orchestrator'
@@ -19,17 +21,76 @@ let wsServer: WebSocketServer | null = null
 let monitor: ProcessMonitor | null = null
 let interviewOrchestrator: InterviewOrchestrator | null = null
 
+// Icon path resolution (try multiple possible paths)
+function getIconPath(): string | undefined {
+  const possiblePaths = app.isPackaged
+    ? [
+        join(process.resourcesPath, 'icon.png'),
+        join(process.resourcesPath, 'resources', 'icon.png')
+      ]
+    : [
+        // Try from compiled main location (out/main/) - use absolute path
+        resolve(__dirname, '../../resources/icon.png'),
+        // Try from app path
+        join(app.getAppPath(), 'resources/icon.png'),
+        // Try from project root (if running from project root)
+        resolve(process.cwd(), 'resources/icon.png'),
+        // Try from crispDesktop directory
+        resolve(process.cwd(), 'crispDesktop/resources/icon.png')
+      ]
+
+  console.log('🔍 [Icon] Searching for icon in paths:')
+  for (const path of possiblePaths) {
+    console.log(`  - ${path} ${existsSync(path) ? '✅ EXISTS' : '❌ NOT FOUND'}`)
+    if (existsSync(path)) {
+      const absolutePath = resolve(path) // Ensure absolute path
+      console.log('✅ [Icon] Found icon at:', absolutePath)
+      return absolutePath
+    }
+  }
+
+  console.warn('⚠️ [Icon] Icon not found in any of these paths:', possiblePaths)
+  return undefined
+}
+
+const iconPath = getIconPath()
+let appIcon: Electron.NativeImage | undefined = undefined
+
+if (iconPath) {
+  try {
+    appIcon = nativeImage.createFromPath(iconPath)
+    if (appIcon.isEmpty()) {
+      console.warn('⚠️ [Icon] Icon file exists but is empty or invalid')
+      appIcon = undefined
+    } else {
+      const size = appIcon.getSize()
+      console.log(`✅ [Icon] Icon loaded successfully: ${size.width}x${size.height} from ${iconPath}`)
+    }
+  } catch (error) {
+    console.error('❌ [Icon] Failed to load icon:', error)
+    appIcon = undefined
+  }
+} else {
+  console.error('❌ [Icon] No icon path found - will use default')
+}
+
 function createWindow(): void {
   // Main window - full screen for interview interface
+  // For Wayland compatibility, try both nativeImage and path string
+  const windowIcon = appIcon && !appIcon.isEmpty() ? appIcon : (iconPath || undefined)
+  
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 1000,
     minHeight: 700,
+    ...(windowIcon ? { icon: windowIcon } : {}),
     show: false, // Don't show until ready
     fullscreen: false, // Allow fullscreen toggle
     maximizable: true,
     resizable: true,
+    frame: false, // Hide title bar (workaround for Wayland icon issue)
+    autoHideMenuBar: true, // Hide menu bar
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       // SECURITY BEST PRACTICES:
@@ -47,10 +108,61 @@ function createWindow(): void {
     mainWindow.webContents.openDevTools()
   }
 
+  // Set icon explicitly for Wayland/GNOME compatibility
+  // Try multiple methods as Wayland can be picky
+  if (iconPath) {
+    // Method 1: Use path string (some Wayland compositors prefer this)
+    try {
+      mainWindow.setIcon(iconPath)
+      console.log('✅ [Icon] Window icon set via path for Wayland:', iconPath)
+    } catch (err) {
+      console.warn('⚠️ [Icon] Failed to set icon via path:', err)
+    }
+    
+    // Method 2: Use nativeImage (fallback)
+    if (appIcon && !appIcon.isEmpty()) {
+      try {
+        mainWindow.setIcon(appIcon)
+        console.log('✅ [Icon] Window icon set via nativeImage for Wayland')
+      } catch (err) {
+        console.warn('⚠️ [Icon] Failed to set icon via nativeImage:', err)
+      }
+    }
+  }
+
   // Show and maximize window when ready
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show()
     mainWindow?.maximize()
+    
+    // Set icon again after showing (Wayland sometimes needs this)
+    // Also try with a small delay as Wayland can be slow to update
+    if (iconPath) {
+      // Try path string first
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          try {
+            mainWindow.setIcon(iconPath)
+            console.log('✅ [Icon] Icon set after window show (delayed)')
+          } catch (err) {
+            console.warn('⚠️ [Icon] Failed to set icon after show:', err)
+          }
+        }
+      }, 100)
+      
+      // Also try nativeImage
+      if (appIcon && !appIcon.isEmpty()) {
+        setTimeout(() => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            try {
+              mainWindow.setIcon(appIcon)
+            } catch (err) {
+              // Ignore
+            }
+          }
+        }, 200)
+      }
+    }
   })
 
   // Load the UI
@@ -59,15 +171,66 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  // Set icon after page loads (Wayland sometimes needs this)
+  mainWindow.webContents.once('did-finish-load', () => {
+    if (iconPath && mainWindow && !mainWindow.isDestroyed()) {
+      // Try setting icon multiple times with delays
+      const setIconAttempts = [0, 100, 300, 500, 1000]
+      setIconAttempts.forEach((delay) => {
+        setTimeout(() => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            try {
+              // Try path first
+              mainWindow.setIcon(iconPath)
+              // Also try nativeImage
+              if (appIcon && !appIcon.isEmpty()) {
+                mainWindow.setIcon(appIcon)
+              }
+              if (delay === 0) {
+                console.log('✅ [Icon] Icon set after page load')
+              }
+            } catch (err) {
+              // Ignore errors
+            }
+          }
+        }, delay)
+      })
+    }
+  })
+
+  // Additional icon setting for Wayland title bar
+  // Note: GNOME/Wayland window managers may ignore window icons and use desktop file icons
+  // The title bar icon is often controlled by the window manager theme, not the application
+  if (process.platform === 'linux' && iconPath) {
+    // Try setting icon when window gains focus (sometimes triggers refresh)
+    mainWindow.on('focus', () => {
+      if (mainWindow && !mainWindow.isDestroyed() && iconPath) {
+        setTimeout(() => {
+          try {
+            mainWindow?.setIcon(iconPath)
+            if (appIcon && !appIcon.isEmpty()) {
+              mainWindow?.setIcon(appIcon)
+            }
+          } catch (err) {
+            // Ignore
+          }
+        }, 100)
+      }
+    })
+  }
 }
 
 function createTray(): void {
-  const icon = nativeImage.createFromPath(join(__dirname, '../../resources/icon.png'))
-  tray = new Tray(icon)
+  if (!appIcon || appIcon.isEmpty()) {
+    console.warn('⚠️ [Tray] Cannot create tray - no valid icon')
+    return
+  }
+  tray = new Tray(appIcon)
   
   const contextMenu = Menu.buildFromTemplate([
     { 
-      label: 'Crisp Interview App', 
+      label: 'Shakra AI Interview', 
       enabled: false 
     },
     { 
@@ -90,7 +253,7 @@ function createTray(): void {
     }
   ])
   
-  tray.setToolTip('Crisp Interview App - Security Monitoring Active')
+  tray.setToolTip('Shakra AI Interview - Security Monitoring Active')
   tray.setContextMenu(contextMenu)
   
   tray.on('double-click', () => {
@@ -98,9 +261,78 @@ function createTray(): void {
   })
 }
 
+// Create desktop file for Wayland/GNOME compatibility in dev mode
+function createDesktopFile(): void {
+  if (process.platform !== 'linux' || app.isPackaged) {
+    return // Only needed for dev mode on Linux
+  }
+
+  if (!iconPath || !existsSync(iconPath)) {
+    console.warn('⚠️ [Desktop] Cannot create desktop file - icon not found')
+    return
+  }
+
+  try {
+    const desktopDir = join(homedir(), '.local', 'share', 'applications')
+    mkdirSync(desktopDir, { recursive: true })
+    
+    const desktopFile = join(desktopDir, 'shakra-ai-interview-dev.desktop')
+    const execPath = process.execPath
+    const iconAbsolutePath = resolve(iconPath)
+    
+    const desktopContent = `[Desktop Entry]
+Name=Shakra AI Interview (Dev)
+Comment=AI-powered interview platform with security monitoring
+Exec=${execPath}
+Icon=${iconAbsolutePath}
+Type=Application
+Categories=Utility;Development;
+StartupNotify=true
+StartupWMClass=electron
+NoDisplay=false
+`
+    
+    writeFileSync(desktopFile, desktopContent, { mode: 0o755 })
+    console.log(`✅ [Desktop] Created desktop file: ${desktopFile}`)
+    console.log(`✅ [Desktop] Icon path in desktop file: ${iconAbsolutePath}`)
+    
+    // Update desktop database (Wayland/GNOME needs this)
+    try {
+      const { exec } = require('child_process')
+      exec('update-desktop-database ~/.local/share/applications', (error: any) => {
+        if (error) {
+          console.warn('⚠️ [Desktop] Could not update desktop database (non-critical):', error.message)
+        } else {
+          console.log('✅ [Desktop] Desktop database updated')
+        }
+      })
+    } catch (err) {
+      // Ignore - update-desktop-database might not be available
+    }
+  } catch (error) {
+    console.error('❌ [Desktop] Failed to create desktop file:', error)
+  }
+}
+
 app.whenReady().then(async () => {
   // Set app user model id for windows
-  electronApp.setAppUserModelId('com.interview.security-agent')
+  electronApp.setAppUserModelId('com.shakra.interview')
+  
+  // Linux/Wayland specific: Create desktop file for dev mode
+  // Wayland/GNOME requires desktop files to show custom icons
+  if (process.platform === 'linux' && !app.isPackaged) {
+    createDesktopFile()
+    
+    if (iconPath && existsSync(iconPath)) {
+      // Try to set app icon for Wayland
+      try {
+        app.dock?.setIcon?.(appIcon || iconPath) // macOS only, but harmless
+        console.log('✅ [Icon] App icon configured for Linux')
+      } catch (err) {
+        // Ignore - dock is macOS only
+      }
+    }
+  }
 
   // Configure session permissions for external API calls
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
