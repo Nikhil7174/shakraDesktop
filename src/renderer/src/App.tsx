@@ -18,6 +18,7 @@ import { JoinInterview } from './pages/JoinInterview';
 import { SessionCleanup } from './components/SessionCleanup';
 
 const App: React.FC = () => {
+  console.log('🚀 App component rendering...')
   return (
     <Provider store={store}>
       <PersistGate loading={null} persistor={persistor}>

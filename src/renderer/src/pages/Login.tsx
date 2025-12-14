@@ -8,6 +8,7 @@ import { useAuth } from '../hooks/useAuth';
 const { Title, Text } = Typography;
 
 export const Login: React.FC = () => {
+  console.log('🔐 Login component rendering...')
   const { message } = App.useApp();
   const navigate = useNavigate();
   const location = useLocation();

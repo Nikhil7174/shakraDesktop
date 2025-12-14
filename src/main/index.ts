@@ -397,12 +397,11 @@ app.whenReady().then(async () => {
           "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; " +
           "connect-src 'self' https://crisp-server-n0r1.onrender.com https://localhost:3001 http://localhost:3001 https://cdn.jsdelivr.net https://storage.googleapis.com; " +
           "img-src 'self' data: https:; " +
-          "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com; " +
-          "script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com; " +
+          "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com; " +
+          "script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com; " +
           "style-src 'self' 'unsafe-inline'; " +
           "font-src 'self' data:; " +
-          "worker-src 'self' blob: https://cdn.jsdelivr.net; " +
-          "wasm-unsafe-eval;"
+          "worker-src 'self' blob: https://cdn.jsdelivr.net;"
         ]
       }
     })
