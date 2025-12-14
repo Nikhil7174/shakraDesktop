@@ -15,8 +15,8 @@ export class ProcessMonitor {
   // Blacklist of applications that should be blocked (comprehensive list of major user applications)
   private readonly blockedApps = [
     // Browsers (all major browsers)
-    'chrome', 'firefox', 'edge', 'opera', 'brave', 'safari', 'vivaldi', 'tor',
-    'chromium', 'msedge', 'iexplore', 'waterfox', 'pale moon',
+     'firefox', 'edge', 'opera', 'brave', 'safari', 'vivaldi', 'tor',
+     'msedge', 'iexplore', 'waterfox', 'pale moon',
     
     // AI/Chat applications and assistants
     'chatgpt', 'claude', 'copilot', 'gemini', 'bard', 'openai', 'anthropic',

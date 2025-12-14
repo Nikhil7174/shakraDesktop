@@ -216,6 +216,48 @@ function createWindow(): void {
       }
     })
   }
+
+  // Handle window close - quit the app completely
+  mainWindow.on('close', (event) => {
+    // On Linux/Windows, quit the app when window is closed
+    // This ensures the app doesn't stay running in the background
+    if (process.platform !== 'darwin') {
+      // Prevent default close behavior
+      event.preventDefault()
+      
+      // Clean up before quitting
+      console.log('Window closed, cleaning up and quitting...')
+      
+      // Stop monitoring first
+      monitor?.stop()
+      
+      // Destroy orchestrator (stops all services)
+      interviewOrchestrator?.destroy()
+      
+      // Unregister global shortcuts
+      globalShortcut.unregisterAll()
+      
+      // Destroy tray if it exists (this is important - tray keeps app alive)
+      if (tray) {
+        tray.destroy()
+        tray = null
+      }
+      
+      // Destroy the window
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.destroy()
+        mainWindow = null
+      }
+      
+      // Quit the app
+      app.quit()
+    } else {
+      // On macOS, hide the window instead of quitting
+      // (macOS apps typically stay running)
+      event.preventDefault()
+      mainWindow?.hide()
+    }
+  })
 }
 
 function createTray(): void {
@@ -243,7 +285,23 @@ function createTray(): void {
     { 
       label: 'Quit', 
       click: () => {
+        console.log('Quit requested from tray menu, cleaning up...')
         monitor?.stop()
+        interviewOrchestrator?.destroy()
+        globalShortcut.unregisterAll()
+        
+        // Destroy tray
+        if (tray) {
+          tray.destroy()
+          tray = null
+        }
+        
+        // Destroy window
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.destroy()
+          mainWindow = null
+        }
+        
         app.quit()
       }
     }
@@ -873,9 +931,21 @@ app.whenReady().then(async () => {
 
 // macOS - keep app running
 app.on('window-all-closed', () => {
+  // On Windows/Linux, quit when all windows are closed
+  // This is a fallback in case the window close handler doesn't fire
   if (process.platform !== 'darwin') {
-    // On Windows/Linux, quit when windows closed
-    // (But we use tray, so this won't trigger often)
+    console.log('All windows closed, cleaning up and quitting...')
+    monitor?.stop()
+    interviewOrchestrator?.destroy()
+    globalShortcut.unregisterAll()
+    
+    // Destroy tray if it exists
+    if (tray) {
+      tray.destroy()
+      tray = null
+    }
+    
+    app.quit()
   }
 })
 
@@ -886,24 +956,66 @@ app.on('activate', () => {
 })
 
 // Cleanup on app quit
-app.on('before-quit', () => {
-  console.log('Cleaning up resources...')
+app.on('before-quit', (event) => {
+  console.log('Cleaning up resources before quit...')
+  
+  // Stop all monitoring and services
   globalShortcut.unregisterAll()
   monitor?.stop()
   interviewOrchestrator?.destroy()
+  
+  // Destroy tray if it exists
+  if (tray) {
+    tray.destroy()
+    tray = null
+  }
+  
+  // Destroy main window if it exists
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.destroy()
+    mainWindow = null
+  }
 })
 
 // Handle app termination
 process.on('SIGINT', () => {
   console.log('Received SIGINT, cleaning up...')
+  globalShortcut.unregisterAll()
   monitor?.stop()
   interviewOrchestrator?.destroy()
+  
+  // Destroy tray if it exists
+  if (tray) {
+    tray.destroy()
+    tray = null
+  }
+  
+  // Destroy main window if it exists
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.destroy()
+    mainWindow = null
+  }
+  
   process.exit(0)
 })
 
 process.on('SIGTERM', () => {
   console.log('Received SIGTERM, cleaning up...')
+  globalShortcut.unregisterAll()
   monitor?.stop()
   interviewOrchestrator?.destroy()
+  
+  // Destroy tray if it exists
+  if (tray) {
+    tray.destroy()
+    tray = null
+  }
+  
+  // Destroy main window if it exists
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.destroy()
+    mainWindow = null
+  }
+  
   process.exit(0)
 })

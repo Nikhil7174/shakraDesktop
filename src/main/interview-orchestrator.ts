@@ -3657,8 +3657,8 @@ export class InterviewOrchestrator extends EventEmitter {
     this.tts?.removeAllListeners()
     this.llm?.removeAllListeners()
     this.codeAnalysis?.removeAllListeners()
-    // this.stateMachine.removeAllListeners()
-    // this.removeAllListeners()
+    this.stateMachine.removeAllListeners()
+    this.removeAllListeners()
   }
 
   // Public methods for external control
@@ -3776,11 +3776,37 @@ export class InterviewOrchestrator extends EventEmitter {
 
   // Clean up resources
   destroy(): void {
+    console.log('🧹 [Orchestrator] Cleaning up resources...')
+    
+    // Clear any pending timeouts
+    if (this.liveTranscriptTimeout) {
+      clearTimeout(this.liveTranscriptTimeout)
+      this.liveTranscriptTimeout = null
+    }
+    
+    // Stop all services
     this.stt?.stopListening()
     this.tts?.destroy()
     this.codeAnalysis?.reset()
+    
+    // Clean up event listeners
+    this.cleanupListeners()
+    
+    // Clear session data
     this.currentSession = null
     this.isInitialized = false
+    
+    // Clear any pending state
+    this.softStopRequested = false
+    this.micPaused = false
+    this.userSpeaking = false
+    this.currentCode = ''
+    this.manualResponseInFlight = null
+    this.currentSpeechContext = null
+    this.pendingSecurityWarning = null
+    this.isSecurityWarningInProgress = false
+    
+    console.log('✅ [Orchestrator] Cleanup complete')
   }
 
 }

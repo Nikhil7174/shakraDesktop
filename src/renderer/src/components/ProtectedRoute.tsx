@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { Spin } from 'antd';
 import { useAuth } from '../hooks/useAuth';
@@ -12,14 +12,38 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
   children, 
   allowedUserTypes 
 }) => {
-  const { isAuthenticated, user, loading, getCurrentUser } = useAuth();
+  const { isAuthenticated, user, loading, token, getCurrentUser } = useAuth();
   const location = useLocation();
+  const [maxWaitReached, setMaxWaitReached] = useState(false);
 
   useEffect(() => {
-    if (isAuthenticated && !user) {
+    // Call getCurrentUser if:
+    // 1. We have a token but no user (initialization case)
+    // 2. Or isAuthenticated is true but user is missing (shouldn't happen, but handle it)
+    if (token && !user) {
       getCurrentUser();
     }
-  }, [isAuthenticated, user]); // Removed getCurrentUser from dependencies to prevent infinite loop
+  }, [token, user]); // Removed getCurrentUser from dependencies to prevent infinite loop
+
+  // Timeout mechanism: After 10 seconds, redirect to login
+  useEffect(() => {
+    if (!token || user) {
+      setMaxWaitReached(false);
+      return;
+    }
+
+    // If we have a token but no user after 10 seconds, show login
+    const timeout = setTimeout(() => {
+      setMaxWaitReached(true);
+    }, 10000);
+
+    return () => clearTimeout(timeout);
+  }, [token, user]);
+
+  // If timeout reached, redirect to login
+  if (maxWaitReached && token && !user) {
+    return <Navigate to="/login" state={{ from: location.pathname }} replace />;
+  }
 
   if (loading || (isAuthenticated && !user)) {
     return (

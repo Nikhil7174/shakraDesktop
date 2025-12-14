@@ -17,7 +17,7 @@ export const PublicRoute: React.FC<PublicRouteProps> = ({ children }) => {
     setInitializing(true);
     setMaxWaitReached(false);
 
-    // Maximum wait time: 5 seconds
+    // Maximum wait time: 5 seconds (after which login page appears)
     const maxWaitTimeout = setTimeout(() => {
       setMaxWaitReached(true);
       setInitializing(false);
