@@ -410,8 +410,8 @@ export class InterviewOrchestrator extends EventEmitter {
     })
 
     this.stateMachine.on('introStarted', async () => {
-      // const introText = "Hello! Welcome to your technical interview. I'll be conducting your interview today. Lets start with some theoretical questions."
-      const introText = "Hello!"
+      const introText = "Hello! Welcome to your technical interview. I'll be conducting your interview today. Lets start with some theoretical questions."
+      // const introText = "Hello!"
 
       // Keep mic paused between intro and question
       this.suppressAutoMicResume = true
@@ -3728,36 +3728,60 @@ export class InterviewOrchestrator extends EventEmitter {
       const isSecurityWarningSpeech =
         this.currentSpeechContext?.source === 'security_warning'
       const isTtsSpeaking = this.speechGate?.isSpeaking?.() ?? false
+      const sttListening = this.stt?.isListening() ?? false
 
-      console.log(
-        '🎤 [Main] streamAudio:',
-        'micPaused =', this.micPaused,
-        'isSecurityWarningSpeech =', isSecurityWarningSpeech,
-        'isTtsSpeaking =', isTtsSpeaking,
-        'sttListening =', this.stt?.isListening()
-      )
+      // Only log occasionally to avoid spam (every ~50 chunks = ~2.5 seconds)
+      if (Math.random() < 0.02) {
+        console.log(
+          '🎤 [Main] streamAudio:',
+          'micPaused =', this.micPaused,
+          'isSecurityWarningSpeech =', isSecurityWarningSpeech,
+          'isTtsSpeaking =', isTtsSpeaking,
+          'sttListening =', sttListening,
+          'sttExists =', !!this.stt
+        )
+      }
 
       // CRITICAL FIX: Respect micPaused flag
       // If the mic is paused (e.g. during TTS), we MUST NOT stream audio to STT
       // This prevents self-transcription of TTS output
       if (this.micPaused) {
-        // console.log('🎤 [Main] Mic is paused, dropping audio chunk')
+        if (Math.random() < 0.01) {
+          console.log('🎤 [Main] Mic is paused, dropping audio chunk')
+        }
         return
       }
 
       // Optional suppression: only drop audio during active non-security TTS playback
       if (isTtsSpeaking && !isSecurityWarningSpeech) {
-        console.log('🎤 [Main] Dropping audio chunk during non-security TTS playback')
+        if (Math.random() < 0.1) {
+          console.log('🎤 [Main] Dropping audio chunk during non-security TTS playback')
+        }
         return
       }
 
       // Let STT's own VAD / turn detection decide what counts as speech
-      if (!this.stt.isListening()) {
-        console.log('🎤 [Main] STT is not listening, audio chunk ignored')
+      if (!sttListening) {
+        if (Math.random() < 0.1) {
+          console.log('🎤 [Main] STT is not listening, audio chunk ignored. isConnected:', this.stt?.isListening())
+        }
         return
       }
 
-      this.stt.streamAudio(audioChunk)
+      // Check if STT service exists before calling
+      if (!this.stt) {
+        if (Math.random() < 0.1) {
+          console.warn('🎤 [Main] STT service is null, cannot stream audio')
+        }
+        return
+      }
+
+      // Forward to STT service
+      try {
+        this.stt.streamAudio(audioChunk)
+      } catch (error) {
+        console.error('🎤 [Main] Error forwarding audio to STT:', error)
+      }
     }
 
   // Receive vision security warnings from renderer

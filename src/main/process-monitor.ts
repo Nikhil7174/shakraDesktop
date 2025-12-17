@@ -16,11 +16,11 @@ export class ProcessMonitor {
   private readonly blockedApps = [
     // Browsers (all major browsers)
      'firefox', 'edge', 'opera', 'brave', 'safari', 'vivaldi', 'tor',
-     'msedge', 'iexplore', 'waterfox', 'pale moon',
+     'msedge', 'iexplore', 'waterfox', 'pale moon', 'chrome', 'chromium',
     
     // AI/Chat applications and assistants
     'chatgpt', 'claude', 'copilot', 'gemini', 'bard', 'openai', 'anthropic',
-    'perplexity', 'poe', 'character.ai', 'cursor', 'github copilot',
+    'perplexity', 'poe', 'character.ai', 'github copilot',
     'chatgpt desktop', 'claude desktop', 'chatgpt app', 'claude app',
     'bing chat', 'microsoft copilot', 'copilot chat', 'chatgpt plus',
     'you.com', 'phind', 'hugging chat', 'huggingface', 'replicate',
@@ -60,7 +60,7 @@ export class ProcessMonitor {
     'aider ai', 'aider coding', 'aider chat', 'aider assistant',
     'continue ai', 'continue.dev', 'continue extension', 'continue chat',
     'blackbox ai', 'blackbox code', 'blackbox chat', 'blackbox assistant',
-    'replit ghostwriter', 'replit ai', 'replit copilot', 'replit chat',
+    'replit ghostwriter', 'replit ai', 'replit copilot', 'replit chat', 'cursor',
     'cursor ai', 'cursor chat', 'cursor copilot', 'cursor assistant',
     'ai pair programming', 'ai code completion', 'ai code review',
     'ai code generator', 'ai code assistant', 'ai programming',
@@ -305,65 +305,6 @@ export class ProcessMonitor {
     return Promise.all(killPromises)
   }
 
-  // Check if a process path is a system process (Windows-specific)
-  private isSystemProcessPath(processPath: string): boolean {
-    if (!processPath) return false
-    
-    const pathLower = processPath.toLowerCase()
-    
-    // Windows system directories - these are system processes
-    const systemDirs = [
-      '\\windows\\system32\\',
-      '\\windows\\syswow64\\',
-      '\\windows\\winsxs\\',
-      '\\windows\\servicing\\',
-      '\\program files\\windows defender\\',
-      '\\program files\\windows nt\\',
-      '\\program files (x86)\\windows defender\\',
-      '\\program files (x86)\\windows nt\\',
-      '\\windows\\',
-      '\\system32\\',
-      '\\syswow64\\'
-    ]
-    
-    return systemDirs.some(dir => pathLower.includes(dir))
-  }
-
-  // Check if a process is a user application (Windows-specific)
-  private isUserApplication(processPath: string, processName: string): boolean {
-    if (!processPath) {
-      // If no path, fall back to blacklist check
-      return this.isInBlacklist(processName)
-    }
-    
-    const pathLower = processPath.toLowerCase()
-    const processNameLower = processName.toLowerCase()
-    
-    // Must be a .exe file
-    if (!pathLower.endsWith('.exe')) {
-      return false
-    }
-    
-    // User application directories (Windows)
-    const userAppDirs = [
-      '\\program files\\',
-      '\\program files (x86)\\',
-      '\\users\\',
-      '\\appdata\\',
-      '\\local\\',
-      '\\roaming\\',
-      '\\programdata\\'
-    ]
-    
-    // Check if it's in a user directory
-    const isInUserDir = userAppDirs.some(dir => pathLower.includes(dir))
-    
-    // Also check blacklist as additional filter
-    const isInBlacklist = this.isInBlacklist(processName)
-    
-    // Block if it's in user directory OR in blacklist (but not if it's a system process)
-    return (isInUserDir || isInBlacklist) && !this.isSystemProcessPath(processPath)
-  }
 
   // Check if process name is in blacklist
   private isInBlacklist(processName: string): boolean {
@@ -402,12 +343,11 @@ export class ProcessMonitor {
     return nameMatches || pathMatches
   }
 
-  // Detection method: Block all user applications (Windows: .exe in user directories, or in blacklist)
+  // Detection method: Block only blacklisted applications (cross-platform)
   private detectBlockedProcesses(processes: any[]): Array<{ name: string; pid: number; reason: string }> {
     const detected: Array<{ name: string; pid: number; reason: string }> = []
     const seenProcesses = new Set<string>() // Track unique processes to avoid duplicates
     const currentPid = process.pid // Get current process PID to exclude Shakra itself
-    const platform = os.platform()
 
     processes.forEach(proc => {
       const processName = proc.name || ''
@@ -438,33 +378,17 @@ export class ProcessMonitor {
         return // Skip system processes - never block them
       }
 
-      // Windows-specific: Block all .exe files in user directories
-      if (platform === 'win32') {
-        if (this.isUserApplication(processPath, processName) && pid > 0) {
-          const uniqueId = `${processName}-${pid}`
-          
-          if (!seenProcesses.has(uniqueId)) {
-            seenProcesses.add(uniqueId)
-            detected.push({
-              name: processName,
-              pid,
-              reason: processPath ? `User application: ${processPath}` : `Blacklisted application: ${processName}`
-            })
-          }
-        }
-      } else {
-        // For Linux/macOS: Use blacklist approach
-        if (this.isInBlacklist(processName) && pid > 0) {
-          const uniqueId = `${processName}-${pid}`
-          
-          if (!seenProcesses.has(uniqueId)) {
-            seenProcesses.add(uniqueId)
-            detected.push({
-              name: processName,
-              pid,
-              reason: `Blacklisted application: ${processName}`
-            })
-          }
+      // Cross-platform: Only block processes in blacklist
+      if (this.isInBlacklist(processName) && pid > 0) {
+        const uniqueId = `${processName}-${pid}`
+        
+        if (!seenProcesses.has(uniqueId)) {
+          seenProcesses.add(uniqueId)
+          detected.push({
+            name: processName,
+            pid,
+            reason: `Blacklisted application: ${processName}`
+          })
         }
       }
     })
@@ -473,42 +397,16 @@ export class ProcessMonitor {
   }
 
 
-  // Enrich processes with paths on Windows (if not already present)
+  // Enrich processes with paths (if not already present) - cross-platform
   private async enrichProcessesWithPaths(processes: any[]): Promise<any[]> {
-    if (os.platform() !== 'win32') {
-      return processes // Only needed on Windows
-    }
-
     // If processes already have path information, return as-is
     if (processes.length > 0 && (processes[0].path || processes[0].exe || processes[0].commandLine)) {
       return processes
     }
 
-    // Try to get paths using wmic (Windows Management Instrumentation)
-    try {
-      const enrichedProcesses = await Promise.all(
-        processes.map(async (proc) => {
-          if (proc.pid && proc.pid > 0) {
-            try {
-              // Use wmic to get process executable path
-              const { stdout } = await execAsync(`wmic process where "ProcessId=${proc.pid}" get ExecutablePath /format:value`)
-              const match = stdout.match(/ExecutablePath=(.+)/i)
-              if (match && match[1]) {
-                proc.path = match[1].trim()
-                proc.exe = match[1].trim()
-              }
-            } catch (error) {
-              // Ignore errors for individual processes
-            }
-          }
-          return proc
-        })
-      )
-      return enrichedProcesses
-    } catch (error) {
-      console.warn('Failed to enrich processes with paths, using process list as-is')
-      return processes
-    }
+    // Path enrichment is optional - return processes as-is if not available
+    // This avoids Windows-specific wmic calls and makes the code cross-platform
+    return processes
   }
 
   // Check if the current process snapshot has changed from the last one
@@ -548,7 +446,7 @@ export class ProcessMonitor {
         // console.log(`Found ${processes.length} processes using fallback method`)
       }
       
-      // Enrich processes with paths on Windows
+      // Enrich processes with paths (if available)
       processes = await this.enrichProcessesWithPaths(processes)
       
       const detected = this.detectBlockedProcesses(processes)
@@ -626,7 +524,7 @@ export class ProcessMonitor {
         // console.log(`Found ${processes.length} processes using fallback method`)
       }
       
-      // Enrich processes with paths on Windows
+      // Enrich processes with paths (if available)
       processes = await this.enrichProcessesWithPaths(processes)
       
       const detected = this.detectBlockedProcesses(processes)
@@ -755,7 +653,7 @@ export class ProcessMonitor {
         processes = await this.getProcessesFallback()
       }
       
-      // Enrich processes with paths on Windows
+      // Enrich processes with paths (if available)
       processes = await this.enrichProcessesWithPaths(processes)
       
       const detected = this.detectBlockedProcesses(processes)

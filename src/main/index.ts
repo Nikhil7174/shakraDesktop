@@ -6,6 +6,7 @@ import { homedir } from 'os'
 import { ProcessMonitor } from './process-monitor'
 import { InterviewOrchestrator } from './interview-orchestrator'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { format } from 'url'
 
 // Load environment variables from .env at project root (dev and prod)
 dotenv.config()
@@ -166,11 +167,54 @@ function createWindow(): void {
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    // In production, load the HTML file
+    // Use loadFile which handles asar archives and sets proper base URL for relative assets
+    const htmlPath = join(__dirname, '../renderer/index.html')
+    const rendererDir = join(__dirname, '../renderer')
+    
+    console.log('📄 [Main] Loading HTML from:', htmlPath)
+    console.log('📄 [Main] Renderer directory:', rendererDir)
+    console.log('📄 [Main] File exists:', existsSync(htmlPath))
+    console.log('📄 [Main] __dirname:', __dirname)
+    console.log('📄 [Main] app.isPackaged:', app.isPackaged)
+    
+    // loadFile automatically handles asar files and sets correct base URL
+    // The base URL will be set to the directory containing the HTML file
+    mainWindow.loadFile(htmlPath).catch((error) => {
+      console.error('❌ [Main] loadFile failed, trying loadURL with file:// protocol:', error)
+      // Fallback: use loadURL with file:// protocol
+      // This explicitly sets the base URL to the renderer directory
+      const fileUrl = format({
+        pathname: htmlPath.replace(/\\/g, '/'), // Normalize path separators
+        protocol: 'file:',
+        slashes: true
+      })
+      console.log('📄 [Main] Fallback URL:', fileUrl)
+      mainWindow.loadURL(fileUrl).catch((fallbackError) => {
+        console.error('❌ [Main] Fallback also failed:', fallbackError)
+      })
+    })
   }
+
+  // Handle page load errors
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    console.error('❌ [Main] Page failed to load:', {
+      errorCode,
+      errorDescription,
+      validatedURL
+    })
+  })
+
+  // Log console messages from renderer for debugging
+  mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    if (level >= 2) { // Log warnings and errors
+      console.log(`[Renderer ${level === 2 ? 'WARN' : 'ERROR'}]`, message, `(${sourceId}:${line})`)
+    }
+  })
 
   // Set icon after page loads (Wayland sometimes needs this)
   mainWindow.webContents.once('did-finish-load', () => {
+    console.log('✅ [Main] Page loaded successfully')
     if (iconPath && mainWindow && !mainWindow.isDestroyed()) {
       // Try setting icon multiple times with delays
       const setIconAttempts = [0, 100, 300, 500, 1000]

@@ -245,8 +245,8 @@ export class VisionSecurityService {
     const noseOffsetX = noseTip ? (noseTip.x - 0.5) : 0 // 0.5 is center of face
 
     // Thresholds for gaze direction (more lenient)
-    const threshold = 0.05 // Increased from 0.02 for better detection
-    const headPoseThreshold = 0.1 // For head turning
+    const threshold = 0.10 // Increased from 0.02 for better detection
+    const headPoseThreshold = 0.15 // For head turning
 
     // If no iris data, use head pose estimation from nose position
     if (!leftEyeCenter || !rightEyeCenter) {

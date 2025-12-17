@@ -511,40 +511,74 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   // Microphone capture and streaming to main (16k PCM mono)
   const startMicrophoneStreaming = async () => {
     try {
+      // Request high-quality audio with noise suppression and echo cancellation
+      // Request high-quality audio with noise suppression and echo cancellation enabled
+      // These improve transcription accuracy by reducing background noise and echo
       const stream = await navigator.mediaDevices.getUserMedia({ audio: {
         channelCount: 1,
-        sampleRate: 48000, // browser typical; we'll downsample
-        noiseSuppression: false, // Disable to get raw audio
-        echoCancellation: false, // Disable to get raw audio
-        autoGainControl: false   // Disable to get raw audio
+        sampleRate: 48000, // browser typical; we'll downsample to 16kHz
+        noiseSuppression: true, // Enable to reduce background noise
+        echoCancellation: true, // Enable to prevent echo/feedback
+        autoGainControl: true   // Enable to normalize volume levels
       } as MediaTrackConstraints })
       
       console.log('🎤 [Mic] Microphone stream obtained:', stream)
       console.log('🎤 [Mic] Audio tracks:', stream.getAudioTracks().length)
-      console.log('🎤 [Mic] Track settings:', stream.getAudioTracks()[0]?.getSettings())
+      const trackSettings = stream.getAudioTracks()[0]?.getSettings()
+      console.log('🎤 [Mic] Track settings:', trackSettings)
 
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 })
+      // Use native AudioContext sample rate (don't force 16kHz - let browser handle it)
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+      const actualSampleRate = audioContext.sampleRate
+      console.log('🎤 [Mic] AudioContext sample rate:', actualSampleRate)
+      
       const source = audioContext.createMediaStreamSource(stream)
-      // Use 1024 buffer size (power of 2) - approximately 64ms at 16kHz
-      const processor = audioContext.createScriptProcessor(1024, 1, 1)
+      // Use 4096 buffer size (power of 2) - approximately 80–90ms at 44.1/48kHz.
+      // AssemblyAI requires each audio message to represent 50–1000ms of audio.
+      const processor = audioContext.createScriptProcessor(4096, 1, 1)
 
+      // Improved downsampling with anti-aliasing for better audio quality
       const downsampleTo16k = (input: Float32Array, inputSampleRate: number, targetRate = 16000): Int16Array => {
+        // If already at target rate, just convert format
+        if (Math.abs(inputSampleRate - targetRate) < 1) {
+          const result = new Int16Array(input.length)
+          for (let i = 0; i < input.length; i++) {
+            const clamped = Math.max(-1, Math.min(1, input[i]))
+            result[i] = clamped < 0 ? Math.round(clamped * 0x8000) : Math.round(clamped * 0x7FFF)
+          }
+          return result
+        }
+        
         const sampleRateRatio = inputSampleRate / targetRate
         const newLength = Math.round(input.length / sampleRateRatio)
         const result = new Int16Array(newLength)
         let offsetResult = 0
-        let offsetBuffer = 0
+        
+        // Use linear interpolation for better quality than simple averaging
         while (offsetResult < result.length) {
-          const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio)
-          let accum = 0, count = 0
-          for (let i = offsetBuffer; i < nextOffsetBuffer && i < input.length; i++) {
-            accum += input[i]
-            count++
+          const targetIndex = offsetResult * sampleRateRatio
+          const index1 = Math.floor(targetIndex)
+          const index2 = Math.min(index1 + 1, input.length - 1)
+          const fraction = targetIndex - index1
+          
+          // Linear interpolation
+          const sample = input[index1] * (1 - fraction) + input[index2] * fraction
+          // Clamp and convert to 16-bit PCM
+          const clamped = Math.max(-1, Math.min(1, sample))
+          const int16Value = clamped < 0 ? Math.round(clamped * 0x8000) : Math.round(clamped * 0x7FFF)
+          
+          // Log first sample conversion occasionally to verify it's working
+          if (offsetResult === 0 && Math.random() < 0.01) {
+            console.log('🎤 [Renderer] Sample conversion check:', {
+              floatSample: sample.toFixed(6),
+              clamped: clamped.toFixed(6),
+              int16Value: int16Value,
+              expectedRange: '[-32768, 32767]'
+            })
           }
-          const sample = Math.max(-1, Math.min(1, accum / count))
-          result[offsetResult] = sample < 0 ? sample * 0x8000 : sample * 0x7FFF
+          
+          result[offsetResult] = int16Value
           offsetResult++
-          offsetBuffer = nextOffsetBuffer
         }
         return result
       }
@@ -552,6 +586,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       processor.onaudioprocess = (e) => {
         // Only stream after STT starts listening
         if (!isListeningRef.current) {
+          // Log occasionally when not listening to diagnose issues
+          if (Math.random() < 0.01) {
+            console.log('🎤 [Renderer] Audio chunk skipped - not listening. isListeningRef:', isListeningRef.current)
+          }
           return
         }
 
@@ -563,22 +601,70 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         lastAudioTimeRef.current = now
 
         const input = e.inputBuffer.getChannelData(0)
-        const pcm16 = downsampleTo16k(input, audioContext.sampleRate)
         
-        // Convert Int16Array to proper PCM s16le format (browser-compatible)
-        const buffer = new Uint8Array(pcm16.buffer)
+        // Calculate audio level BEFORE downsampling for diagnostics
+        const maxSample = Math.max(...Array.from(input).map(Math.abs))
+        const rmsLevel = Math.sqrt(input.reduce((sum, val) => sum + val * val, 0) / input.length)
         
-        // Apply volume boost if audio is too quiet
-        const audioLevel = Math.sqrt(input.reduce((sum, val) => sum + val * val, 0) / input.length)
-        if (audioLevel > 0.001) {
-          const boostFactor = 2.0
-          const boostedInput = input.map(sample => Math.max(-1, Math.min(1, sample * boostFactor)))
-          const boostedPcm16 = downsampleTo16k(boostedInput, audioContext.sampleRate)
-          const boostedBuffer = new Uint8Array(boostedPcm16.buffer)
-          window.electronAPI.sendAudioChunk(boostedBuffer)
-          return
+        // Simple adaptive gain control: try to normalize RMS towards a target without clipping
+        const targetRms = 0.05 // target RMS for clear speech (~-26 dBFS)
+        let gain = 1
+        if (rmsLevel > 0 && rmsLevel < targetRms) {
+          // Cap max gain to avoid insane amplification of pure noise
+          gain = Math.min(targetRms / rmsLevel, 8)
         }
         
+        const boostedInput =
+          gain !== 1
+            ? input.map((sample) => {
+                const boosted = sample * gain
+                return Math.max(-1, Math.min(1, boosted))
+              })
+            : input
+        
+        // Log audio levels to diagnose volume issues
+        if (Math.random() < 0.1) {
+          console.log(
+            '🎤 [Renderer] Audio levels',
+            '| max:', maxSample.toFixed(6),
+            '| RMS:', rmsLevel.toFixed(6),
+            '| gain:', gain.toFixed(2),
+            '| samples:', input.length,
+            '| sampleRate:', actualSampleRate
+          )
+        }
+        
+        // Downsample to 16kHz using the actual AudioContext sample rate
+        const pcm16 = downsampleTo16k(boostedInput, actualSampleRate)
+        
+        // Check downsampled audio levels
+        const pcmMax = Math.max(...Array.from(pcm16).map(Math.abs))
+        const pcmRms = Math.sqrt(Array.from(pcm16).reduce((sum, val) => sum + (val / 32768) ** 2, 0) / pcm16.length)
+        
+        if (Math.random() < 0.1) {
+          console.log('🎤 [Renderer] PCM16 levels - max:', pcmMax, 'RMS (normalized):', pcmRms.toFixed(6), 'expected range: 0-32767')
+          
+          // Warn if PCM values are suspiciously small
+          if (pcmMax < 100) {
+            console.warn('🎤 [Renderer] WARNING: PCM16 values are very small! max:', pcmMax, 'Expected hundreds or thousands for normal speech.')
+          }
+        }
+        
+        // Convert Int16Array to Uint8Array with proper little-endian byte order
+        // Int16Array is already little-endian in JavaScript, so we can use the buffer directly
+        const buffer = new Uint8Array(pcm16.buffer)
+        
+        // Verify buffer size (should be pcm16.length * 2 bytes for 16-bit samples)
+        if (buffer.length !== pcm16.length * 2) {
+          console.error('🎤 [Renderer] Audio buffer size mismatch!', {
+            pcm16Length: pcm16.length,
+            bufferLength: buffer.length,
+            expected: pcm16.length * 2
+          })
+        }
+        
+        // Send all audio chunks - let AssemblyAI handle silence detection and VAD
+        // Filtering silence here can cause issues with speech detection
         window.electronAPI.sendAudioChunk(buffer)
       }
 

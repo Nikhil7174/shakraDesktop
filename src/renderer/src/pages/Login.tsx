@@ -8,11 +8,17 @@ import { useAuth } from '../hooks/useAuth';
 const { Title, Text } = Typography;
 
 export const Login: React.FC = () => {
+  console.log('✅ [Login] Component rendering...');
   const { message } = App.useApp();
   const navigate = useNavigate();
   const location = useLocation();
+  console.log('✅ [Login] Location:', location);
   const { login, loading, isAuthenticated, user } = useAuth();
   const [form] = Form.useForm();
+  
+  useEffect(() => {
+    console.log('✅ [Login] Component mounted');
+  }, []);
 
   // Get return to path from navigation state
   const returnTo = (location.state as any)?.returnTo;
