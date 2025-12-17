@@ -35,6 +35,12 @@ const interviewAPI = {
   getSTTToken: () => ipcRenderer.invoke('get-stt-token'),
   updateSTTToken: (token: string) => ipcRenderer.invoke('update-stt-token', token),
   
+  // Config management
+  setAuthToken: (token: string | null) => ipcRenderer.invoke('set-auth-token', token),
+  fetchConfig: (authToken: string) => ipcRenderer.invoke('fetch-config', authToken),
+  getConfig: () => ipcRenderer.invoke('get-config'),
+  refreshConfig: (authToken: string) => ipcRenderer.invoke('refresh-config', authToken),
+  
   // Unfinished interview management
   checkUnfinishedInterview: () => ipcRenderer.invoke('check-unfinished-interview'),
   clearUnfinishedInterview: () => ipcRenderer.invoke('clear-unfinished-interview'),

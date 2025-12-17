@@ -7,17 +7,20 @@ import { ProcessMonitor } from './process-monitor'
 import { InterviewOrchestrator } from './interview-orchestrator'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { format } from 'url'
+import { getConfigService } from './services/config-service'
 
 // Load environment variables from .env at project root (dev and prod)
 dotenv.config()
 console.log('🔧 [Main] Environment check:')
-console.log('🔧 [Main] ASSEMBLYAI_API_KEY:', process.env.ASSEMBLYAI_API_KEY ? `${process.env.ASSEMBLYAI_API_KEY.substring(0, 10)}...` : 'NOT SET')
-console.log('🔧 [Main] OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? `${process.env.OPENAI_API_KEY.substring(0, 10)}...` : 'NOT SET')
+console.log('🔧 [Main] ASSEMBLYAI_API_KEY:', process.env.ASSEMBLYAI_API_KEY ? `${process.env.ASSEMBLYAI_API_KEY.substring(0, 10)}...` : 'NOT SET (will use server config)')
+console.log('🔧 [Main] OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? `${process.env.OPENAI_API_KEY.substring(0, 10)}...` : 'NOT SET (will use server config)')
+console.log('🔧 [Main] Config service initialized - will fetch keys from server on login')
 
 let tray: Tray | null = null
 let mainWindow: BrowserWindow | null = null
 let monitor: ProcessMonitor | null = null
 let interviewOrchestrator: InterviewOrchestrator | null = null
+const configService = getConfigService()
 
 // Icon path resolution (try multiple possible paths)
 function getIconPath(): string | undefined {
@@ -476,28 +479,31 @@ app.whenReady().then(async () => {
   monitor = new ProcessMonitor()
   monitor.start()
 
-  // Initialize interview orchestrator
+  // Initialize interview orchestrator with config from service
   try {
+    const config = configService.getConfigSync()
+    console.log('🔧 [Main] Initializing interview orchestrator with config from:', config.lastFetched ? 'server' : 'env/local')
+    
     interviewOrchestrator = new InterviewOrchestrator()
     await interviewOrchestrator.initialize({
       stt: {
         provider: 'assemblyai',
-        apiKey: process.env.ASSEMBLYAI_API_KEY || '',
+        apiKey: config.assemblyaiApiKey,
         sampleRate: 16000,
         language: 'en'
       },
       llm: {
-        serverUrl: process.env.SERVER_URL || 'https://crisp-server-n0r1.onrender.com'
+        serverUrl: config.serverUrl
       },
       tts: {
         provider: 'openai',
-        apiKey: process.env.OPENAI_API_KEY || '',
+        apiKey: config.openaiApiKey,
         voice: 'alloy', // Cheapest voice (all voices same price)
         model: 'tts-1',  // Cheapest model ($15/1M chars vs $30 for tts-1-hd)
         speed: 1.2       // Slightly faster = shorter audio = lower cost
       },
       codeAnalysis: {
-        serverUrl: process.env.SERVER_URL || 'https://crisp-server-n0r1.onrender.com'
+        serverUrl: config.serverUrl
       }
     })
 
@@ -819,13 +825,14 @@ app.whenReady().then(async () => {
       try {
         const { AssemblyAI } = await import('assemblyai')
         
-        // Check if API key is set
-        const apiKey = process.env.ASSEMBLYAI_API_KEY || ''
+        // Use async getConfig which auto-refreshes if expired
+        const config = await configService.getConfig()
+        const apiKey = config.assemblyaiApiKey
         if (!apiKey) {
           console.error('🎤 [STT] ASSEMBLYAI_API_KEY is not set')
           return { 
             success: false, 
-            error: 'ASSEMBLYAI_API_KEY environment variable is not configured' 
+            error: 'ASSEMBLYAI_API_KEY is not configured. Please ensure you are logged in and the server has provided the API key.' 
           }
         }
         
@@ -963,6 +970,139 @@ app.whenReady().then(async () => {
     } catch (error: unknown) {
       const err = error as Error
       console.error('Failed to mark payload as sent:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
+  // Config management IPC handlers
+  ipcMain.handle('set-auth-token', async (_event, token: string | null) => {
+    try {
+      configService.setAuthToken(token)
+      
+      // If token set, wait a bit for config to fetch, then reinitialize orchestrator
+      if (token) {
+        // Give fetch time to complete (non-blocking)
+        setTimeout(async () => {
+          try {
+            const config = await configService.getConfig()
+            if (config.lastFetched && interviewOrchestrator) {
+              await interviewOrchestrator.initialize({
+                stt: {
+                  provider: 'assemblyai',
+                  apiKey: config.assemblyaiApiKey,
+                  sampleRate: 16000,
+                  language: 'en'
+                },
+                llm: {
+                  serverUrl: config.serverUrl
+                },
+                tts: {
+                  provider: 'openai',
+                  apiKey: config.openaiApiKey,
+                  voice: 'alloy',
+                  model: 'tts-1',
+                  speed: 1.2
+                },
+                codeAnalysis: {
+                  serverUrl: config.serverUrl
+                }
+              })
+              console.log('✅ [Main] Orchestrator reinitialized with fetched config')
+            }
+          } catch (err) {
+            console.warn('⚠️ [Main] Failed to reinitialize with fetched config:', err)
+          }
+        }, 1000) // Give fetch time to complete
+      }
+      
+      return { success: true }
+    } catch (error: unknown) {
+      const err = error as Error
+      return { success: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('fetch-config', async (_event, authToken: string) => {
+    try {
+      const config = await configService.fetchFromServer(authToken)
+      
+      // Reinitialize orchestrator with new config
+      if (interviewOrchestrator) {
+        await interviewOrchestrator.initialize({
+          stt: {
+            provider: 'assemblyai',
+            apiKey: config.assemblyaiApiKey,
+            sampleRate: 16000,
+            language: 'en'
+          },
+          llm: {
+            serverUrl: config.serverUrl
+          },
+          tts: {
+            provider: 'openai',
+            apiKey: config.openaiApiKey,
+            voice: 'alloy',
+            model: 'tts-1',
+            speed: 1.2
+          },
+          codeAnalysis: {
+            serverUrl: config.serverUrl
+          }
+        })
+      }
+      
+      return { success: true, config }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to fetch config:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('get-config', async () => {
+    try {
+      const config = await configService.getConfig()
+      return { success: true, config }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to get config:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('refresh-config', async (_event, authToken: string) => {
+    try {
+      const config = await configService.refresh(authToken)
+      
+      // Reinitialize orchestrator with refreshed config
+      if (interviewOrchestrator) {
+        await interviewOrchestrator.initialize({
+          stt: {
+            provider: 'assemblyai',
+            apiKey: config.assemblyaiApiKey,
+            sampleRate: 16000,
+            language: 'en'
+          },
+          llm: {
+            serverUrl: config.serverUrl
+          },
+          tts: {
+            provider: 'openai',
+            apiKey: config.openaiApiKey,
+            voice: 'alloy',
+            model: 'tts-1',
+            speed: 1.2
+          },
+          codeAnalysis: {
+            serverUrl: config.serverUrl
+          }
+        })
+      }
+      
+      return { success: true, config }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to refresh config:', err)
       return { success: false, error: err.message }
     }
   })

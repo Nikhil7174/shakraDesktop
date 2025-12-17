@@ -39,6 +39,14 @@ export const useAuth = () => {
               token: response.data.token,
             })
           );
+          
+          // Send token to main process (triggers config fetch)
+          if (window.electronAPI?.setAuthToken && response.data.token) {
+            window.electronAPI.setAuthToken(response.data.token).catch(err => {
+              console.warn('⚠️ [Auth] Failed to set auth token after registration:', err);
+            });
+          }
+          
           return response.data;
         }
       } catch (error: any) {
@@ -70,6 +78,14 @@ export const useAuth = () => {
               token: response.data.token,
             })
           );
+          
+          // Send token to main process (triggers config fetch)
+          if (window.electronAPI?.setAuthToken && response.data.token) {
+            window.electronAPI.setAuthToken(response.data.token).catch(err => {
+              console.warn('⚠️ [Auth] Failed to set auth token after login:', err);
+            });
+          }
+          
           return response.data;
         }
       } catch (error: any) {
@@ -101,6 +117,10 @@ export const useAuth = () => {
       console.error('Logout error:', error);
     } finally {
       dispatch(logoutAction());
+      // Clear token in main process
+      if (window.electronAPI?.setAuthToken) {
+        window.electronAPI.setAuthToken(null).catch(() => {});
+      }
     }
   }, [dispatch, token]);
 

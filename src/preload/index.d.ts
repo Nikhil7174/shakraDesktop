@@ -18,6 +18,10 @@ type InterviewAPI = {
   onVisionSecurityAlert: (callback: (alert: any) => void) => void
   getSTTToken: () => Promise<{ success: boolean; token?: string; error?: string }>
   updateSTTToken: (token: string) => Promise<{ success: boolean; error?: string }>
+  setAuthToken: (token: string | null) => Promise<{ success: boolean; error?: string }>
+  fetchConfig: (authToken: string) => Promise<{ success: boolean; config?: any; error?: string }>
+  getConfig: () => Promise<{ success: boolean; config?: any; error?: string }>
+  refreshConfig: (authToken: string) => Promise<{ success: boolean; config?: any; error?: string }>
   checkUnfinishedInterview: () => Promise<{ hasUnfinished: boolean; sessionInfo?: any; error?: string }>
   clearUnfinishedInterview: () => Promise<{ success: boolean; error?: string }>
   onAudioCaptureRequired: (callback: () => void) => void
