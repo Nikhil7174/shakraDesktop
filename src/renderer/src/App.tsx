@@ -15,6 +15,7 @@ import { CandidateDashboard } from './pages/CandidateDashboard';
 import { JoinInterview } from './pages/JoinInterview';
 import { SessionCleanup } from './components/SessionCleanup';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { Register } from './pages/Register';
 
 const App: React.FC = () => {
   return (
@@ -37,7 +38,11 @@ const App: React.FC = () => {
                       <Login />
                     </PublicRoute>
                   } />
-                  <Route path="/register" element={<Login />} />
+                  <Route path="/register" element={
+                    <PublicRoute>
+                    <Register />
+                  </PublicRoute>
+                  } />
                   <Route path="/join" element={<JoinInterview />} />
                   <Route
                     path="/candidate/dashboard"
