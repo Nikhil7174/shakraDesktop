@@ -52,9 +52,6 @@ export const CandidateDashboard: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [lastFetched, setLastFetched] = useState<Date | null>(null);
   
-  // Refs for cleanup
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
-
   // Memoized fetch function - React will handle when to call this
   const fetchAttempts = useCallback(async () => {
     try {
@@ -111,30 +108,29 @@ export const CandidateDashboard: React.FC = () => {
     fetchAttempts();
   }, [fetchAttempts]);
 
-  // Auto-refresh every minute
+  // Listen for refresh events (triggered after interview completion)
   useEffect(() => {
-    intervalRef.current = setInterval(() => {
+    const handleRefresh = () => {
+      console.log('🔄 Dashboard refresh triggered');
       fetchAttempts();
-    }, 60000);
+    };
+
+    window.addEventListener('dashboard-refresh', handleRefresh);
+    
+    // Listen for storage event (for cross-tab updates)
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'dashboard-needs-refresh') {
+        fetchAttempts();
+        localStorage.removeItem('dashboard-needs-refresh');
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
 
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-      }
+      window.removeEventListener('dashboard-refresh', handleRefresh);
+      window.removeEventListener('storage', handleStorageChange);
     };
   }, [fetchAttempts]);
-
-  // Refetch on window focus (if data is stale)
-  useEffect(() => {
-    const handleFocus = () => {
-      if (lastFetched && Date.now() - lastFetched.getTime() > 30000) {
-        fetchAttempts();
-      }
-    };
-
-    window.addEventListener('focus', handleFocus);
-    return () => window.removeEventListener('focus', handleFocus);
-  }, [fetchAttempts, lastFetched]);
 
   // Memoized computed values
   const completedAttempts = useMemo(() => 

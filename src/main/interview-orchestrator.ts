@@ -118,28 +118,11 @@ export class InterviewOrchestrator extends EventEmitter {
   private manualResponseInFlight: { kind: ResponseKind; source: string; startedAt: number } | null = null
   private currentSpeechContext: SpeechContext | null = null
   // Track hint/clarification requests and user speech for auto-hint conditions (reset every 60s interval)
-  
-  // All possible security warning messages (normalized for exact matching)
-  private readonly SECURITY_WARNING_MESSAGES = new Set([
-    // gaze_away messages
-    "please maintain focus on the screen",
-    "i notice you're looking away let's stay focused on the interview",
-    "your attention seems to be drifting please focus on the questions",
-    // face_absent messages
-    "please ensure your face is visible to the camera",
-    "i can't see you clearly please position yourself in front of the camera",
-    "your face is not visible please adjust your camera",
-    // mobile_device_usage messages
-    "please put away your mobile device and focus on the interview",
-    "i notice you may be using a mobile device please focus on the interview",
-    "let's keep our attention on the interview please avoid using other devices",
-    // multiple_faces messages
-    "multiple faces detected please ensure you are alone during the interview",
-    "i see multiple people this should be a solo interview",
-    "please ensure only you are visible during the interview"
-  ])
   private currentIntervalHasHintClarification: boolean = false // Track if any hint/clarification requested in current 60s interval
   private currentIntervalHasSubstantialSpeech: boolean = false // Track if any substantial speech (>70 chars) in current 60s interval
+  private pendingSecurityWarning: string | null = null // Queue for security warnings while other TTS is playing
+  private isSecurityWarningInProgress = false // Flag to prevent concurrent security warning TTS
+  private skipConfirmationResolve: ((confirmed: boolean) => void) | null = null // For skip question confirmation
   // Centralized conversation history manager
   // Maintains full conversation history throughout the interview
   private fullConversationHistory: ConversationMessage[] = []
@@ -396,15 +379,40 @@ export class InterviewOrchestrator extends EventEmitter {
     }
   }
 
+  private updateListeningState(state: InterviewState): void {
+    const shouldListen = 
+      state === InterviewState.WAITING_FOR_ANSWER ||
+      state === InterviewState.WAITING_FOR_APPROACH ||
+      state === InterviewState.INTRO || // Allow listening during intro for "ready"
+      state === InterviewState.HANDLING_THEORETICAL_HINT || // Allow listening for hint interaction
+      state === InterviewState.HANDLING_CLARIFICATION || // Allow listening for clarification interaction
+      state === InterviewState.MONITORING_CODE || // Allow listening during coding
+      state === InterviewState.CODING_PROBLEM ||
+      state === InterviewState.FOLLOW_UP
+
+    console.log(`🎤 [Main] Setting listening to ${shouldListen} for ${state} state`)
+    
+    if (shouldListen) {
+      // ensure mic is unpaused if we're supposed to be listening
+      // Force unpause to prevent stuck state from previous TTS interactions
+      this.setMicPaused(false, 'state-change-to-listening')
+      this.suppressAutoMicResume = false // Reset suppression state just in case
+    }
+    // NOTE: We do NOT stop STT listening here - STT should stay connected throughout
+    // the interview. We only manage mic pause state to control audio streaming.
+  }
+
   private setupStateMachineListeners(): void {
     // Re-emit state changes so main process can forward to renderer
     this.stateMachine.on('stateChanged', (payload: any) => {
       this.emit('stateChanged', payload)
+      // Automatically update listening state based on interview state
+      this.updateListeningState(payload.to)
     })
 
     this.stateMachine.on('introStarted', async () => {
-      // const introText = "Hello! Welcome to your technical interview. I'll be conducting your interview today. Lets start with some theoretical questions."
-      const introText = "Hello!"
+      const introText = "Hello! Welcome to your technical interview. I'll be conducting your interview today. Lets start with some theoretical questions."
+      // const introText = "Hello!"
 
       // Keep mic paused between intro and question
       this.suppressAutoMicResume = true
@@ -676,19 +684,6 @@ export class InterviewOrchestrator extends EventEmitter {
   private setupSTTListeners(): void {
     // STT listeners
     this.stt.on('transcript', async (transcript) => {
-      // Filter out security warning TTS text from transcripts
-      if (transcript.text) {
-        const normalizedTranscript = this.normalizeText(transcript.text)
-        
-        // Check if transcript contains any security warning message
-        for (const warningMessage of this.SECURITY_WARNING_MESSAGES) {
-          if (normalizedTranscript.includes(warningMessage) || warningMessage.includes(normalizedTranscript)) {
-            console.log(`🎤 [Security] Filtering transcript that contains security warning: "${transcript.text}"`)
-            return // Ignore this transcript completely
-          }
-        }
-      }
-      
       this.markUserSpeakingActivity()
       // Clear silence timer as soon as user starts speaking (interim or final)
       const currentState = this.stateMachine.getState()
@@ -735,9 +730,8 @@ export class InterviewOrchestrator extends EventEmitter {
     // TTS listeners
     this.tts.on('playbackStarted', () => {
       // For security warnings, do NOT pause the mic – we want STT to keep hearing the user
-      // We'll filter out the warning text from transcripts instead of stopping STT
       if (this.currentSpeechContext?.source === 'security_warning') {
-        console.log('🎯 [Security] TTS started for security warning - NOT pausing mic or STT (will filter transcript)')
+        console.log('🎯 [Security] TTS started for security warning - NOT pausing mic')
         this.emit('speakingStarted')
         return
       }
@@ -748,9 +742,9 @@ export class InterviewOrchestrator extends EventEmitter {
     })
 
     this.tts.on('playbackCompleted', () => {
-      // For security warnings, we never paused the mic or STT
+      // For security warnings, we never paused the mic, so just emit speakingCompleted
       if (this.currentSpeechContext?.source === 'security_warning') {
-        console.log('🎯 [Security] TTS completed for security warning')
+        console.log('🎯 [Security] TTS completed for security warning - mic was never paused')
         this.emit('speakingCompleted')
         return
       }
@@ -1198,21 +1192,8 @@ export class InterviewOrchestrator extends EventEmitter {
         return
       }
       
-      // Transition to EVALUATING_ANSWER state BEFORE making API call
-      // This ensures isEvaluating is true during the entire API call duration
-      // so warning TTS will be queued and prevented from speaking
-      const stateBeforeTransition = this.stateMachine.getState()
-      if (stateBeforeTransition === InterviewState.WAITING_FOR_ANSWER || 
-          stateBeforeTransition === InterviewState.THEORETICAL_QUESTION) {
-        console.log('🎯 [Interview] Transitioning to EVALUATING_ANSWER before API call')
-        await this.stateMachine.transition('candidate_finished_speaking')
-      }
-      
-      // Get current state after potential transition for follow-up check
-      const currentStateAfterTransition = this.stateMachine.getState()
-      
       // Check if we're in follow-up mode by looking at state or follow-up depth
-      if (followUpDepth > 0 || currentStateAfterTransition === InterviewState.FOLLOW_UP) {
+      if (followUpDepth > 0 || currentState === InterviewState.FOLLOW_UP) {
         // We're evaluating a follow-up answer - use special follow-up evaluation
         console.log('🎯 [Interview] Evaluating follow-up answer with full context')
         const currentEvaluation = this.stateMachine.getCurrentEvaluation()
@@ -1405,6 +1386,25 @@ export class InterviewOrchestrator extends EventEmitter {
         if (result.completed) {
           await this.stateMachine.transition('clarification_provided')
         }
+      } else if (response.action === 'skip') {
+        console.log('🎯 [Interview] ⏭️ Skipping question')
+        
+        // If there's text to speak, speak it first (if not included in evaluation feedback)
+        // If evaluation is present, handleEvaluation will speak the feedback
+        if (response.text && (!response.evaluation || !response.evaluation.feedback)) {
+           await this.speakWithPolicy(response.text, {
+            interruptible: false,
+            bargeInPolicy: 'soft'
+          })
+        }
+        
+        // Handle evaluation if present (records score 0 and transitions)
+        if (response.evaluation) {
+           await this.handleEvaluation(response.evaluation)
+        } else {
+           // Fallback if no evaluation provided
+           await this.forceMoveToNextQuestion()
+        }
       } else if (response.action === 'evaluate' && response.evaluation) {
         console.log('🎯 [Interview] 📊 Handling evaluation:', response.evaluation)
         await this.handleEvaluation(response.evaluation)
@@ -1555,6 +1555,67 @@ export class InterviewOrchestrator extends EventEmitter {
             // Restart 2-minute silence timer and wait for approach again
             this.stateMachine.startSilenceTimer(120000)
             await this.stateMachine.transition('approach_needs_retry')
+          }
+        })
+        return
+      }
+      
+      // Handle skip_question intent during approach phase (when user says "I don't know" or "skip")
+      // Just show the modal - no verbal response until user confirms
+      if (intent.intent === 'skip_question') {
+        console.log('🎯 [Interview] ✨ Skip question requested during approach phase - showing confirmation modal')
+        
+        // Request confirmation from renderer (this will show the modal)
+        const confirmed = await this.requestSkipConfirmation()
+        
+        if (!confirmed) {
+          console.log('🎯 [Interview] User cancelled skip question request during approach phase')
+          return
+        }
+        
+        // Only proceed with skip if user confirmed in modal
+        console.log('🎯 [Interview] User confirmed skip during approach phase - proceeding with skip')
+        await this.withManualResponse('system', 'approach_skip_question', async () => {
+          // Acknowledge the skip (only after confirmation)
+          const skipMessage = "Understood. Let's move on to the next problem."
+          
+          // Record in conversation history
+          this.codeAnalysis.addConversationMessage('assistant', skipMessage, {
+            type: 'feedback',
+            codingProblemId: problem.id,
+            section: 'coding'
+          } as any)
+          this.syncConversationHistoryFromServices()
+          
+          await this.speakWithPolicy(
+            skipMessage,
+            {
+              interruptible: false,
+              bargeInPolicy: 'soft'
+            },
+            { kind: 'system', priority: 'manual', source: 'approach_skip_question' }
+          )
+          
+          // Submit an empty solution with score 0 to move to the next problem
+          // This properly handles the transition to next problem or end of coding section
+          try {
+            await this.submitCodingSolution('// Skipped by candidate', false)
+          } catch (error) {
+            console.error('🎯 [Interview] Error during skip submission:', error)
+            // Fallback: try to transition to next problem or end interview
+            const codingProblems = this.currentSession?.codingProblems || []
+            const currentProblemIndex = codingProblems.findIndex(p => p.id === problem.id)
+            const hasNextProblem = currentProblemIndex >= 0 && currentProblemIndex < codingProblems.length - 1
+            
+            if (hasNextProblem) {
+              const nextProblem = codingProblems[currentProblemIndex + 1]
+              this.codeAnalysis.setCurrentProblem(nextProblem)
+              this.currentProblemId = nextProblem.id
+              await this.stateMachine.setState(InterviewState.CODING_PROBLEM)
+            } else {
+              // No more problems - go to wrap up
+              await this.stateMachine.setState(InterviewState.WRAP_UP)
+            }
           }
         })
         return
@@ -1950,6 +2011,74 @@ export class InterviewOrchestrator extends EventEmitter {
         return
       }
       
+      // Handle skip_question intent during coding phase (when user says "I don't know" or "skip")
+      // Just show the modal - no verbal response until user confirms
+      if (intent.intent === 'skip_question') {
+        console.log('🎯 [Interview] ✨ Skip question requested during coding phase - showing confirmation modal')
+        
+        // Request confirmation from renderer (this will show the modal)
+        const confirmed = await this.requestSkipConfirmation()
+        
+        if (!confirmed) {
+          console.log('🎯 [Interview] User cancelled skip question request')
+          return
+        }
+        
+        // Only proceed with skip if user confirmed in modal
+        console.log('🎯 [Interview] User confirmed skip - proceeding with skip')
+        await this.withManualResponse('system', 'coding_skip_question', async () => {
+          const problem = this.getCurrentCodingProblem()
+          
+          // Acknowledge the skip (only after confirmation)
+          const skipMessage = "Understood. Let's move on to the next problem."
+          
+          // Record in conversation history
+          if (problem) {
+            this.codeAnalysis.addConversationMessage('assistant', skipMessage, {
+              type: 'feedback',
+              codingProblemId: problem.id,
+              section: 'coding'
+            } as any)
+            this.syncConversationHistoryFromServices()
+          }
+          
+          await this.speakWithPolicy(
+            skipMessage,
+            {
+              interruptible: false,
+              bargeInPolicy: 'soft'
+            },
+            { kind: 'system', priority: 'manual', source: 'coding_skip_question' }
+          )
+          
+          // Get current code (or empty if none) and submit to move to next problem
+          const currentCode = this.currentCode || this.stateMachine.getPreviousCode() || '// Skipped by candidate'
+          
+          try {
+            await this.submitCodingSolution(currentCode, false)
+          } catch (error) {
+            console.error('🎯 [Interview] Error during skip submission:', error)
+            // Fallback: try to transition to next problem or end interview
+            if (problem) {
+              const codingProblems = this.currentSession?.codingProblems || []
+              const currentProblemIndex = codingProblems.findIndex(p => p.id === problem.id)
+              const hasNextProblem = currentProblemIndex >= 0 && currentProblemIndex < codingProblems.length - 1
+              
+              if (hasNextProblem) {
+                const nextProblem = codingProblems[currentProblemIndex + 1]
+                this.codeAnalysis.setCurrentProblem(nextProblem)
+                this.currentProblemId = nextProblem.id
+                await this.stateMachine.setState(InterviewState.CODING_PROBLEM)
+              } else {
+                // No more problems - go to wrap up
+                await this.stateMachine.setState(InterviewState.WRAP_UP)
+              }
+            }
+          }
+        })
+        return
+      }
+      
       // For other intents (answer, etc.), check length before acknowledging
       const trimmed = text.trim()
       if (trimmed.length < 80) {
@@ -1999,12 +2128,9 @@ export class InterviewOrchestrator extends EventEmitter {
     return this.transitionQueue.enqueue(async () => {
       console.log('🎯 [Interview] Processing evaluation in queue')
       // Ensure we are in evaluating state before applying evaluation-driven transitions
-      // Note: We may already be in EVALUATING_ANSWER if transition happened early in handleTranscript
       const currentStateBeforeEval = this.stateMachine.getState()
       if (currentStateBeforeEval === InterviewState.WAITING_FOR_ANSWER) {
         await this.stateMachine.transition('candidate_finished_speaking')
-      } else if (currentStateBeforeEval === InterviewState.EVALUATING_ANSWER) {
-        console.log('🎯 [Interview] Already in EVALUATING_ANSWER state (transitioned early)')
       }
       
       // Track evaluation for final payload
@@ -2650,11 +2776,45 @@ export class InterviewOrchestrator extends EventEmitter {
     }
   }
 
+  /**
+   * Request skip confirmation from renderer
+   * Returns a promise that resolves when user confirms or cancels
+   */
+  private async requestSkipConfirmation(): Promise<boolean> {
+    return new Promise((resolve) => {
+      this.skipConfirmationResolve = resolve
+      // Emit event to request confirmation from renderer
+      this.emit('requestSkipConfirmation')
+    })
+  }
+
+  /**
+   * Set the skip confirmation result (called by main process after renderer responds)
+   */
+  setSkipConfirmationResult(confirmed: boolean): void {
+    if (this.skipConfirmationResolve) {
+      this.skipConfirmationResolve(confirmed)
+      this.skipConfirmationResolve = null
+    }
+  }
+
   private async speakWithPolicy(
     text: string,
     opts: SpeakOptions,
     context: SpeechContext = { kind: 'system', priority: 'auto', source: 'general' }
   ): Promise<SpeakResult> {
+    // Prevent interrupting security warnings with other auto-responses
+    if (this.speechGate.isSpeaking() && 
+        this.currentSpeechContext?.source === 'security_warning' && 
+        context.source !== 'security_warning') {
+      console.log('⏳ [Speech] Waiting for security warning to finish before speaking:', text.substring(0, 50))
+      try {
+        await this.speechGate.wait()
+      } catch (e) {
+        // Ignore error from previous speech, just proceed
+      }
+    }
+
     this.currentSpeechContext = context
     try {
       this.currentSpeakOptions = opts
@@ -2664,13 +2824,13 @@ export class InterviewOrchestrator extends EventEmitter {
       // Check if mic resume is already suppressed (for chained TTS calls)
       const wasSuppressed = this.suppressAutoMicResume
 
-      // For non-security speech, pause mic and use speech-batch suppression
-      if (!isSecurityWarning) {
-        this.suppressAutoMicResume = true
-        this.setMicPaused(true, 'speech-batch')
-        this.emit('speakingStarted')
-      } else {
-        console.log('🎯 [Security] speakWithPolicy for security warning - leaving mic unpaused')
+      // Pause mic for ALL speech (including security warnings) to prevent self-transcription
+      this.suppressAutoMicResume = true
+      this.setMicPaused(true, 'speech-batch')
+      this.emit('speakingStarted')
+
+      if (isSecurityWarning) {
+        console.log('🎯 [Security] speakWithPolicy for security warning - pausing mic to prevent self-transcription')
       }
 
       // Always send entire text as one TTS call to avoid delays between sentences
@@ -2679,19 +2839,26 @@ export class InterviewOrchestrator extends EventEmitter {
       await this.speechGate.wait()
 
       const interrupted = this.speechGate.wasInterrupted()
+
+      // Play queued security warning if main speech completed successfully
+      if (this.pendingSecurityWarning && !interrupted && !this.softStopRequested) {
+        const warning = this.pendingSecurityWarning
+        this.pendingSecurityWarning = null
+        console.log('🔊 [Security] Playing queued security warning:', warning.substring(0, 50))
+        await this.speakSecurityWarning(warning)
+      }
+
       const softStopped = this.softStopRequested
       const completed = !interrupted && !softStopped
 
-      // Only resume mic if this wasn't part of a chained sequence and this is not a security warning
-      if (!wasSuppressed && !isSecurityWarning) {
+      // Only resume mic if this wasn't part of a chained sequence
+      if (!wasSuppressed) {
         // Manually resume mic once at the end of batch (if not interrupted early)
         setTimeout(() => {
           this.setMicPaused(false, 'speech-batch')
           console.log('🎯 [Interview] Mic resumed (batch complete)')
         }, 100)
         this.suppressAutoMicResume = false
-      } else if (isSecurityWarning) {
-        console.log('🎯 [Security] Security warning TTS completed - mic was never paused by speakWithPolicy')
       } else {
         console.log('🎯 [Interview] Mic resume still suppressed (chained TTS)')
       }
@@ -2748,31 +2915,43 @@ export class InterviewOrchestrator extends EventEmitter {
         return
       }
 
-      // Skip if TTS is already speaking
-      if (this.speechGate.isSpeaking()) {
-        console.log('🔇 [Security] Skipping warning TTS - already speaking')
+      // Queue if TTS is already speaking OR if another security warning is in progress
+      if (this.speechGate.isSpeaking() || this.isSecurityWarningInProgress) {
+        console.log('📝 [Security] Queuing warning TTS (speech active or warning in progress):', message.substring(0, 50))
+        this.pendingSecurityWarning = message
         return
       }
       
+      // Mark security warning as in progress immediately (before async TTS starts)
+      this.isSecurityWarningInProgress = true
+      
+      // Clear any pending warning since we are speaking now
+      this.pendingSecurityWarning = null
+      
       console.log('🔊 [Security] Proceeding with TTS...')
 
-      // Security warnings are interruptible and use auto priority
-      // Transcript filtering is handled by checking against fixed set of warning messages
-      // They won't block interview flow and can be interrupted by user
-      await this.speakWithPolicy(
-        message,
-        {
-          interruptible: true,  // Can be interrupted by user
-          bargeInPolicy: 'hard' // User can interrupt immediately
-        },
-        { 
-          kind: 'system', 
-          priority: 'auto',  // Auto priority (system-generated)
-          source: 'security_warning' 
-        }
-      )
+      try {
+        // Security warnings are interruptible and use auto priority
+        // They won't block interview flow and can be interrupted by user
+        await this.speakWithPolicy(
+          message,
+          {
+            interruptible: true,  // Can be interrupted by user
+            bargeInPolicy: 'hard' // User can interrupt immediately
+          },
+          { 
+            kind: 'system', 
+            priority: 'auto',  // Auto priority (system-generated)
+            source: 'security_warning' 
+          }
+        )
+      } finally {
+        // Always reset the flag when done
+        this.isSecurityWarningInProgress = false
+      }
     } catch (error) {
       console.error('Failed to speak security warning:', error)
+      this.isSecurityWarningInProgress = false
       // Don't throw - security warnings are non-critical
     }
   }
@@ -3596,41 +3775,61 @@ export class InterviewOrchestrator extends EventEmitter {
       const isSecurityWarningSpeech =
         this.currentSpeechContext?.source === 'security_warning'
       const isTtsSpeaking = this.speechGate?.isSpeaking?.() ?? false
+      const sttListening = this.stt?.isListening() ?? false
 
-      console.log(
-        '🎤 [Main] streamAudio:',
-        'micPaused =', this.micPaused,
-        'isSecurityWarningSpeech =', isSecurityWarningSpeech,
-        'isTtsSpeaking =', isTtsSpeaking,
-        'sttListening =', this.stt?.isListening()
-      )
+      // Only log occasionally to avoid spam (every ~50 chunks = ~2.5 seconds)
+      if (Math.random() < 0.02) {
+        console.log(
+          '🎤 [Main] streamAudio:',
+          'micPaused =', this.micPaused,
+          'isSecurityWarningSpeech =', isSecurityWarningSpeech,
+          'isTtsSpeaking =', isTtsSpeaking,
+          'sttListening =', sttListening,
+          'sttExists =', !!this.stt
+        )
+      }
+
+      // CRITICAL FIX: Respect micPaused flag
+      // If the mic is paused (e.g. during TTS), we MUST NOT stream audio to STT
+      // This prevents self-transcription of TTS output
+      if (this.micPaused) {
+        if (Math.random() < 0.01) {
+          console.log('🎤 [Main] Mic is paused, dropping audio chunk')
+        }
+        return
+      }
 
       // Optional suppression: only drop audio during active non-security TTS playback
-      // For security warnings, we keep STT listening and filter transcripts instead
       if (isTtsSpeaking && !isSecurityWarningSpeech) {
-        console.log('🎤 [Main] Dropping audio chunk during non-security TTS playback')
+        if (Math.random() < 0.1) {
+          console.log('🎤 [Main] Dropping audio chunk during non-security TTS playback')
+        }
         return
       }
 
       // Let STT's own VAD / turn detection decide what counts as speech
-      if (!this.stt.isListening()) {
-        console.log('🎤 [Main] STT is not listening, audio chunk ignored')
+      if (!sttListening) {
+        if (Math.random() < 0.1) {
+          console.log('🎤 [Main] STT is not listening, audio chunk ignored. isConnected:', this.stt?.isListening())
+        }
         return
       }
 
-      this.stt.streamAudio(audioChunk)
-    }
+      // Check if STT service exists before calling
+      if (!this.stt) {
+        if (Math.random() < 0.1) {
+          console.warn('🎤 [Main] STT service is null, cannot stream audio')
+        }
+        return
+      }
 
-  /**
-   * Normalize text for comparison: lowercase, remove punctuation, normalize whitespace
-   */
-  private normalizeText(text: string): string {
-    return text
-      .toLowerCase()
-      .replace(/[.,!?'"]/g, '') // Remove punctuation
-      .replace(/\s+/g, ' ')     // Normalize whitespace to single spaces
-      .trim()
-  }
+      // Forward to STT service
+      try {
+        this.stt.streamAudio(audioChunk)
+      } catch (error) {
+        console.error('🎤 [Main] Error forwarding audio to STT:', error)
+      }
+    }
 
   // Receive vision security warnings from renderer
   updateVisionSecurityWarnings(warningStats: any): void {
@@ -3648,11 +3847,37 @@ export class InterviewOrchestrator extends EventEmitter {
 
   // Clean up resources
   destroy(): void {
+    console.log('🧹 [Orchestrator] Cleaning up resources...')
+    
+    // Clear any pending timeouts
+    if (this.liveTranscriptTimeout) {
+      clearTimeout(this.liveTranscriptTimeout)
+      this.liveTranscriptTimeout = null
+    }
+    
+    // Stop all services
     this.stt?.stopListening()
     this.tts?.destroy()
     this.codeAnalysis?.reset()
+    
+    // Clean up event listeners
+    this.cleanupListeners()
+    
+    // Clear session data
     this.currentSession = null
     this.isInitialized = false
+    
+    // Clear any pending state
+    this.softStopRequested = false
+    this.micPaused = false
+    this.userSpeaking = false
+    this.currentCode = ''
+    this.manualResponseInFlight = null
+    this.currentSpeechContext = null
+    this.pendingSecurityWarning = null
+    this.isSecurityWarningInProgress = false
+    
+    console.log('✅ [Orchestrator] Cleanup complete')
   }
 
 }

@@ -88,7 +88,7 @@ export const Register: React.FC = () => {
           <Title level={2} style={{ color: colors.primary.main, marginBottom: spacing.sm }}>
             Create Account
           </Title>
-          <Text type="secondary">Join Crisp to practice interviews</Text>
+          <Text type="secondary">Join Shakra AI to practice interviews</Text>
         </div>
 
         <Form

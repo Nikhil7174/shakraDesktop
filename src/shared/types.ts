@@ -196,7 +196,7 @@ export interface ConversationMessage {
   content: string
   timestamp: number
   metadata: {
-    type: 'question' | 'answer' | 'hint' | 'clarification' | 'followup' | 'feedback' | 'code_submission' | 'code_analysis' | 'transition'
+    type: 'question' | 'answer' | 'hint' | 'clarification' | 'followup' | 'feedback' | 'code_submission' | 'code_analysis' | 'transition' | 'skip_question'
     questionId?: string  // Link to original question
     evaluation?: {
       score?: number

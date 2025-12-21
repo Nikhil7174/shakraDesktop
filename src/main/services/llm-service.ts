@@ -35,7 +35,7 @@ export interface Evaluation {
 }
 
 export interface IntentDetection {
-  intent: 'answer' | 'hint_request' | 'clarification_request'
+  intent: 'answer' | 'hint_request' | 'clarification_request' | 'skip_question'
   confidence: number
 }
 
@@ -52,7 +52,7 @@ export interface CodeAnalysis {
 
 export interface LLMResponse {
   text?: string
-  action: 'speak' | 'evaluate' | 'transition' | 'hint' | 'clarification'
+  action: 'speak' | 'evaluate' | 'transition' | 'hint' | 'clarification' | 'skip'
   evaluation?: Evaluation
   isAskingHint?: boolean
   isAskingClarifyingQuestion?: boolean
@@ -129,6 +129,7 @@ export class LLMService extends EventEmitter {
     // Determine message type based on intent or context
     const messageType = detectedIntent?.intent === 'hint_request' ? 'hint' :
                         detectedIntent?.intent === 'clarification_request' ? 'clarification' :
+                        detectedIntent?.intent === 'skip_question' ? 'skip_question' :
                         'answer'
     
     this.addConversationMessage('user', text, {
@@ -152,6 +153,8 @@ export class LLMService extends EventEmitter {
         return await this.handleHintRequest()
       } else if (intent.intent === 'clarification_request') {
         return await this.handleClarificationRequest()
+      } else if (intent.intent === 'skip_question') {
+        return await this.handleSkipQuestion()
       } else if (intent.intent === 'answer') {
         // This is an answer - always evaluate it if we have a current question
         // The LLM evaluation endpoint will handle incomplete/partial answers appropriately
@@ -664,6 +667,37 @@ Expected Answer: ${this.currentQuestion.expectedAnswer}`
         text: `Let me rephrase that: ${questionForClarification.question}`,
         action: 'clarification'
       }
+    }
+  }
+
+  // Handle skip question request
+  async handleSkipQuestion(): Promise<LLMResponse> {
+    if (!this.currentQuestion) {
+      return {
+        text: "Moving on.",
+        action: 'skip'
+      }
+    }
+
+    console.log('🔍 [LLM] Handling skip question request')
+
+    // Create a zero-score evaluation for the skipped question
+    const evaluation: Evaluation = {
+      questionId: this.currentQuestion.id,
+      candidateAnswer: "User doesn't know the answer",
+      keyPointsCovered: [],
+      score: 0,
+      needsFollowUp: false,
+      feedback: "Okay let's skip this question."
+    }
+    
+    // Emit evaluation event so it gets recorded
+    this.emit('evaluation', evaluation)
+
+    return {
+      text: "Alright, let's move to the next question.",
+      action: 'skip',
+      evaluation
     }
   }
 

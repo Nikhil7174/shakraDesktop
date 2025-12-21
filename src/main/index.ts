@@ -1,35 +1,97 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, globalShortcut, session } from 'electron'
 import * as dotenv from 'dotenv'
-import { join } from 'path'
-import { WebSocketServer } from './websocket-server'
+import { join, resolve } from 'path'
+import { existsSync, writeFileSync, mkdirSync } from 'fs'
+import { homedir } from 'os'
 import { ProcessMonitor } from './process-monitor'
 import { InterviewOrchestrator } from './interview-orchestrator'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import { ProcessStatsData } from '../shared/types'
+import { format } from 'url'
+import { getConfigService } from './services/config-service'
 
 // Load environment variables from .env at project root (dev and prod)
 dotenv.config()
 console.log('🔧 [Main] Environment check:')
-console.log('🔧 [Main] ASSEMBLYAI_API_KEY:', process.env.ASSEMBLYAI_API_KEY ? `${process.env.ASSEMBLYAI_API_KEY.substring(0, 10)}...` : 'NOT SET')
-console.log('🔧 [Main] OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? `${process.env.OPENAI_API_KEY.substring(0, 10)}...` : 'NOT SET')
+console.log('🔧 [Main] ASSEMBLYAI_API_KEY:', process.env.ASSEMBLYAI_API_KEY ? `${process.env.ASSEMBLYAI_API_KEY.substring(0, 10)}...` : 'NOT SET (will use server config)')
+console.log('🔧 [Main] OPENAI_API_KEY:', process.env.OPENAI_API_KEY ? `${process.env.OPENAI_API_KEY.substring(0, 10)}...` : 'NOT SET (will use server config)')
+console.log('🔧 [Main] Config service initialized - will fetch keys from server on login')
 
 let tray: Tray | null = null
 let mainWindow: BrowserWindow | null = null
-let wsServer: WebSocketServer | null = null
 let monitor: ProcessMonitor | null = null
 let interviewOrchestrator: InterviewOrchestrator | null = null
+const configService = getConfigService()
+
+// Icon path resolution (try multiple possible paths)
+function getIconPath(): string | undefined {
+  const possiblePaths = app.isPackaged
+    ? [
+        join(process.resourcesPath, 'icon.png'),
+        join(process.resourcesPath, 'resources', 'icon.png')
+      ]
+    : [
+        // Try from compiled main location (out/main/) - use absolute path
+        resolve(__dirname, '../../resources/icon.png'),
+        // Try from app path
+        join(app.getAppPath(), 'resources/icon.png'),
+        // Try from project root (if running from project root)
+        resolve(process.cwd(), 'resources/icon.png'),
+        // Try from crispDesktop directory
+        resolve(process.cwd(), 'crispDesktop/resources/icon.png')
+      ]
+
+  console.log('🔍 [Icon] Searching for icon in paths:')
+  for (const path of possiblePaths) {
+    console.log(`  - ${path} ${existsSync(path) ? '✅ EXISTS' : '❌ NOT FOUND'}`)
+    if (existsSync(path)) {
+      const absolutePath = resolve(path) // Ensure absolute path
+      console.log('✅ [Icon] Found icon at:', absolutePath)
+      return absolutePath
+    }
+  }
+
+  console.warn('⚠️ [Icon] Icon not found in any of these paths:', possiblePaths)
+  return undefined
+}
+
+const iconPath = getIconPath()
+let appIcon: Electron.NativeImage | undefined = undefined
+
+if (iconPath) {
+  try {
+    appIcon = nativeImage.createFromPath(iconPath)
+    if (appIcon.isEmpty()) {
+      console.warn('⚠️ [Icon] Icon file exists but is empty or invalid')
+      appIcon = undefined
+    } else {
+      const size = appIcon.getSize()
+      console.log(`✅ [Icon] Icon loaded successfully: ${size.width}x${size.height} from ${iconPath}`)
+    }
+  } catch (error) {
+    console.error('❌ [Icon] Failed to load icon:', error)
+    appIcon = undefined
+  }
+} else {
+  console.error('❌ [Icon] No icon path found - will use default')
+}
 
 function createWindow(): void {
   // Main window - full screen for interview interface
+  // For Wayland compatibility, try both nativeImage and path string
+  const windowIcon = appIcon && !appIcon.isEmpty() ? appIcon : (iconPath || undefined)
+  
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 1000,
     minHeight: 700,
+    ...(windowIcon ? { icon: windowIcon } : {}),
     show: false, // Don't show until ready
     fullscreen: false, // Allow fullscreen toggle
     maximizable: true,
     resizable: true,
+    // frame: false, // Hide title bar (workaround for Wayland icon issue)
+    // autoHideMenuBar: true, // Hide menu bar
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       // SECURITY BEST PRACTICES:
@@ -47,27 +109,214 @@ function createWindow(): void {
     mainWindow.webContents.openDevTools()
   }
 
+  // Set icon explicitly for Wayland/GNOME compatibility
+  // Try multiple methods as Wayland can be picky
+  if (iconPath) {
+    // Method 1: Use path string (some Wayland compositors prefer this)
+    try {
+      mainWindow.setIcon(iconPath)
+      console.log('✅ [Icon] Window icon set via path for Wayland:', iconPath)
+    } catch (err) {
+      console.warn('⚠️ [Icon] Failed to set icon via path:', err)
+    }
+    
+    // Method 2: Use nativeImage (fallback)
+    if (appIcon && !appIcon.isEmpty()) {
+      try {
+        mainWindow.setIcon(appIcon)
+        console.log('✅ [Icon] Window icon set via nativeImage for Wayland')
+      } catch (err) {
+        console.warn('⚠️ [Icon] Failed to set icon via nativeImage:', err)
+      }
+    }
+  }
+
   // Show and maximize window when ready
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show()
     mainWindow?.maximize()
+    
+    // Set icon again after showing (Wayland sometimes needs this)
+    // Also try with a small delay as Wayland can be slow to update
+    if (iconPath) {
+      // Try path string first
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          try {
+            mainWindow.setIcon(iconPath)
+            console.log('✅ [Icon] Icon set after window show (delayed)')
+          } catch (err) {
+            console.warn('⚠️ [Icon] Failed to set icon after show:', err)
+          }
+        }
+      }, 100)
+      
+      // Also try nativeImage
+      if (appIcon && !appIcon.isEmpty()) {
+        setTimeout(() => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            try {
+              mainWindow.setIcon(appIcon)
+            } catch (err) {
+              // Ignore
+            }
+          }
+        }, 200)
+      }
+    }
   })
 
   // Load the UI
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    // In production, load the HTML file
+    // Use loadFile which handles asar archives and sets proper base URL for relative assets
+    const htmlPath = join(__dirname, '../renderer/index.html')
+    const rendererDir = join(__dirname, '../renderer')
+    
+    console.log('📄 [Main] Loading HTML from:', htmlPath)
+    console.log('📄 [Main] Renderer directory:', rendererDir)
+    console.log('📄 [Main] File exists:', existsSync(htmlPath))
+    console.log('📄 [Main] __dirname:', __dirname)
+    console.log('📄 [Main] app.isPackaged:', app.isPackaged)
+    
+    // loadFile automatically handles asar files and sets correct base URL
+    // The base URL will be set to the directory containing the HTML file
+    mainWindow.loadFile(htmlPath).catch((error) => {
+      console.error('❌ [Main] loadFile failed, trying loadURL with file:// protocol:', error)
+      // Fallback: use loadURL with file:// protocol
+      // This explicitly sets the base URL to the renderer directory
+      const fileUrl = format({
+        pathname: htmlPath.replace(/\\/g, '/'), // Normalize path separators
+        protocol: 'file:',
+        slashes: true
+      })
+      console.log('📄 [Main] Fallback URL:', fileUrl)
+      mainWindow.loadURL(fileUrl).catch((fallbackError) => {
+        console.error('❌ [Main] Fallback also failed:', fallbackError)
+      })
+    })
   }
+
+  // Handle page load errors
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    console.error('❌ [Main] Page failed to load:', {
+      errorCode,
+      errorDescription,
+      validatedURL
+    })
+  })
+
+  // Log console messages from renderer for debugging
+  mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    if (level >= 2) { // Log warnings and errors
+      console.log(`[Renderer ${level === 2 ? 'WARN' : 'ERROR'}]`, message, `(${sourceId}:${line})`)
+    }
+  })
+
+  // Set icon after page loads (Wayland sometimes needs this)
+  mainWindow.webContents.once('did-finish-load', () => {
+    console.log('✅ [Main] Page loaded successfully')
+    if (iconPath && mainWindow && !mainWindow.isDestroyed()) {
+      // Try setting icon multiple times with delays
+      const setIconAttempts = [0, 100, 300, 500, 1000]
+      setIconAttempts.forEach((delay) => {
+        setTimeout(() => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            try {
+              // Try path first
+              mainWindow.setIcon(iconPath)
+              // Also try nativeImage
+              if (appIcon && !appIcon.isEmpty()) {
+                mainWindow.setIcon(appIcon)
+              }
+              if (delay === 0) {
+                console.log('✅ [Icon] Icon set after page load')
+              }
+            } catch (err) {
+              // Ignore errors
+            }
+          }
+        }, delay)
+      })
+    }
+  })
+
+  // Additional icon setting for Wayland title bar
+  // Note: GNOME/Wayland window managers may ignore window icons and use desktop file icons
+  // The title bar icon is often controlled by the window manager theme, not the application
+  if (process.platform === 'linux' && iconPath) {
+    // Try setting icon when window gains focus (sometimes triggers refresh)
+    mainWindow.on('focus', () => {
+      if (mainWindow && !mainWindow.isDestroyed() && iconPath) {
+        setTimeout(() => {
+          try {
+            mainWindow?.setIcon(iconPath)
+            if (appIcon && !appIcon.isEmpty()) {
+              mainWindow?.setIcon(appIcon)
+            }
+          } catch (err) {
+            // Ignore
+          }
+        }, 100)
+      }
+    })
+  }
+
+  // Handle window close - quit the app completely
+  mainWindow.on('close', (event) => {
+    // On Linux/Windows, quit the app when window is closed
+    // This ensures the app doesn't stay running in the background
+    if (process.platform !== 'darwin') {
+      // Prevent default close behavior
+      event.preventDefault()
+      
+      // Clean up before quitting
+      console.log('Window closed, cleaning up and quitting...')
+      
+      // Stop monitoring first
+      monitor?.stop()
+      
+      // Destroy orchestrator (stops all services)
+      interviewOrchestrator?.destroy()
+      
+      // Unregister global shortcuts
+      globalShortcut.unregisterAll()
+      
+      // Destroy tray if it exists (this is important - tray keeps app alive)
+      if (tray) {
+        tray.destroy()
+        tray = null
+      }
+      
+      // Destroy the window
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.destroy()
+        mainWindow = null
+      }
+      
+      // Quit the app
+      app.quit()
+    } else {
+      // On macOS, hide the window instead of quitting
+      // (macOS apps typically stay running)
+      event.preventDefault()
+      mainWindow?.hide()
+    }
+  })
 }
 
 function createTray(): void {
-  const icon = nativeImage.createFromPath(join(__dirname, '../../resources/icon.png'))
-  tray = new Tray(icon)
+  if (!appIcon || appIcon.isEmpty()) {
+    console.warn('⚠️ [Tray] Cannot create tray - no valid icon')
+    return
+  }
+  tray = new Tray(appIcon)
   
   const contextMenu = Menu.buildFromTemplate([
     { 
-      label: 'Crisp Interview App', 
+      label: 'Shakra AI Interview', 
       enabled: false 
     },
     { 
@@ -83,14 +332,29 @@ function createTray(): void {
     { 
       label: 'Quit', 
       click: () => {
-        wsServer?.stop()
+        console.log('Quit requested from tray menu, cleaning up...')
         monitor?.stop()
+        interviewOrchestrator?.destroy()
+        globalShortcut.unregisterAll()
+        
+        // Destroy tray
+        if (tray) {
+          tray.destroy()
+          tray = null
+        }
+        
+        // Destroy window
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.destroy()
+          mainWindow = null
+        }
+        
         app.quit()
       }
     }
   ])
   
-  tray.setToolTip('Crisp Interview App - Security Monitoring Active')
+  tray.setToolTip('Shakra AI Interview - Security Monitoring Active')
   tray.setContextMenu(contextMenu)
   
   tray.on('double-click', () => {
@@ -98,9 +362,78 @@ function createTray(): void {
   })
 }
 
+// Create desktop file for Wayland/GNOME compatibility in dev mode
+function createDesktopFile(): void {
+  if (process.platform !== 'linux' || app.isPackaged) {
+    return // Only needed for dev mode on Linux
+  }
+
+  if (!iconPath || !existsSync(iconPath)) {
+    console.warn('⚠️ [Desktop] Cannot create desktop file - icon not found')
+    return
+  }
+
+  try {
+    const desktopDir = join(homedir(), '.local', 'share', 'applications')
+    mkdirSync(desktopDir, { recursive: true })
+    
+    const desktopFile = join(desktopDir, 'shakra-ai-interview-dev.desktop')
+    const execPath = process.execPath
+    const iconAbsolutePath = resolve(iconPath)
+    
+    const desktopContent = `[Desktop Entry]
+Name=Shakra AI Interview (Dev)
+Comment=AI-powered interview platform with security monitoring
+Exec=${execPath}
+Icon=${iconAbsolutePath}
+Type=Application
+Categories=Utility;Development;
+StartupNotify=true
+StartupWMClass=electron
+NoDisplay=false
+`
+    
+    writeFileSync(desktopFile, desktopContent, { mode: 0o755 })
+    console.log(`✅ [Desktop] Created desktop file: ${desktopFile}`)
+    console.log(`✅ [Desktop] Icon path in desktop file: ${iconAbsolutePath}`)
+    
+    // Update desktop database (Wayland/GNOME needs this)
+    try {
+      const { exec } = require('child_process')
+      exec('update-desktop-database ~/.local/share/applications', (error: any) => {
+        if (error) {
+          console.warn('⚠️ [Desktop] Could not update desktop database (non-critical):', error.message)
+        } else {
+          console.log('✅ [Desktop] Desktop database updated')
+        }
+      })
+    } catch (err) {
+      // Ignore - update-desktop-database might not be available
+    }
+  } catch (error) {
+    console.error('❌ [Desktop] Failed to create desktop file:', error)
+  }
+}
+
 app.whenReady().then(async () => {
   // Set app user model id for windows
-  electronApp.setAppUserModelId('com.interview.security-agent')
+  electronApp.setAppUserModelId('com.shakra.interview')
+  
+  // Linux/Wayland specific: Create desktop file for dev mode
+  // Wayland/GNOME requires desktop files to show custom icons
+  if (process.platform === 'linux' && !app.isPackaged) {
+    createDesktopFile()
+    
+    if (iconPath && existsSync(iconPath)) {
+      // Try to set app icon for Wayland
+      try {
+        app.dock?.setIcon?.(appIcon || iconPath) // macOS only, but harmless
+        console.log('✅ [Icon] App icon configured for Linux')
+      } catch (err) {
+        // Ignore - dock is macOS only
+      }
+    }
+  }
 
   // Configure session permissions for external API calls
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -109,7 +442,7 @@ app.whenReady().then(async () => {
         ...details.responseHeaders,
         'Content-Security-Policy': [
           "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; " +
-          "connect-src 'self' https://crisp-server-n0r1.onrender.com https://localhost:3001 http://localhost:3001 ws://localhost:8765 https://cdn.jsdelivr.net https://storage.googleapis.com; " +
+          "connect-src 'self' https://crisp-server-n0r1.onrender.com https://localhost:3001 http://localhost:3001 https://cdn.jsdelivr.net https://storage.googleapis.com; " +
           "img-src 'self' data: https:; " +
           "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com; " +
           "script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com; " +
@@ -143,60 +476,34 @@ app.whenReady().then(async () => {
   createTray()
 
   // Start security services
-  wsServer = new WebSocketServer(8765)
-  wsServer.start()
-
-  monitor = new ProcessMonitor(wsServer)
+  monitor = new ProcessMonitor()
   monitor.start()
 
-  // Set up IPC handlers for process stats
-  ipcMain.handle('get-process-stats', async (): Promise<ProcessStatsData> => {
-    if (monitor) {
-      return await monitor.getDetailedProcessStats()
-    }
-    throw new Error('Process monitor not available')
-  })
-
-  // Set up IPC handler for status
-  ipcMain.handle('get-status', async () => {
-    if (monitor) {
-      const status = await monitor.checkProcesses()
-      return {
-        connected: true,
-        blockedApps: status.blockedAppsDetected.map(app => app.name),
-        timestamp: status.timestamp,
-        error: status.error,
-        blockedAndKilled: status.blockedAndKilled,
-        message: status.message
-      }
-    }
-    throw new Error('Process monitor not available')
-  })
-
-  // Initialize interview orchestrator
+  // Initialize interview orchestrator with config from service
   try {
+    const config = configService.getConfigSync()
+    console.log('🔧 [Main] Initializing interview orchestrator with config from:', config.lastFetched ? 'server' : 'env/local')
+    
     interviewOrchestrator = new InterviewOrchestrator()
     await interviewOrchestrator.initialize({
       stt: {
         provider: 'assemblyai',
-        apiKey: process.env.ASSEMBLYAI_API_KEY || '',
+        apiKey: config.assemblyaiApiKey,
         sampleRate: 16000,
         language: 'en'
       },
       llm: {
-        // serverUrl: process.env.SERVER_URL || 'https://crisp-server-n0r1.onrender.com'
-        serverUrl: process.env.SERVER_URL || 'https://crisp-server-n0r1.onrender.com'
-
+        serverUrl: config.serverUrl
       },
       tts: {
         provider: 'openai',
-        apiKey: process.env.OPENAI_API_KEY || '',
+        apiKey: config.openaiApiKey,
         voice: 'alloy', // Cheapest voice (all voices same price)
         model: 'tts-1',  // Cheapest model ($15/1M chars vs $30 for tts-1-hd)
         speed: 1.2       // Slightly faster = shorter audio = lower cost
       },
       codeAnalysis: {
-        serverUrl: process.env.SERVER_URL || 'https://crisp-server-n0r1.onrender.com'
+        serverUrl: config.serverUrl
       }
     })
 
@@ -237,6 +544,13 @@ app.whenReady().then(async () => {
       console.log('📊 [Main] Final evaluation ready - renderer will add vision warnings')
       
       mainWindow?.webContents.send('final-evaluation-ready', payload)
+    })
+
+    interviewOrchestrator.on('requestSkipConfirmation', () => {
+      console.log('🎯 [Main] Requesting skip confirmation from renderer')
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('skip-question-request')
+      }
     })
 
     console.log('✓ Interview orchestrator initialized')
@@ -452,6 +766,22 @@ app.whenReady().then(async () => {
     }
   })
 
+  // Skip question confirmation - handled via orchestrator event listener
+
+  ipcMain.handle('confirm-skip-question', async (_event, confirmed: boolean) => {
+    try {
+      // Set the confirmation result in the orchestrator
+      if (interviewOrchestrator) {
+        interviewOrchestrator.setSkipConfirmationResult(confirmed)
+      }
+      return { success: true }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to confirm skip question:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
   ipcMain.handle('pause-interview', async () => {
     try {
       if (interviewOrchestrator) {
@@ -506,107 +836,6 @@ app.whenReady().then(async () => {
     }
   })
 
-  // Handle screenshot capture request from renderer
-  ipcMain.handle('capture-screenshot', async (_event, options: { videoFrame?: boolean } = {}) => {
-    try {
-      if (!mainWindow) {
-        return { success: false, error: 'Main window not available' }
-      }
-
-      if (options.videoFrame) {
-        // For video frame, we'll capture from renderer and send the data
-        // This handler is just for acknowledgment
-        return { success: true, message: 'Video frame capture requested' }
-      } else {
-        // Capture full screen screenshot
-        const image = await mainWindow.webContents.capturePage()
-        const buffer = image.toPNG()
-        
-        // Save to a file in user's documents or temp directory
-        const { app } = require('electron')
-        const path = require('path')
-        const fs = require('fs').promises
-        
-        const screenshotsDir = path.join(app.getPath('documents'), 'CrispInterview', 'screenshots')
-        await fs.mkdir(screenshotsDir, { recursive: true })
-        
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
-        const filename = `multiple-faces-${timestamp}.png`
-        const filepath = path.join(screenshotsDir, filename)
-        
-        await fs.writeFile(filepath, buffer)
-        
-        console.log(`📸 [Screenshot] Saved to: ${filepath}`)
-        return { success: true, filepath, filename }
-      }
-    } catch (error: any) {
-      console.error('⚠️ [Main] Failed to capture screenshot:', error)
-      return { success: false, error: error.message || 'Failed to capture screenshot' }
-    }
-  })
-
-  // Handle video frame screenshot (data sent from renderer) - save to temp file
-  ipcMain.handle('save-video-frame-screenshot', async (_event, imageData: string, filename?: string) => {
-    try {
-      const { app } = require('electron')
-      const path = require('path')
-      const fs = require('fs').promises
-      const os = require('os')
-      
-      // Save to temp directory
-      const tempDir = os.tmpdir()
-      const screenshotFilename = filename || 'interview_multiple_faces_screenshot.png'
-      const filepath = path.join(tempDir, screenshotFilename)
-      
-      // Convert base64 to buffer
-      const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '')
-      const buffer = Buffer.from(base64Data, 'base64')
-      
-      // Write to temp file
-      await fs.writeFile(filepath, buffer)
-      
-      console.log(`📸 [Screenshot] Saved to temp file: ${filepath} (${(buffer.length / 1024).toFixed(1)}KB)`)
-      return { success: true, filepath: filepath }
-    } catch (error: any) {
-      console.error('⚠️ [Main] Failed to save video frame screenshot:', error)
-      return { success: false, error: error.message || 'Failed to save screenshot' }
-    }
-  })
-
-  // Read screenshot from temp file
-  ipcMain.handle('read-screenshot-file', async (_event, filepath: string) => {
-    try {
-      const fs = require('fs').promises
-      
-      // Read file and convert to base64
-      const buffer = await fs.readFile(filepath)
-      const base64Data = `data:image/png;base64,${buffer.toString('base64')}`
-      
-      console.log(`📸 [Screenshot] Read from temp file: ${filepath} (${(buffer.length / 1024).toFixed(1)}KB)`)
-      return { success: true, imageData: base64Data }
-    } catch (error: any) {
-      console.error('⚠️ [Main] Failed to read screenshot file:', error)
-      return { success: false, error: error.message || 'Failed to read screenshot' }
-    }
-  })
-
-  // Delete screenshot temp file
-  ipcMain.handle('delete-screenshot-file', async (_event, filepath: string) => {
-    try {
-      const fs = require('fs').promises
-      
-      await fs.unlink(filepath)
-      console.log(`📸 [Screenshot] Deleted temp file: ${filepath}`)
-      return { success: true }
-    } catch (error: any) {
-      // Don't log error if file doesn't exist
-      if (error.code !== 'ENOENT') {
-        console.error('⚠️ [Main] Failed to delete screenshot file:', error)
-      }
-      return { success: false, error: error.message || 'Failed to delete screenshot' }
-    }
-  })
-
   // Note: Removed continuous vision-security-warnings IPC handler
   // Logging is now handled entirely in renderer and sent to backend at interview end
 
@@ -619,13 +848,14 @@ app.whenReady().then(async () => {
       try {
         const { AssemblyAI } = await import('assemblyai')
         
-        // Check if API key is set
-        const apiKey = process.env.ASSEMBLYAI_API_KEY || ''
+        // Use async getConfig which auto-refreshes if expired
+        const config = await configService.getConfig()
+        const apiKey = config.assemblyaiApiKey
         if (!apiKey) {
           console.error('🎤 [STT] ASSEMBLYAI_API_KEY is not set')
           return { 
             success: false, 
-            error: 'ASSEMBLYAI_API_KEY environment variable is not configured' 
+            error: 'ASSEMBLYAI_API_KEY is not configured. Please ensure you are logged in and the server has provided the API key.' 
           }
         }
         
@@ -767,39 +997,162 @@ app.whenReady().then(async () => {
     }
   })
 
-
-  // Send process stats updates to renderer (reduced frequency to prevent crashes)
-  setInterval(async () => {
-    if (monitor && mainWindow && !mainWindow.isDestroyed()) {
-      try {
-        const stats = await monitor.getDetailedProcessStats()
-        mainWindow.webContents.send('process-stats-update', stats)
-      } catch (error) {
-        console.error('Error sending process stats update:', error)
-        // Only send error if window is still valid
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('process-stats-update', {
-            totalProcesses: 0,
-            blockedAppsDetected: [],
-            systemInfo: { cpuUsage: 0, memoryUsage: 0, uptime: 0 },
-            recentProcesses: [],
-            timestamp: Date.now(),
-            error: 'Failed to get process stats'
-          })
-        }
+  // Config management IPC handlers
+  ipcMain.handle('set-auth-token', async (_event, token: string | null) => {
+    try {
+      configService.setAuthToken(token)
+      
+      // If token set, wait a bit for config to fetch, then reinitialize orchestrator
+      if (token) {
+        // Give fetch time to complete (non-blocking)
+        setTimeout(async () => {
+          try {
+            const config = await configService.getConfig()
+            if (config.lastFetched && interviewOrchestrator) {
+              await interviewOrchestrator.initialize({
+                stt: {
+                  provider: 'assemblyai',
+                  apiKey: config.assemblyaiApiKey,
+                  sampleRate: 16000,
+                  language: 'en'
+                },
+                llm: {
+                  serverUrl: config.serverUrl
+                },
+                tts: {
+                  provider: 'openai',
+                  apiKey: config.openaiApiKey,
+                  voice: 'alloy',
+                  model: 'tts-1',
+                  speed: 1.2
+                },
+                codeAnalysis: {
+                  serverUrl: config.serverUrl
+                }
+              })
+              console.log('✅ [Main] Orchestrator reinitialized with fetched config')
+            }
+          } catch (err) {
+            console.warn('⚠️ [Main] Failed to reinitialize with fetched config:', err)
+          }
+        }, 1000) // Give fetch time to complete
       }
+      
+      return { success: true }
+    } catch (error: unknown) {
+      const err = error as Error
+      return { success: false, error: err.message }
     }
-  }, 5000) // Update every 5 seconds (reduced from 3 seconds)
+  })
+
+  ipcMain.handle('fetch-config', async (_event, authToken: string) => {
+    try {
+      const config = await configService.fetchFromServer(authToken)
+      
+      // Reinitialize orchestrator with new config
+      if (interviewOrchestrator) {
+        await interviewOrchestrator.initialize({
+          stt: {
+            provider: 'assemblyai',
+            apiKey: config.assemblyaiApiKey,
+            sampleRate: 16000,
+            language: 'en'
+          },
+          llm: {
+            serverUrl: config.serverUrl
+          },
+          tts: {
+            provider: 'openai',
+            apiKey: config.openaiApiKey,
+            voice: 'alloy',
+            model: 'tts-1',
+            speed: 1.2
+          },
+          codeAnalysis: {
+            serverUrl: config.serverUrl
+          }
+        })
+      }
+      
+      return { success: true, config }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to fetch config:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('get-config', async () => {
+    try {
+      const config = await configService.getConfig()
+      return { success: true, config }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to get config:', err)
+      return { success: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('refresh-config', async (_event, authToken: string) => {
+    try {
+      const config = await configService.refresh(authToken)
+      
+      // Reinitialize orchestrator with refreshed config
+      if (interviewOrchestrator) {
+        await interviewOrchestrator.initialize({
+          stt: {
+            provider: 'assemblyai',
+            apiKey: config.assemblyaiApiKey,
+            sampleRate: 16000,
+            language: 'en'
+          },
+          llm: {
+            serverUrl: config.serverUrl
+          },
+          tts: {
+            provider: 'openai',
+            apiKey: config.openaiApiKey,
+            voice: 'alloy',
+            model: 'tts-1',
+            speed: 1.2
+          },
+          codeAnalysis: {
+            serverUrl: config.serverUrl
+          }
+        })
+      }
+      
+      return { success: true, config }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to refresh config:', err)
+      return { success: false, error: err.message }
+    }
+  })
 
 
-  console.log('✓ Security Agent started on port 8765')
+
+
+  console.log('✓ Security Agent started')
 })
 
 // macOS - keep app running
 app.on('window-all-closed', () => {
+  // On Windows/Linux, quit when all windows are closed
+  // This is a fallback in case the window close handler doesn't fire
   if (process.platform !== 'darwin') {
-    // On Windows/Linux, quit when windows closed
-    // (But we use tray, so this won't trigger often)
+    console.log('All windows closed, cleaning up and quitting...')
+    monitor?.stop()
+    interviewOrchestrator?.destroy()
+    globalShortcut.unregisterAll()
+    
+    // Destroy tray if it exists
+    if (tray) {
+      tray.destroy()
+      tray = null
+    }
+    
+    app.quit()
   }
 })
 
@@ -810,27 +1163,66 @@ app.on('activate', () => {
 })
 
 // Cleanup on app quit
-app.on('before-quit', () => {
-  console.log('Cleaning up resources...')
+app.on('before-quit', (event) => {
+  console.log('Cleaning up resources before quit...')
+  
+  // Stop all monitoring and services
   globalShortcut.unregisterAll()
-  wsServer?.stop()
   monitor?.stop()
   interviewOrchestrator?.destroy()
+  
+  // Destroy tray if it exists
+  if (tray) {
+    tray.destroy()
+    tray = null
+  }
+  
+  // Destroy main window if it exists
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.destroy()
+    mainWindow = null
+  }
 })
 
 // Handle app termination
 process.on('SIGINT', () => {
   console.log('Received SIGINT, cleaning up...')
-  wsServer?.stop()
+  globalShortcut.unregisterAll()
   monitor?.stop()
   interviewOrchestrator?.destroy()
+  
+  // Destroy tray if it exists
+  if (tray) {
+    tray.destroy()
+    tray = null
+  }
+  
+  // Destroy main window if it exists
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.destroy()
+    mainWindow = null
+  }
+  
   process.exit(0)
 })
 
 process.on('SIGTERM', () => {
   console.log('Received SIGTERM, cleaning up...')
-  wsServer?.stop()
+  globalShortcut.unregisterAll()
   monitor?.stop()
   interviewOrchestrator?.destroy()
+  
+  // Destroy tray if it exists
+  if (tray) {
+    tray.destroy()
+    tray = null
+  }
+  
+  // Destroy main window if it exists
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.destroy()
+    mainWindow = null
+  }
+  
   process.exit(0)
 })

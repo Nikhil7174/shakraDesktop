@@ -181,6 +181,17 @@ export const Interview: React.FC = () => {
     window.location.hash = '#/join';
   };
 
+  const handleQuitInterview = async () => {
+    try {
+      // Stop orchestrator/listeners in Electron main (safe no-op on web)
+      await (window as any)?.electronAPI?.stopInterview?.();
+    } catch (err) {
+      console.error('Failed to stop interview:', err);
+    } finally {
+      window.location.hash = '#/join';
+    }
+  };
+
   if (!currentSession) {
     return (
       <div style={{
@@ -225,6 +236,13 @@ export const Interview: React.FC = () => {
               type="text"
             >
               Back
+            </Button>
+            <Button 
+              danger
+              onClick={handleQuitInterview}
+              type="primary"
+            >
+              Quit Interview
             </Button>
             <Title level={2} style={{ margin: 0 }}>
               AI Interview Session

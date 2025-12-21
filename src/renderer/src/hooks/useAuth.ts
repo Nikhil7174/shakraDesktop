@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useRef, useEffect } from 'react';
 import axios from 'axios';
 import { useAppDispatch, useAppSelector } from '../store';
 import { loginSuccess, registerSuccess, setUser, logout as logoutAction, setLoading, setError } from '../store/slices/authSlice';
@@ -8,6 +8,14 @@ import api from '../services/api'; // Use api instance with interceptors for tok
 export const useAuth = () => {
   const dispatch = useAppDispatch();
   const { user, token, isAuthenticated, loading, error } = useAppSelector((state) => state.auth);
+  const getCurrentUserInProgress = useRef(false);
+
+  // Reset the ref when token is cleared
+  useEffect(() => {
+    if (!token) {
+      getCurrentUserInProgress.current = false;
+    }
+  }, [token]);
 
   const register = useCallback(
     async (data: {
@@ -31,6 +39,14 @@ export const useAuth = () => {
               token: response.data.token,
             })
           );
+          
+          // Send token to main process (triggers config fetch)
+          if (window.electronAPI?.setAuthToken && response.data.token) {
+            window.electronAPI.setAuthToken(response.data.token).catch(err => {
+              console.warn('⚠️ [Auth] Failed to set auth token after registration:', err);
+            });
+          }
+          
           return response.data;
         }
       } catch (error: any) {
@@ -62,6 +78,14 @@ export const useAuth = () => {
               token: response.data.token,
             })
           );
+          
+          // Send token to main process (triggers config fetch)
+          if (window.electronAPI?.setAuthToken && response.data.token) {
+            window.electronAPI.setAuthToken(response.data.token).catch(err => {
+              console.warn('⚠️ [Auth] Failed to set auth token after login:', err);
+            });
+          }
+          
           return response.data;
         }
       } catch (error: any) {
@@ -93,12 +117,16 @@ export const useAuth = () => {
       console.error('Logout error:', error);
     } finally {
       dispatch(logoutAction());
+      // Clear token in main process
+      if (window.electronAPI?.setAuthToken) {
+        window.electronAPI.setAuthToken(null).catch(() => {});
+      }
     }
   }, [dispatch, token]);
 
   const getCurrentUser = useCallback(async () => {
-    // Prevent multiple simultaneous calls
-    if (loading) {
+    // Prevent multiple simultaneous calls using ref instead of loading state
+    if (getCurrentUserInProgress.current) {
       console.log('⏸️ [Auth] getCurrentUser already in progress, skipping...');
       return;
     }
@@ -106,9 +134,15 @@ export const useAuth = () => {
     try {
       if (!token) {
         console.log('⏸️ [Auth] No token, skipping getCurrentUser');
+        // Reset loading state if no token
+        if (loading) {
+          dispatch(setLoading(false));
+        }
         return;
       }
 
+      // Mark as in progress
+      getCurrentUserInProgress.current = true;
       console.log('🔄 [Auth] Starting getCurrentUser...');
       dispatch(setLoading(true));
 
@@ -131,6 +165,7 @@ export const useAuth = () => {
       // Always logout on error to clear invalid token
       dispatch(logoutAction());
     } finally {
+      getCurrentUserInProgress.current = false;
       dispatch(setLoading(false));
       console.log('🏁 [Auth] getCurrentUser completed');
     }

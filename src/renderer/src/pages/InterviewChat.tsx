@@ -10,13 +10,12 @@ import { InfoCollection } from '../components/interview/InfoCollection';
 import { InterviewSession } from '../components/interview/InterviewSession';
 import VoiceInterviewSession from './VoiceInterviewSession';
 import { WelcomeBackModal } from '../components/interview/WelcomeBackModal';
+import { ConfirmationModal } from '../components/interview/ConfirmationModal';
 import { useResumeUpload } from '../hooks/api/useResumeUpload';
 import { useInterview } from '../hooks/api/useInterview';
 import { useResumeData } from '../hooks/useResumeData';
 import { useSession } from '../hooks/useSession';
-import { useWebSocket } from '../hooks/useWebSocket';
 import { resetInterview, setResumeData, setDetailedResumeData, setError } from '../store/slices/interviewSlice';
-import { SecurityWarning } from '../components/security/SecurityWarning';
 // SESSION_CONFIG removed - using Redux-only session management
 
 type Step = 'upload' | 'info' | 'interview';
@@ -31,6 +30,8 @@ export const InterviewChat: React.FC = () => {
   const [collectingInfo, setCollectingInfo] = useState(false);
   const [userHasChosen, setUserHasChosen] = useState(false); // Track if user made a choice about session
   const [resumeRequested, setResumeRequested] = useState(false); // Track if user chose to resume
+  const [interviewState, setInterviewState] = useState<string | null>(null); // Track voice session state for UI
+  const [showQuitConfirm, setShowQuitConfirm] = useState(false); // Confirm before quitting interview
   const modalDismissedRef = React.useRef(false); // Ref to track if modal was explicitly dismissed
 
   const handleBack = () => {
@@ -39,6 +40,17 @@ export const InterviewChat: React.FC = () => {
       navigate(from, { replace: true });
     } else {
       navigate(-1);
+    }
+  };
+
+  const handleQuit = async () => {
+    try {
+      // Stop orchestrator/listeners in Electron (no-op on web)
+      await (window as any)?.electronAPI?.stopInterview?.();
+    } catch (err) {
+      console.error('Failed to stop interview:', err);
+    } finally {
+      navigate('/join', { replace: true });
     }
   };
 
@@ -88,11 +100,6 @@ export const InterviewChat: React.FC = () => {
     resetPageVisibilityTracking
   } = useSession();
 
-  // WebSocket connection for security monitoring (only connect during interview)
-  useWebSocket(
-    (currentStep === 'interview') ? currentSession?.sessionId : undefined
-  );
-
   // Effect 1: Handle welcome back modal display
   useEffect(() => {
     console.log('=== WELCOME BACK MODAL CHECK ===');
@@ -101,14 +108,14 @@ export const InterviewChat: React.FC = () => {
     console.log('Current session exists:', !!currentSession);
     console.log('Session summary exists:', !!sessionSummary);
     console.log('Modal dismissed ref:', modalDismissedRef.current);
-    
+
     // CRITICAL: Never show modal again if user explicitly dismissed it
     if (modalDismissedRef.current) {
       console.log('Modal was explicitly dismissed - never showing again');
       setShowWelcomeBack(false);
       return;
     }
-    
+
     // Check if we're navigating from CandidateDashboard with flag to check existing session
     const checkExistingSession = (location.state as any)?.checkExistingSession;
     const fromLink = (location.state as any)?.fromLink;
@@ -152,7 +159,7 @@ export const InterviewChat: React.FC = () => {
         fromDashboard: checkExistingSession
       });
       setShowWelcomeBack(true);
-      
+
       // Reset the userHasChosen flag when coming from dashboard
       if (checkExistingSession) {
         setUserHasChosen(false);
@@ -162,7 +169,7 @@ export const InterviewChat: React.FC = () => {
     } else {
       console.log('No interrupted session found - not showing modal');
       setShowWelcomeBack(false);
-      
+
       // If coming from dashboard but no session exists, mark as chosen to allow new interview
       if (checkExistingSession && !currentSession) {
         console.log('No existing session - proceeding with new interview');
@@ -275,7 +282,7 @@ export const InterviewChat: React.FC = () => {
     try {
       // Mark modal as dismissed permanently
       modalDismissedRef.current = true;
-      
+
       // Clear all session data using unified method
       clearAllSessions();
 
@@ -289,6 +296,7 @@ export const InterviewChat: React.FC = () => {
       setCollectingInfo(false);
       setUserHasChosen(true); // Mark that user has made a choice
       setResumeRequested(false);
+      setInterviewState(null);
 
       // Reset page visibility tracking for new session
       resetPageVisibilityTracking();
@@ -306,12 +314,15 @@ export const InterviewChat: React.FC = () => {
       // NOTE: Don't clear unfinished interview here - the payload needs to be sent first
       // The main process will clear conversations after payload is successfully sent via markPayloadSent()
       // Only clear Redux state (UI state), not main process state
-      
+
       // Clear all session data using unified method (Redux only)
       clearAllSessions();
 
       // Clear Redux state
       dispatch(resetInterview());
+
+      window.dispatchEvent(new CustomEvent('dashboard-refresh'));
+      localStorage.setItem('dashboard-needs-refresh', Date.now().toString());
 
       // Redirect to candidate dashboard (user is authenticated, so go directly there)
       navigate('/candidate/dashboard', { replace: true });
@@ -324,13 +335,13 @@ export const InterviewChat: React.FC = () => {
 
   const handleContinueSession = useCallback(() => {
     console.log('User chose to continue session');
-    
+
     // Mark modal as dismissed permanently
     modalDismissedRef.current = true;
-    
+
     // Close modal FIRST before any other state changes
     setShowWelcomeBack(false);
-    
+
     // Then update other states
     setUserHasChosen(true); // Mark that user has made a choice
     setResumeRequested(true);
@@ -345,10 +356,10 @@ export const InterviewChat: React.FC = () => {
 
   const handleWelcomeBackClose = useCallback(() => {
     console.log('User closed welcome back modal');
-    
+
     // Mark modal as dismissed permanently
     modalDismissedRef.current = true;
-    
+
     setUserHasChosen(true); // Mark that user has made a choice (by closing)
     setShowWelcomeBack(false);
 
@@ -377,19 +388,19 @@ export const InterviewChat: React.FC = () => {
               // Use existing resume data and move to next step
               if (existingResumeData) {
                 console.log('✅ Using existing resume data:', existingResumeData);
-                
+
                 // Clear any previous errors
                 dispatch(setError(null));
-                
+
                 // Extract resume data - handle different possible structures
                 let baseResumeData: any = null;
                 let detailedResumeData: any = null;
-                
+
                 // Check if it's a nested structure (resumeData.resumeData)
                 if (existingResumeData.resumeData) {
                   baseResumeData = existingResumeData.resumeData;
                   detailedResumeData = existingResumeData.detailedResumeData || existingResumeData.resumeData;
-                } 
+                }
                 // Check if it's a DetailedResumeData structure (has personalInfo)
                 else if (existingResumeData.personalInfo || existingResumeData.experience || existingResumeData.technicalSkills) {
                   baseResumeData = {
@@ -411,7 +422,7 @@ export const InterviewChat: React.FC = () => {
                     technicalSkills: existingResumeData.technicalSkills || { languages: [], frameworks: [], tools: [], databases: [], other: [] }
                   };
                 }
-                
+
                 // Set resume data in Redux state
                 dispatch(setResumeData(baseResumeData));
                 dispatch(setDetailedResumeData(detailedResumeData));
@@ -439,12 +450,12 @@ export const InterviewChat: React.FC = () => {
         // Prefer voice interview session when questions are present
         if (currentSession && currentSession.questions && currentSession.questions.length > 0) {
           // Use pre-separated questions from backend if available, otherwise filter manually
-          const theoreticalQuestions = (currentSession as any).theoreticalQuestions || 
+          const theoreticalQuestions = (currentSession as any).theoreticalQuestions ||
             (currentSession.questions || []).filter((q: any) => q.type === 'technical');
-          
-          const codingQuestionsRaw = (currentSession as any).codingQuestions || 
+
+          const codingQuestionsRaw = (currentSession as any).codingQuestions ||
             (currentSession.questions || []).filter((q: any) => q.type === 'coding');
-          
+
           // Transform coding questions into CodingProblem format
           const codingProblems = codingQuestionsRaw.map((q: any) => ({
             id: q.id,
@@ -478,6 +489,7 @@ export const InterviewChat: React.FC = () => {
               interviewLinkId={currentSession.interviewLinkId}
               onComplete={handleInterviewComplete}
               onSaveResults={saveResults}
+              onStateChange={setInterviewState}
             />
           );
         }
@@ -498,16 +510,33 @@ export const InterviewChat: React.FC = () => {
   }, [currentStep, handleFileUpload, handleCollectInfo, handleStartNew, handleInterviewComplete, uploading, loading, error, resumeData, detailedResumeData, currentSession, chatMessages, submitAnswer, processingResume, collectingInfo]);
 
 
+  // Only show quit when interview is actually ready (has questions and not loading)
+  const showQuitButton =
+    currentStep === 'interview' &&
+    interviewState &&
+    interviewState !== 'connecting' &&
+    !loading &&
+    (currentSession?.questions?.length ?? 0) > 0;
+
   return (
     <div style={{ padding: spacing.xl, minHeight: '100vh', backgroundColor: colors.background.secondary }}>
-      <div style={{ marginBottom: spacing.md }}>
-        <Button type="text" onClick={handleBack} icon={<LeftOutlined />} style={{ padding: 0 }}>
-          Back
-        </Button>
+      <div style={{ marginBottom: spacing.md, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          {currentStep !== 'interview' && (
+            <Button type="text" onClick={handleBack} icon={<LeftOutlined />} style={{ padding: 0 }}>
+              Back
+            </Button>
+          )}
+        </div>
+        <div>
+          {showQuitButton && (
+            <Button danger type="primary" onClick={() => setShowQuitConfirm(true)}>
+              Quit Interview
+            </Button>
+          )}
+        </div>
       </div>
       <Space direction="vertical" size="large" style={{ width: '100%' }}>
-        {/* Security Warning */}
-        <SecurityWarning />
 
         {/* Main Content */}
         {renderCurrentStep()}
@@ -522,6 +551,17 @@ export const InterviewChat: React.FC = () => {
         onContinue={handleContinueSession}
         onStartNew={handleStartNew}
         onClose={handleWelcomeBackClose}
+      />
+
+      {/* Quit confirmation */}
+      <ConfirmationModal
+        visible={showQuitConfirm}
+        message="Are you sure you want to quit the interview?"
+        okText="Quit interview"
+        cancelText="Stay"
+        okButtonProps={{ danger: true }}
+        onConfirm={handleQuit}
+        onCancel={() => setShowQuitConfirm(false)}
       />
     </div>
   );

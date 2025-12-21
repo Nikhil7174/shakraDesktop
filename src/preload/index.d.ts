@@ -15,13 +15,13 @@ type InterviewAPI = {
   sendAudioChunk: (data: Uint8Array) => void
   sendVisionSecurityData: (data: any) => void
   speakSecurityWarning: (message: string) => void
-  captureScreenshot: (options?: { videoFrame?: boolean }) => Promise<{ success: boolean; filepath?: string; filename?: string; error?: string }>
-  saveVideoFrameScreenshot: (imageData: string, filename?: string) => Promise<{ success: boolean; filepath?: string; filename?: string; error?: string }>
-  readScreenshotFile: (filepath: string) => Promise<{ success: boolean; imageData?: string; error?: string }>
-  deleteScreenshotFile: (filepath: string) => Promise<{ success: boolean; error?: string }>
   onVisionSecurityAlert: (callback: (alert: any) => void) => void
   getSTTToken: () => Promise<{ success: boolean; token?: string; error?: string }>
   updateSTTToken: (token: string) => Promise<{ success: boolean; error?: string }>
+  setAuthToken: (token: string | null) => Promise<{ success: boolean; error?: string }>
+  fetchConfig: (authToken: string) => Promise<{ success: boolean; config?: any; error?: string }>
+  getConfig: () => Promise<{ success: boolean; config?: any; error?: string }>
+  refreshConfig: (authToken: string) => Promise<{ success: boolean; config?: any; error?: string }>
   checkUnfinishedInterview: () => Promise<{ hasUnfinished: boolean; sessionInfo?: any; error?: string }>
   clearUnfinishedInterview: () => Promise<{ success: boolean; error?: string }>
   onAudioCaptureRequired: (callback: () => void) => void
@@ -35,6 +35,8 @@ type InterviewAPI = {
   onProgressUpdate?: (callback: (progress: { current: number, total: number }) => void) => void
   onCodeAnalysis: (callback: (analysis: any) => void) => void
   onInterviewCompleted: (callback: (results: any) => void) => void
+  onSkipQuestionRequest: (callback: () => void) => void
+  confirmSkipQuestion: (confirmed: boolean) => Promise<{ success: boolean; error?: string }>
 }
 
 declare global {

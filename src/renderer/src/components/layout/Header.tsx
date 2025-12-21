@@ -14,11 +14,15 @@ export const Header: React.FC = () => {
   const { isAuthenticated, logout } = useAuth();
 
   const handleTitleClick = () => {
-    navigate('/');
+    if (isAuthenticated) {
+      navigate('/candidate/dashboard');
+    } else {
+      navigate('/');
+    }
   };
 
   const handleLoginClick = () => {
-    navigate('/login');
+    navigate('/');
   };
 
   const handleLogoutClick = async () => {
@@ -56,7 +60,7 @@ export const Header: React.FC = () => {
         >
           <img
             src={crispLogo}
-            alt="Crisp Logo"
+            alt="Shakra Logo"
             style={{
               height: 32,
               width: 'auto'
@@ -67,7 +71,7 @@ export const Header: React.FC = () => {
             fontWeight: 600,
             color: colors.neutral[900]
           }}>
-            Crisp
+            Shakra
           </span>
         </div>
 

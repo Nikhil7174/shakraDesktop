@@ -8,7 +8,9 @@ interface PublicRouteProps {
 }
 
 export const PublicRoute: React.FC<PublicRouteProps> = ({ children }) => {
+  console.log('✅ [PublicRoute] Rendering...');
   const { isAuthenticated, user, loading, token } = useAuth();
+  console.log('✅ [PublicRoute] Auth state:', { isAuthenticated, hasUser: !!user, loading, hasToken: !!token });
   const [initializing, setInitializing] = useState(true);
   const [maxWaitReached, setMaxWaitReached] = useState(false);
 
@@ -17,7 +19,7 @@ export const PublicRoute: React.FC<PublicRouteProps> = ({ children }) => {
     setInitializing(true);
     setMaxWaitReached(false);
 
-    // Maximum wait time: 5 seconds
+    // Maximum wait time: 5 seconds (after which login page appears)
     const maxWaitTimeout = setTimeout(() => {
       setMaxWaitReached(true);
       setInitializing(false);

@@ -5,8 +5,9 @@ import { AudioVisualizer } from '../components/AudioVisualizer'
 import { QuestionDisplay } from '../components/QuestionDisplay'
 import { VideoCapture } from '../components/VideoCapture'
 import { useVisionSecurity } from '../hooks/useVisionSecurity'
-// import { VisionSecurityAlert } from '../components/security/VisionSecurityAlert' // Hidden during interview
+import { VisionSecurityAlert } from '../components/security/VisionSecurityAlert'
 import { ResumeInterviewModal } from '../components/interview/ResumeInterviewModal'
+import { ConfirmationModal } from '../components/interview/ConfirmationModal'
 import { CodingProblem, Question } from '../../../shared/types'
 import type { RootState } from '../store'
 
@@ -19,6 +20,7 @@ interface VoiceInterviewSessionProps {
   interviewLinkId?: number
   onComplete?: (results: any) => void
   onSaveResults?: (summary: any) => Promise<void>
+  onStateChange?: (state: string) => void
 }
 
 export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
@@ -29,7 +31,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   skipIntro,
   interviewLinkId,
   onComplete,
-  onSaveResults
+  onSaveResults,
+  onStateChange
 }) => {
   const [currentState, setCurrentState] = useState<string>('connecting')
   const [currentQuestion, setCurrentQuestion] = useState<Question | null>(null)
@@ -41,7 +44,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const isListeningRef = useRef(false)
   const [progress, setProgress] = useState({ current: 0, total: questions.length })
   const [evaluations, setEvaluations] = useState<any[]>([])
-  // const [codeAnalysis, setCodeAnalysis] = useState<any>(null) // Unused
+  const [codeAnalysis, setCodeAnalysis] = useState<any>(null)
   const [complexityNotes, setComplexityNotes] = useState<Record<string, { time: string; space: string }>>({})
   const [isMonitoring, setIsMonitoring] = useState(false)
   const [currentCode, setCurrentCode] = useState<string>('')
@@ -53,21 +56,38 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [hasCheckedUnfinished, setHasCheckedUnfinished] = useState(false)
   const [userChoseResume, setUserChoseResume] = useState(false)
   const [hiddenVideoElement, setHiddenVideoElement] = useState<HTMLVideoElement | null>(null)
-  // const [visionSecurityStatus, setVisionSecurityStatus] = useState<any>(null) // Unused - UI hidden
+  const [visionSecurityStatus, setVisionSecurityStatus] = useState<any>(null)
+  const [showConfirmationModal, setShowConfirmationModal] = useState(false)
+  const [confirmationModalConfig, setConfirmationModalConfig] = useState<{
+    message: string
+    okText: string
+    onConfirm: () => void
+    onCancel: () => void
+    okButtonProps?: any
+  } | null>(null)
+  const [pendingSubmission, setPendingSubmission] = useState<{
+    code: string
+    timeComplexity?: string
+    spaceComplexity?: string
+  } | null>(null)
   
   const codeEditorRef = useRef<any>(null)
+  const hasInitializedRef = useRef(false)
+  const hasCompletedRef = useRef(false)
 
   // Initialize vision security tracking that stays active throughout the interview
   // This works even when video windows are hidden (like in coding section)
   // Keep it enabled through 'wrap_up' so we can end and persist all active warnings at final evaluation time
-  // UI alerts are hidden - warnings tracked silently and sent to backend at interview end
-  const { status: hiddenVisionStatus, warningStats, endAllActiveWarnings, getScreenshotFilepath } = useVisionSecurity({
+  const { status: hiddenVisionStatus, warningStats, endAllActiveWarnings, getWarningStats } = useVisionSecurity({
     videoElement: hiddenVideoElement,
     enabled: hiddenVideoElement !== null && currentState !== 'connecting',
     isSpeaking,
     isEvaluating,
-    isListening
-    // onSecurityAlert removed - UI alerts disabled
+    isListening,
+    onSecurityAlert: (status) => {
+      // Just update UI status - TTS is handled in useVisionSecurity hook
+      setVisionSecurityStatus(status)
+    }
   })
   
   // Keep warningStats ref for final evaluation (logging stays in renderer)
@@ -76,24 +96,19 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     warningStatsRef.current = warningStats
   }, [warningStats])
   
-  // Vision security status tracking (UI hidden, but data logged)
-  // Batching for backend is handled via WarningStateManager stats
+  // Update vision security status from hidden tracking
+  // This ensures we always have the latest status for the UI,
+  // but batching for backend is handled via WarningStateManager stats
   useEffect(() => {
     if (hiddenVisionStatus) {
-      // Status tracked but UI alerts disabled
-      console.log('🔒 [Vision Security] Status updated (UI hidden):', {
-        faceDetected: hiddenVisionStatus.faceDetected,
-        gazeDirection: hiddenVisionStatus.gazeDirection,
-        activeWarnings: hiddenVisionStatus.suspiciousEvents?.length || 0
-      })
+      setVisionSecurityStatus(hiddenVisionStatus)
     }
   }, [hiddenVisionStatus])
 
   // Track if vision security data has been sent to prevent duplicates
   const visionSecurityDataSent = useRef(false)
   
-  // Modified function to send aggregated vision security data (called at interview end)
-  // @ts-ignore - Function kept for potential future use
+  // Modified function to send aggregated vision security data
   const sendVisionSecurityToServer = useCallback(async () => {
     const stats = warningStats;
     console.log('📊 [sendVisionSecurityToServer] Called with warningStats:', JSON.stringify(stats, null, 2));
@@ -155,13 +170,32 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     }
   }, [interviewId, warningStats])
 
-  // Vision status change handler (disabled - UI hidden)
-  // const handleVisionStatusChange = useCallback((status: any) => {
-  //   // Status tracked but UI alerts disabled
-  // }, [])
+  // Memoize the callback to prevent infinite loops
+  const handleVisionStatusChange = useCallback((status: any) => {
+    setVisionSecurityStatus(status)
+  }, [])
   const resumeData = useSelector((state: RootState) => state.interview.resumeData)
-  const { user } = useSelector((state: RootState) => state.auth)
+  const { user, token } = useSelector((state: RootState) => state.auth)
   const audioContextRef = useRef<AudioContext | null>(null)
+  
+  // Refs for callbacks/data to avoid stale closures in event listeners
+  const onSaveResultsRef = useRef(onSaveResults)
+  const onCompleteRef = useRef(onComplete)
+  const tokenRef = useRef(token)
+  
+  // Update refs when props/state change
+  useEffect(() => {
+    onSaveResultsRef.current = onSaveResults
+  }, [onSaveResults])
+  
+  useEffect(() => {
+    onCompleteRef.current = onComplete
+  }, [onComplete])
+  
+  useEffect(() => {
+    tokenRef.current = token
+  }, [token])
+
   const analyserRef = useRef<AnalyserNode | null>(null)
   const animationFrameRef = useRef<number | null>(null)
 
@@ -193,8 +227,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   useEffect(() => {
     // Don't initialize until we've checked for unfinished interviews
     if (!hasCheckedUnfinished) return
+    if (hasInitializedRef.current || hasCompletedRef.current) return
 
     const initializeInterview = async () => {
+      hasInitializedRef.current = true
       try {
         // Request audio permissions
         const hasPermission = await window.electronAPI.requestAudioPermissions()
@@ -262,6 +298,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       // Interview state changes
       window.electronAPI.onInterviewStateChange((state: string) => {
         setCurrentState(state)
+        onStateChange?.(state)
       })
 
       // Question changes - this fires for NEW questions only (not follow-ups)
@@ -306,21 +343,14 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         setEvaluations(prev => [...prev, evaluation])
       })
       
-      // Track evaluation state (including hint/clarification processing)
-      // This ensures warning TTS is queued during all LLM API calls
+      // Track evaluation state
       window.electronAPI.onInterviewStateChange((state: string) => {
-        setIsEvaluating(
-          state === 'evaluating_answer' || 
-          state === 'evaluating_approach' ||
-          state === 'handling_theoretical_hint' ||
-          state === 'handling_clarification'
-        )
+        setIsEvaluating(state === 'evaluating_answer' || state === 'evaluating_approach')
       })
 
-      // Code analysis (stored but not used in UI currently)
+      // Code analysis
       window.electronAPI.onCodeAnalysis((analysis: any) => {
-        console.log('📊 [Code Analysis] Received:', analysis)
-        // setCodeAnalysis(analysis) // Commented out - not used
+        setCodeAnalysis(analysis)
       })
 
       // Final evaluation ready
@@ -328,181 +358,37 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         console.log('📊 [Renderer] Submitting final evaluation to backend...')
         
         // CRITICAL: End all active warnings BEFORE collecting stats
-        // Use the return value directly since React state updates are async
         console.log('📊 [Renderer] Ending all active warnings before final stats collection...')
-        const finalStats = endAllActiveWarnings()
+        endAllActiveWarnings()
         
-        console.log('📊 [Renderer] Final stats returned from endAllActiveWarnings():', JSON.stringify(finalStats, null, 2))
-        console.log('📊 [Renderer] Warning types in finalStats:', Object.keys(finalStats))
-        console.log('📊 [Renderer] Warning counts:', Object.entries(finalStats).map(([type, data]: [string, any]) => 
-          `${type}: ${data?.count || 0} events`
-        ).join(', '))
-        
-        // IMPORTANT: Use the returned stats directly, NOT warningStatsRef.current
-        // because React state updates are async and the ref won't be updated yet
-        const visionWarnings = { ...finalStats }
-        
-        console.log('📊 [Renderer] Vision warnings object created (before screenshot):', {
-          types: Object.keys(visionWarnings),
-          counts: Object.entries(visionWarnings).map(([type, data]: [string, any]) => ({
-            type,
-            count: data?.count || 0,
-            events: data?.events?.length || 0
-          }))
-        })
-        
-        // Get screenshot from temp file if available
-        const screenshotFilepath = getScreenshotFilepath()
-        let multipleFacesScreenshot: string | null = null
-        
-        console.log('📸 [Renderer] ===== SCREENSHOT STATUS =====')
-        console.log('📸 [Renderer] Screenshot filepath:', screenshotFilepath)
-        
-        if (screenshotFilepath && window.electronAPI?.readScreenshotFile) {
-          try {
-            const result = await window.electronAPI.readScreenshotFile(screenshotFilepath)
-            if (result.success && result.imageData) {
-              multipleFacesScreenshot = result.imageData
-              const originalSizeKB = (multipleFacesScreenshot.length / 1024).toFixed(1)
-              console.log('📸 [Renderer] Screenshot read from file:', {
-                length: multipleFacesScreenshot.length,
-                sizeKB: originalSizeKB
-              })
-              
-              // Compress screenshot if it's too large (> 1MB)
-              const maxSizeKB = 1024 // 1MB max
-              if (multipleFacesScreenshot.length / 1024 > maxSizeKB) {
-                console.log(`📸 [Renderer] Screenshot is large (${originalSizeKB} KB), compressing...`)
-                try {
-                  // Create an image element to compress
-                  const img = new Image()
-                  await new Promise((resolve, reject) => {
-                    img.onload = resolve
-                    img.onerror = reject
-                    img.src = multipleFacesScreenshot!
-                  })
-                  
-                  // Create canvas and compress
-                  const canvas = document.createElement('canvas')
-                  const ctx = canvas.getContext('2d')
-                  
-                  // Reduce dimensions if needed
-                  const maxDimension = 800
-                  let width = img.width
-                  let height = img.height
-                  
-                  if (width > maxDimension || height > maxDimension) {
-                    if (width > height) {
-                      height = (height / width) * maxDimension
-                      width = maxDimension
-                    } else {
-                      width = (width / height) * maxDimension
-                      height = maxDimension
-                    }
-                  }
-                  
-                  canvas.width = width
-                  canvas.height = height
-                  ctx?.drawImage(img, 0, 0, width, height)
-                  
-                  // Compress to JPEG with quality 0.7
-                  multipleFacesScreenshot = canvas.toDataURL('image/jpeg', 0.7)
-                  const compressedSizeKB = (multipleFacesScreenshot.length / 1024).toFixed(1)
-                  console.log(`📸 [Renderer] Screenshot compressed: ${originalSizeKB} KB → ${compressedSizeKB} KB`)
-                } catch (compressionError) {
-                  console.error('📸 [Renderer] Error compressing screenshot:', compressionError)
-                  console.log('📸 [Renderer] Using original screenshot despite size')
-                }
-              }
-              
-              // Add screenshot to multiple_faces warning data ONLY if multiple_faces exists
-              if (visionWarnings.multiple_faces) {
-                visionWarnings.multiple_faces.screenshot = multipleFacesScreenshot
-                console.log('📸 [Renderer] Screenshot added to existing multiple_faces warning')
-              } else {
-                console.log('📸 [Renderer] ⚠️ No multiple_faces warning found, but screenshot was captured')
-                console.log('📸 [Renderer] Creating multiple_faces entry with screenshot')
-                visionWarnings.multiple_faces = { 
-                  count: 0, 
-                  totalDuration: 0, 
-                  events: [],
-                  screenshot: multipleFacesScreenshot
-                }
-              }
-            } else {
-              console.error('📸 [Renderer] Failed to read screenshot:', result.error)
-            }
-          } catch (error) {
-            console.error('📸 [Renderer] Error reading screenshot file:', error)
-          }
-        } else {
-          console.log('📸 [Renderer] ⚠️ NO SCREENSHOT FILE AVAILABLE - was not captured during interview')
-        }
-        
-        console.log('📸 [Renderer] ===== END SCREENSHOT STATUS =====')
+        // Use warningStatsRef.current directly - it's updated via useEffect
+        const visionWarnings = warningStatsRef.current
         
         console.log('📊 [Renderer] ===== FINAL VISION WARNINGS BATCH =====')
-        console.log('📊 [Renderer] Warning types:', Object.keys(visionWarnings))
-        console.log('📊 [Renderer] Has screenshot:', !!multipleFacesScreenshot)
-        console.log('📊 [Renderer] Screenshot length:', multipleFacesScreenshot?.length || 0)
-        // Log summary without full screenshot data
-        const warningSummary = Object.entries(visionWarnings).map(([type, data]: [string, any]) => ({
-          type,
-          count: data?.count || 0,
-          totalDuration: data?.totalDuration || 0,
-          eventsCount: data?.events?.length || 0,
-          hasScreenshot: !!data?.screenshot,
-          screenshotLength: data?.screenshot?.length || 0
-        }))
-        console.log('📊 [Renderer] Summary:', JSON.stringify(warningSummary, null, 2))
+        console.log('📊 [Renderer] Warning types:', Object.keys(visionWarnings).length)
+        console.log('📊 [Renderer] Full structure:', JSON.stringify(visionWarnings, null, 2))
         console.log('📊 [Renderer] ===== END BATCH =====')
         
         // Add vision warnings to payload for backend
         payload.visionSecurityWarnings = visionWarnings
         
-        // Calculate payload size before sending
-        const payloadString = JSON.stringify(payload)
-        const payloadSizeMB = (payloadString.length / (1024 * 1024)).toFixed(2)
-        console.log(`📦 [Renderer] Payload size: ${payloadSizeMB} MB`)
-        
-        // Check if payload exceeds server limit (10MB)
-        if (parseFloat(payloadSizeMB) > 9.5) {
-          console.warn(`⚠️ [Renderer] Payload size (${payloadSizeMB} MB) is close to or exceeds 10MB limit!`)
-          console.warn('⚠️ [Renderer] This may cause the request to fail. Consider compressing the screenshot.')
-        }
-        
-        try {
+          try {
           const { API_BASE_URL } = await import('../constants/api')
+          // Use token from ref to ensure we have the latest one even if localStorage was cleared
+          const authToken = tokenRef.current || localStorage.getItem('authToken')
+          
           const response = await fetch(`${API_BASE_URL}/interview/final-evaluation`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              Authorization: `Bearer ${localStorage.getItem('authToken')}`
+              Authorization: `Bearer ${authToken}`
             },
-            body: payloadString
+            body: JSON.stringify(payload)
           })
-          
-          if (!response.ok) {
-            const errorText = await response.text()
-            console.error('❌ [Renderer] Server responded with error:', response.status, response.statusText)
-            console.error('❌ [Renderer] Error details:', errorText)
-            throw new Error(`Server error: ${response.status} ${response.statusText}`)
-          }
-          
           const data = await response.json()
-          if (data.success) {
+          if (response.ok && data.success) {
             console.log('✅ [Renderer] Final evaluation submitted successfully!')
             await window.electronAPI.markPayloadSent()
-            
-            // Clean up screenshot temp file
-            if (screenshotFilepath && window.electronAPI?.deleteScreenshotFile) {
-              try {
-                await window.electronAPI.deleteScreenshotFile(screenshotFilepath)
-                console.log('📸 [Renderer] Screenshot temp file cleaned up')
-              } catch (error) {
-                console.error('📸 [Renderer] Error cleaning up screenshot file:', error)
-              }
-            }
           } else {
             console.error('❌ [Renderer] Final evaluation submission failed:', data.error)
           }
@@ -511,8 +397,21 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         }
       })
 
+      // Skip question confirmation request from main process
+      window.electronAPI.onSkipQuestionRequest(() => {
+        console.log('🎯 [Renderer] Received skip question request - showing confirmation modal')
+        setConfirmationModalConfig({
+          message: 'Are you sure you want to skip this coding problem and move to the next question?',
+          okText: 'Skip question',
+          onConfirm: handleConfirmSkip,
+          onCancel: handleCancelSkip
+        })
+        setShowConfirmationModal(true)
+      })
+
       // Interview completion
       window.electronAPI.onInterviewCompleted(async (results: any) => {
+        hasCompletedRef.current = true
         // For now, rely on WarningStateManager stats which are used in onFinalEvaluationReady
         console.log('📊 [Renderer] Interview completed - final warning stats will be attached in final evaluation payload')
         
@@ -520,7 +419,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         // No need to send to main process - logging stays in renderer
         
         // Save results if onSaveResults is provided
-        if (onSaveResults && interviewLinkId) {
+        if (onSaveResultsRef.current && interviewLinkId) {
           try {
             // Create summary similar to InterviewCompletionModal
             const totalQuestions = questions.length + codingProblems.length
@@ -567,7 +466,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
             }
             
             console.log('💾 Saving interview results:', summary)
-            await onSaveResults(summary)
+            await onSaveResultsRef.current(summary)
             console.log('✅ Interview results saved successfully')
           } catch (error) {
             console.error('❌ Failed to save interview results:', error)
@@ -578,7 +477,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         // The main process will clear conversations after payload is successfully sent via markPayloadSent()
         // This event (onInterviewCompleted) fires before the final evaluation payload is sent
         
-        onComplete?.(results)
+        onCompleteRef.current?.(results)
       })
     }
 
@@ -638,40 +537,74 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   // Microphone capture and streaming to main (16k PCM mono)
   const startMicrophoneStreaming = async () => {
     try {
+      // Request high-quality audio with noise suppression and echo cancellation
+      // Request high-quality audio with noise suppression and echo cancellation enabled
+      // These improve transcription accuracy by reducing background noise and echo
       const stream = await navigator.mediaDevices.getUserMedia({ audio: {
         channelCount: 1,
-        sampleRate: 48000, // browser typical; we'll downsample
-        noiseSuppression: false, // Disable to get raw audio
-        echoCancellation: false, // Disable to get raw audio
-        autoGainControl: false   // Disable to get raw audio
+        sampleRate: 48000, // browser typical; we'll downsample to 16kHz
+        noiseSuppression: true, // Enable to reduce background noise
+        echoCancellation: true, // Enable to prevent echo/feedback
+        autoGainControl: true   // Enable to normalize volume levels
       } as MediaTrackConstraints })
       
       console.log('🎤 [Mic] Microphone stream obtained:', stream)
       console.log('🎤 [Mic] Audio tracks:', stream.getAudioTracks().length)
-      console.log('🎤 [Mic] Track settings:', stream.getAudioTracks()[0]?.getSettings())
+      const trackSettings = stream.getAudioTracks()[0]?.getSettings()
+      console.log('🎤 [Mic] Track settings:', trackSettings)
 
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 })
+      // Use native AudioContext sample rate (don't force 16kHz - let browser handle it)
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
+      const actualSampleRate = audioContext.sampleRate
+      console.log('🎤 [Mic] AudioContext sample rate:', actualSampleRate)
+      
       const source = audioContext.createMediaStreamSource(stream)
-      // Use 1024 buffer size (power of 2) - approximately 64ms at 16kHz
-      const processor = audioContext.createScriptProcessor(1024, 1, 1)
+      // Use 4096 buffer size (power of 2) - approximately 80–90ms at 44.1/48kHz.
+      // AssemblyAI requires each audio message to represent 50–1000ms of audio.
+      const processor = audioContext.createScriptProcessor(4096, 1, 1)
 
+      // Improved downsampling with anti-aliasing for better audio quality
       const downsampleTo16k = (input: Float32Array, inputSampleRate: number, targetRate = 16000): Int16Array => {
+        // If already at target rate, just convert format
+        if (Math.abs(inputSampleRate - targetRate) < 1) {
+          const result = new Int16Array(input.length)
+          for (let i = 0; i < input.length; i++) {
+            const clamped = Math.max(-1, Math.min(1, input[i]))
+            result[i] = clamped < 0 ? Math.round(clamped * 0x8000) : Math.round(clamped * 0x7FFF)
+          }
+          return result
+        }
+        
         const sampleRateRatio = inputSampleRate / targetRate
         const newLength = Math.round(input.length / sampleRateRatio)
         const result = new Int16Array(newLength)
         let offsetResult = 0
-        let offsetBuffer = 0
+        
+        // Use linear interpolation for better quality than simple averaging
         while (offsetResult < result.length) {
-          const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio)
-          let accum = 0, count = 0
-          for (let i = offsetBuffer; i < nextOffsetBuffer && i < input.length; i++) {
-            accum += input[i]
-            count++
+          const targetIndex = offsetResult * sampleRateRatio
+          const index1 = Math.floor(targetIndex)
+          const index2 = Math.min(index1 + 1, input.length - 1)
+          const fraction = targetIndex - index1
+          
+          // Linear interpolation
+          const sample = input[index1] * (1 - fraction) + input[index2] * fraction
+          // Clamp and convert to 16-bit PCM
+          const clamped = Math.max(-1, Math.min(1, sample))
+          const int16Value = clamped < 0 ? Math.round(clamped * 0x8000) : Math.round(clamped * 0x7FFF)
+          
+          // Log first sample conversion occasionally to verify it's working
+          if (offsetResult === 0 && Math.random() < 0.01) {
+            console.log('🎤 [Renderer] Sample conversion check:', {
+              floatSample: sample.toFixed(6),
+              clamped: clamped.toFixed(6),
+              int16Value: int16Value,
+              expectedRange: '[-32768, 32767]'
+            })
           }
-          const sample = Math.max(-1, Math.min(1, accum / count))
-          result[offsetResult] = sample < 0 ? sample * 0x8000 : sample * 0x7FFF
+          
+          result[offsetResult] = int16Value
           offsetResult++
-          offsetBuffer = nextOffsetBuffer
         }
         return result
       }
@@ -679,6 +612,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       processor.onaudioprocess = (e) => {
         // Only stream after STT starts listening
         if (!isListeningRef.current) {
+          // Log occasionally when not listening to diagnose issues
+          if (Math.random() < 0.01) {
+            console.log('🎤 [Renderer] Audio chunk skipped - not listening. isListeningRef:', isListeningRef.current)
+          }
           return
         }
 
@@ -690,22 +627,70 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         lastAudioTimeRef.current = now
 
         const input = e.inputBuffer.getChannelData(0)
-        const pcm16 = downsampleTo16k(input, audioContext.sampleRate)
         
-        // Convert Int16Array to proper PCM s16le format (browser-compatible)
-        const buffer = new Uint8Array(pcm16.buffer)
+        // Calculate audio level BEFORE downsampling for diagnostics
+        const maxSample = Math.max(...Array.from(input).map(Math.abs))
+        const rmsLevel = Math.sqrt(input.reduce((sum, val) => sum + val * val, 0) / input.length)
         
-        // Apply volume boost if audio is too quiet
-        const audioLevel = Math.sqrt(input.reduce((sum, val) => sum + val * val, 0) / input.length)
-        if (audioLevel > 0.001) {
-          const boostFactor = 2.0
-          const boostedInput = input.map(sample => Math.max(-1, Math.min(1, sample * boostFactor)))
-          const boostedPcm16 = downsampleTo16k(boostedInput, audioContext.sampleRate)
-          const boostedBuffer = new Uint8Array(boostedPcm16.buffer)
-          window.electronAPI.sendAudioChunk(boostedBuffer)
-          return
+        // Simple adaptive gain control: try to normalize RMS towards a target without clipping
+        const targetRms = 0.05 // target RMS for clear speech (~-26 dBFS)
+        let gain = 1
+        if (rmsLevel > 0 && rmsLevel < targetRms) {
+          // Cap max gain to avoid insane amplification of pure noise
+          gain = Math.min(targetRms / rmsLevel, 8)
         }
         
+        const boostedInput =
+          gain !== 1
+            ? input.map((sample) => {
+                const boosted = sample * gain
+                return Math.max(-1, Math.min(1, boosted))
+              })
+            : input
+        
+        // Log audio levels to diagnose volume issues
+        if (Math.random() < 0.1) {
+          console.log(
+            '🎤 [Renderer] Audio levels',
+            '| max:', maxSample.toFixed(6),
+            '| RMS:', rmsLevel.toFixed(6),
+            '| gain:', gain.toFixed(2),
+            '| samples:', input.length,
+            '| sampleRate:', actualSampleRate
+          )
+        }
+        
+        // Downsample to 16kHz using the actual AudioContext sample rate
+        const pcm16 = downsampleTo16k(boostedInput, actualSampleRate)
+        
+        // Check downsampled audio levels
+        const pcmMax = Math.max(...Array.from(pcm16).map(Math.abs))
+        const pcmRms = Math.sqrt(Array.from(pcm16).reduce((sum, val) => sum + (val / 32768) ** 2, 0) / pcm16.length)
+        
+        if (Math.random() < 0.1) {
+          console.log('🎤 [Renderer] PCM16 levels - max:', pcmMax, 'RMS (normalized):', pcmRms.toFixed(6), 'expected range: 0-32767')
+          
+          // Warn if PCM values are suspiciously small
+          if (pcmMax < 100) {
+            console.warn('🎤 [Renderer] WARNING: PCM16 values are very small! max:', pcmMax, 'Expected hundreds or thousands for normal speech.')
+          }
+        }
+        
+        // Convert Int16Array to Uint8Array with proper little-endian byte order
+        // Int16Array is already little-endian in JavaScript, so we can use the buffer directly
+        const buffer = new Uint8Array(pcm16.buffer)
+        
+        // Verify buffer size (should be pcm16.length * 2 bytes for 16-bit samples)
+        if (buffer.length !== pcm16.length * 2) {
+          console.error('🎤 [Renderer] Audio buffer size mismatch!', {
+            pcm16Length: pcm16.length,
+            bufferLength: buffer.length,
+            expected: pcm16.length * 2
+          })
+        }
+        
+        // Send all audio chunks - let AssemblyAI handle silence detection and VAD
+        // Filtering silence here can cause issues with speech detection
         window.electronAPI.sendAudioChunk(buffer)
       }
 
@@ -739,17 +724,68 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       })
 
       if (result.success) {
-        console.log('📊 [Code Analysis] Success:', result.analysis)
-        // setCodeAnalysis(result.analysis) // Commented out - not used
+        setCodeAnalysis(result.analysis)
       }
     } catch (error) {
       console.error('Code analysis failed:', error)
     }
   }, [])
 
-  const handleSubmit = useCallback(async (code: string, timeComplexity?: string, spaceComplexity?: string) => {
+  const handleSubmit = useCallback(async (code: string, timeComplexity?: string, spaceComplexity?: string, skipConfirmation = false) => {
+    // If skipConfirmation is true (timer expiration), submit directly without modal
+    if (skipConfirmation) {
+      try {
+        console.log('📤 [Interview] Auto-submitting solution (timer expired):', code.length, 'characters')
+        // Get complexity from current problem's notes
+        const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
+          ? complexityNotes[currentCodingProblem.id]
+          : { time: timeComplexity || '', space: spaceComplexity || '' }
+        
+        const result = await window.electronAPI.submitSolution(
+          code, 
+          true, // isTimeout = true
+          complexity.time || undefined, 
+          complexity.space || undefined
+        )
+
+        if (result.success) {
+          console.log('✅ [Interview] Timeout solution submitted successfully')
+          setCurrentCode('')
+          if (result.hasNextProblem) {
+            console.log('➡️ [Interview] Moving to next problem')
+          } else {
+            console.log('🎉 [Interview] All coding problems completed')
+          }
+        } else {
+          console.log('❌ [Interview] Timeout submission failed:', result.feedback)
+        }
+      } catch (error) {
+        console.error('Failed to submit timeout solution:', error)
+      }
+      return
+    }
+
+    // For manual submissions, show confirmation modal
+    console.log('📤 [Interview] Requesting confirmation before submitting solution')
+    setPendingSubmission({ code, timeComplexity, spaceComplexity })
+    setConfirmationModalConfig({
+      message: 'Are you sure you want to submit your solution and move to the next question?',
+      okText: 'Submit solution',
+      onConfirm: confirmSubmit,
+      onCancel: cancelSubmit
+    })
+    setShowConfirmationModal(true)
+  }, [currentCodingProblem, complexityNotes])
+
+  const confirmSubmit = useCallback(async () => {
+    if (!pendingSubmission) return
+    
+    setShowConfirmationModal(false)
+    const { code, timeComplexity, spaceComplexity } = pendingSubmission
+    setPendingSubmission(null)
+
     try {
-      console.log('📤 [Interview] Submitting solution:', code.length, 'characters')
+      console.log('📤 [Interview] Submitting solution after confirmation:', code.length, 'characters')
       // Get complexity from current problem's notes
       const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
         ? complexityNotes[currentCodingProblem.id]
@@ -771,6 +807,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         } else {
           console.log('🎉 [Interview] All coding problems completed')
         }
+        // Reset current code for next problem
+        setCurrentCode('')
       } else {
         console.log('❌ [Interview] Solution needs improvement:', result.feedback)
         // Feedback is already spoken by the orchestrator, no need for alert popup
@@ -781,6 +819,11 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       // Don't show blocking alert - error is already logged
       // The interview flow will handle errors gracefully
     }
+  }, [pendingSubmission, currentCodingProblem, complexityNotes])
+
+  const cancelSubmit = useCallback(() => {
+    setShowConfirmationModal(false)
+    setPendingSubmission(null)
   }, [])
 
   const handleTimerExpire = useCallback(async () => {
@@ -795,44 +838,22 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     isSubmittingTimeoutRef.current = true
     console.log('⏰ [Interview] Coding timer expired for problem:', currentCodingProblem.title)
     
-    // Submit the current code (or empty if no code written)
+    // Submit the current code (or empty if no code written) - skip confirmation for timer expiration
     const codeToSubmit = currentCode.trim() || '// Timeout - no code submitted'
     
-    try {
-      console.log('📤 [Interview] Auto-submitting solution due to timeout:', codeToSubmit.length, 'characters')
-      // Get complexity for timeout submission
-      const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
-        ? complexityNotes[currentCodingProblem.id]
-        : { time: '', space: '' }
-      
-      const result = await window.electronAPI.submitSolution(
-        codeToSubmit, 
-        true, 
-        complexity.time || undefined, 
-        complexity.space || undefined
-      ) // Pass isTimeout = true
-      
-      if (result.success) {
-        console.log('✅ [Interview] Timeout solution submitted successfully')
-        // Reset current code for next problem
-        setCurrentCode('')
-        if (result.hasNextProblem) {
-          console.log('➡️ [Interview] Moving to next problem')
-        } else {
-          console.log('🎉 [Interview] All coding problems completed - interview ending')
-        }
-      } else {
-        console.log('❌ [Interview] Timeout submission failed:', result.feedback)
-      }
-    } catch (error) {
-      console.error('Failed to submit timeout solution:', error)
-    } finally {
-      // Reset the flag after a delay to allow state updates
-      setTimeout(() => {
-        isSubmittingTimeoutRef.current = false
-      }, 2000)
-    }
-  }, [currentCodingProblem, currentCode])
+    // Get complexity for timeout submission
+    const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
+      ? complexityNotes[currentCodingProblem.id]
+      : { time: '', space: '' }
+    
+    // Call handleSubmit with skipConfirmation = true to bypass modal
+    await handleSubmit(codeToSubmit, complexity.time || undefined, complexity.space || undefined, true)
+    
+    // Reset the flag after a delay to allow state updates
+    setTimeout(() => {
+      isSubmittingTimeoutRef.current = false
+    }, 2000)
+  }, [currentCodingProblem, currentCode, complexityNotes, handleSubmit])
 
 
   const currentComplexity =
@@ -915,6 +936,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               isListening={isListening}
               isSpeaking={isSpeaking}
               progress={progress}
+              onVisionStatusChange={handleVisionStatusChange}
             />
           </div>
         )
@@ -933,6 +955,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               isListening={isListening}
               isSpeaking={isSpeaking}
               progress={progress}
+              onVisionStatusChange={handleVisionStatusChange}
             />
           </div>
         )
@@ -959,6 +982,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         return renderCodingWorkspace(true)
 
       case 'wrap_up':
+      case 'completed':
         return (
           <div className="loading-section">
             <div className="glassmorphic-card wrap-up-card">
@@ -968,7 +992,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
                 </div>
               </div>
               <h2 className="loading-title">Interview Complete</h2>
-              <p className="loading-subtitle">Thanks for the great conversation. We’ll review everything and update you shortly.</p>
+              <p className="loading-subtitle">Thanks for the great conversation. We'll review everything and update you shortly.</p>
             </div>
           </div>
         )
@@ -1029,6 +1053,18 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     onComplete?.({ cancelled: true })
   }, [onComplete])
 
+  const handleConfirmSkip = useCallback(async () => {
+    setShowConfirmationModal(false)
+    console.log('🎯 [Renderer] User confirmed skip question')
+    await window.electronAPI.confirmSkipQuestion(true)
+  }, [])
+
+  const handleCancelSkip = useCallback(async () => {
+    setShowConfirmationModal(false)
+    console.log('🎯 [Renderer] User cancelled skip question')
+    await window.electronAPI.confirmSkipQuestion(false)
+  }, [])
+
   return (
     <>
       <ResumeInterviewModal
@@ -1044,20 +1080,33 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         onCancel={handleCancelModal}
       />
       
-      <div className="voice-interview-session">
+      {confirmationModalConfig && (
+        <ConfirmationModal
+          visible={showConfirmationModal}
+          message={confirmationModalConfig.message}
+          okText={confirmationModalConfig.okText}
+          onConfirm={confirmationModalConfig.onConfirm}
+          onCancel={confirmationModalConfig.onCancel}
+          okButtonProps={confirmationModalConfig.okButtonProps}
+        />
+      )}
+      
+        <div
+          className="voice-interview-session"
+          style={{ height: currentState === 'connecting' ? '100vh' : '86vh' }}
+        >
         <div className="interview-content">
         {renderCurrentSection()}
       </div>
 
-      {/* Vision Security Alerts - Hidden during interview to avoid distraction */}
-      {/* Warnings are still tracked and sent to backend at interview end */}
-      {/* <VisionSecurityAlert 
+      {/* Vision Security Alerts - Display warnings for suspicious events */}
+      <VisionSecurityAlert 
         status={visionSecurityStatus}
         warningStats={warningStats}
         onDismiss={(eventType) => {
           console.log('🔕 [Vision Security] Alert dismissed:', eventType)
         }}
-      /> */}
+      />
 
       {/* Hidden video capture for security tracking during coding section and throughout interview */}
       <div className="hidden-video-tracker">

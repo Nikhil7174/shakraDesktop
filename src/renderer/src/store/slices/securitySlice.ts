@@ -1,7 +1,20 @@
 // src/store/slices/securitySlice.ts
 import { createSlice } from '@reduxjs/toolkit';
 import type { PayloadAction } from '@reduxjs/toolkit';
-import type { CheatingIncident, SecurityStatus } from '../../hooks/useWebSocket';
+
+// Simplified types (no longer dependent on WebSocket)
+interface CheatingIncident {
+  id: string;
+  processName: string;
+  timestamp: number;
+  reason?: string;
+}
+
+interface SecurityStatus {
+  totalProcesses: number;
+  blockedAppsDetected: Array<{ name: string; pid: number; reason?: string }>;
+  timestamp: number;
+}
 
 interface SecurityState {
   // Connection status

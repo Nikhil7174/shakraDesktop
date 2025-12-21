@@ -1,25 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { 
-  SecurityAgentAPI, 
-  SecurityStatus, 
-  ProcessStatsData
-} from '../shared/types'
 
 // ✅ BEST PRACTICE: Expose ONLY what renderer needs
 // Never expose full ipcRenderer or require()
-const securityAgentAPI: SecurityAgentAPI = {
-  getStatus: () => ipcRenderer.invoke('get-status'),
-  
-  onStatusUpdate: (callback: (status: SecurityStatus) => void) => {
-    ipcRenderer.on('status-update', (_event, status) => callback(status))
-  },
-
-  getProcessStats: () => ipcRenderer.invoke('get-process-stats'),
-  
-  onProcessStatsUpdate: (callback: (stats: ProcessStatsData) => void) => {
-    ipcRenderer.on('process-stats-update', (_event, stats) => callback(stats))
-  }
-}
 
 // Interview API for voice interview functionality
 const interviewAPI = {
@@ -45,10 +27,6 @@ const interviewAPI = {
   // Vision security
   sendVisionSecurityData: (data: any) => ipcRenderer.send('vision-security-data', data),
   speakSecurityWarning: (message: string) => ipcRenderer.send('speak-security-warning', message),
-  captureScreenshot: (options?: { videoFrame?: boolean }) => ipcRenderer.invoke('capture-screenshot', options),
-  saveVideoFrameScreenshot: (imageData: string, filename?: string) => ipcRenderer.invoke('save-video-frame-screenshot', imageData, filename),
-  readScreenshotFile: (filepath: string) => ipcRenderer.invoke('read-screenshot-file', filepath),
-  deleteScreenshotFile: (filepath: string) => ipcRenderer.invoke('delete-screenshot-file', filepath),
   onVisionSecurityAlert: (callback: (alert: any) => void) => {
     ipcRenderer.on('vision-security-alert', (_event, alert) => callback(alert))
   },
@@ -56,6 +34,12 @@ const interviewAPI = {
   // STT token management
   getSTTToken: () => ipcRenderer.invoke('get-stt-token'),
   updateSTTToken: (token: string) => ipcRenderer.invoke('update-stt-token', token),
+  
+  // Config management
+  setAuthToken: (token: string | null) => ipcRenderer.invoke('set-auth-token', token),
+  fetchConfig: (authToken: string) => ipcRenderer.invoke('fetch-config', authToken),
+  getConfig: () => ipcRenderer.invoke('get-config'),
+  refreshConfig: (authToken: string) => ipcRenderer.invoke('refresh-config', authToken),
   
   // Unfinished interview management
   checkUnfinishedInterview: () => ipcRenderer.invoke('check-unfinished-interview'),
@@ -114,12 +98,18 @@ const interviewAPI = {
   
   onAudioData: (callback: (data: Uint8Array) => void) => {
     ipcRenderer.on('audio-data', (_event, data) => callback(data))
-  }
+  },
+  
+  // Skip question confirmation
+  onSkipQuestionRequest: (callback: () => void) => {
+    ipcRenderer.on('skip-question-request', () => callback())
+  },
+  confirmSkipQuestion: (confirmed: boolean) => 
+    ipcRenderer.invoke('confirm-skip-question', confirmed)
 }
 
 // Combined API
 const electronAPI = {
-  ...securityAgentAPI,
   ...interviewAPI
 }
 

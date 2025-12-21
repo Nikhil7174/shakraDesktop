@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react'
-import { Space, Button } from 'antd'
-import { BarChartOutlined } from '@ant-design/icons'
+import React, { useEffect, useState, useRef } from 'react'
+import { Alert, Space, Button, Collapse } from 'antd'
+import { WarningOutlined, EyeOutlined, MobileOutlined, UserDeleteOutlined, BarChartOutlined } from '@ant-design/icons'
 import type { VisionSecurityStatus, SuspiciousEvent } from '../../../../shared/types'
 import { WarningDashboard } from '../WarningDashboard'
 
@@ -103,7 +103,7 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
     return null
   }
 
-  // Group events by type (for tracking purposes, not displayed)
+  // Group events by type
   const eventGroups = activeEvents.reduce((acc, event) => {
     if (!acc[event.type]) {
       acc[event.type] = []
@@ -112,7 +112,47 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
     return acc
   }, {} as Record<string, SuspiciousEvent[]>)
 
-  console.log('🔔 [VisionSecurityAlert] Active warnings tracked:', Object.keys(eventGroups).length, 'event types (alerts hidden during interview)')
+  const getEventIcon = (type: SuspiciousEvent['type']) => {
+    switch (type) {
+      case 'gaze_away':
+        return <EyeOutlined />
+      case 'multiple_faces':
+        return <UserDeleteOutlined />
+      case 'mobile_device_usage':
+        return <MobileOutlined />
+      default:
+        return <WarningOutlined />
+    }
+  }
+
+  const getEventMessage = (type: SuspiciousEvent['type'], events: SuspiciousEvent[]) => {
+    const event = events[0]
+    switch (type) {
+      case 'gaze_away':
+        return `Gaze away from screen detected (${Math.round((event.duration || 0) / 1000)}s)`
+      case 'multiple_faces':
+        return 'Multiple faces detected in frame'
+      case 'face_absent':
+        return `Face not detected (${Math.round((event.duration || 0) / 1000)}s)`
+      case 'mobile_device_usage':
+        return 'Possible mobile device usage detected (looking down)'
+      default:
+        return event.description
+    }
+  }
+
+  const getSeverityType = (severity: SuspiciousEvent['severity']): 'error' | 'warning' | 'info' => {
+    switch (severity) {
+      case 'high':
+        return 'error'
+      case 'medium':
+        return 'warning'
+      default:
+        return 'info'
+    }
+  }
+
+  console.log('🔔 [VisionSecurityAlert] Rendering alerts for', Object.keys(eventGroups).length, 'event types')
 
   return (
     <div className="vision-security-alerts">
@@ -134,8 +174,29 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
           </div>
         )}
 
-        {/* Active Alerts - DISABLED: Not shown during interview to avoid distraction */}
-        {/* Warnings are still tracked and will appear in the dashboard */}
+        {/* Active Alerts */}
+        {Object.entries(eventGroups).map(([type, events]) => {
+          const severity = events[0].severity
+          const message = getEventMessage(type as SuspiciousEvent['type'], events)
+          // console.log('🔔 [VisionSecurityAlert] Rendering alert:', { type, severity, message })
+          
+          return (
+            <Alert
+              key={type}
+              message={message}
+              type={getSeverityType(severity)}
+              icon={getEventIcon(type as SuspiciousEvent['type'])}
+              closable
+              onClose={() => {
+                events.forEach(event => {
+                  setDismissedEvents(prev => new Set(prev).add(`${event.type}-${event.timestamp}`))
+                  onDismiss?.(event.type)
+                })
+              }}
+              showIcon
+            />
+          )
+        })}
       </Space>
 
       <style>{`
