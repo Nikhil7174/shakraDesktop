@@ -242,6 +242,9 @@ export const InterviewCompletionModal: React.FC<InterviewCompletionModalProps> =
                 setSaveProgress(100);
                 clearInterval(progressInterval);
 
+                window.dispatchEvent(new CustomEvent('dashboard-refresh'));
+                localStorage.setItem('dashboard-needs-refresh', Date.now().toString());
+
                 // Success notification will be handled by the calling component
                 // No need to show notification here to avoid duplicates
                 

@@ -321,6 +321,9 @@ export const InterviewChat: React.FC = () => {
       // Clear Redux state
       dispatch(resetInterview());
 
+      window.dispatchEvent(new CustomEvent('dashboard-refresh'));
+      localStorage.setItem('dashboard-needs-refresh', Date.now().toString());
+
       // Redirect to candidate dashboard (user is authenticated, so go directly there)
       navigate('/candidate/dashboard', { replace: true });
     } catch (error) {
