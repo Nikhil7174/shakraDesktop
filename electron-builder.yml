@@ -39,6 +39,7 @@ linux:
     - deb
   maintainer: electronjs.org
   category: Utility
+  executableName: shakra-ai-interview
 appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: true
