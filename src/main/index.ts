@@ -546,6 +546,13 @@ app.whenReady().then(async () => {
       mainWindow?.webContents.send('final-evaluation-ready', payload)
     })
 
+    interviewOrchestrator.on('requestSkipConfirmation', () => {
+      console.log('🎯 [Main] Requesting skip confirmation from renderer')
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('skip-question-request')
+      }
+    })
+
     console.log('✓ Interview orchestrator initialized')
   } catch (error) {
     console.error('Failed to initialize interview orchestrator:', error)
@@ -756,6 +763,22 @@ app.whenReady().then(async () => {
       const err = error as Error
       console.error('Failed to submit solution:', err)
       return { success: false, error: err.message, feedback: '', hasNextProblem: false }
+    }
+  })
+
+  // Skip question confirmation - handled via orchestrator event listener
+
+  ipcMain.handle('confirm-skip-question', async (_event, confirmed: boolean) => {
+    try {
+      // Set the confirmation result in the orchestrator
+      if (interviewOrchestrator) {
+        interviewOrchestrator.setSkipConfirmationResult(confirmed)
+      }
+      return { success: true }
+    } catch (error: unknown) {
+      const err = error as Error
+      console.error('Failed to confirm skip question:', err)
+      return { success: false, error: err.message }
     }
   })
 

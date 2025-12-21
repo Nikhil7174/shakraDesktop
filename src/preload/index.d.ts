@@ -35,6 +35,8 @@ type InterviewAPI = {
   onProgressUpdate?: (callback: (progress: { current: number, total: number }) => void) => void
   onCodeAnalysis: (callback: (analysis: any) => void) => void
   onInterviewCompleted: (callback: (results: any) => void) => void
+  onSkipQuestionRequest: (callback: () => void) => void
+  confirmSkipQuestion: (confirmed: boolean) => Promise<{ success: boolean; error?: string }>
 }
 
 declare global {

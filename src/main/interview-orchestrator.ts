@@ -122,6 +122,7 @@ export class InterviewOrchestrator extends EventEmitter {
   private currentIntervalHasSubstantialSpeech: boolean = false // Track if any substantial speech (>70 chars) in current 60s interval
   private pendingSecurityWarning: string | null = null // Queue for security warnings while other TTS is playing
   private isSecurityWarningInProgress = false // Flag to prevent concurrent security warning TTS
+  private skipConfirmationResolve: ((confirmed: boolean) => void) | null = null // For skip question confirmation
   // Centralized conversation history manager
   // Maintains full conversation history throughout the interview
   private fullConversationHistory: ConversationMessage[] = []
@@ -1560,10 +1561,22 @@ export class InterviewOrchestrator extends EventEmitter {
       }
       
       // Handle skip_question intent during approach phase (when user says "I don't know" or "skip")
+      // Just show the modal - no verbal response until user confirms
       if (intent.intent === 'skip_question') {
-        console.log('🎯 [Interview] ✨ Handling skip question request during approach phase')
+        console.log('🎯 [Interview] ✨ Skip question requested during approach phase - showing confirmation modal')
+        
+        // Request confirmation from renderer (this will show the modal)
+        const confirmed = await this.requestSkipConfirmation()
+        
+        if (!confirmed) {
+          console.log('🎯 [Interview] User cancelled skip question request during approach phase')
+          return
+        }
+        
+        // Only proceed with skip if user confirmed in modal
+        console.log('🎯 [Interview] User confirmed skip during approach phase - proceeding with skip')
         await this.withManualResponse('system', 'approach_skip_question', async () => {
-          // Acknowledge the skip
+          // Acknowledge the skip (only after confirmation)
           const skipMessage = "Understood. Let's move on to the next problem."
           
           // Record in conversation history
@@ -1999,12 +2012,24 @@ export class InterviewOrchestrator extends EventEmitter {
       }
       
       // Handle skip_question intent during coding phase (when user says "I don't know" or "skip")
+      // Just show the modal - no verbal response until user confirms
       if (intent.intent === 'skip_question') {
-        console.log('🎯 [Interview] ✨ Handling skip question request during coding phase')
+        console.log('🎯 [Interview] ✨ Skip question requested during coding phase - showing confirmation modal')
+        
+        // Request confirmation from renderer (this will show the modal)
+        const confirmed = await this.requestSkipConfirmation()
+        
+        if (!confirmed) {
+          console.log('🎯 [Interview] User cancelled skip question request')
+          return
+        }
+        
+        // Only proceed with skip if user confirmed in modal
+        console.log('🎯 [Interview] User confirmed skip - proceeding with skip')
         await this.withManualResponse('system', 'coding_skip_question', async () => {
           const problem = this.getCurrentCodingProblem()
           
-          // Acknowledge the skip
+          // Acknowledge the skip (only after confirmation)
           const skipMessage = "Understood. Let's move on to the next problem."
           
           // Record in conversation history
@@ -2748,6 +2773,28 @@ export class InterviewOrchestrator extends EventEmitter {
     } catch (error) {
       console.error('Error submitting solution:', error)
       throw error
+    }
+  }
+
+  /**
+   * Request skip confirmation from renderer
+   * Returns a promise that resolves when user confirms or cancels
+   */
+  private async requestSkipConfirmation(): Promise<boolean> {
+    return new Promise((resolve) => {
+      this.skipConfirmationResolve = resolve
+      // Emit event to request confirmation from renderer
+      this.emit('requestSkipConfirmation')
+    })
+  }
+
+  /**
+   * Set the skip confirmation result (called by main process after renderer responds)
+   */
+  setSkipConfirmationResult(confirmed: boolean): void {
+    if (this.skipConfirmationResolve) {
+      this.skipConfirmationResolve(confirmed)
+      this.skipConfirmationResolve = null
     }
   }
 

@@ -7,6 +7,7 @@ import { VideoCapture } from '../components/VideoCapture'
 import { useVisionSecurity } from '../hooks/useVisionSecurity'
 import { VisionSecurityAlert } from '../components/security/VisionSecurityAlert'
 import { ResumeInterviewModal } from '../components/interview/ResumeInterviewModal'
+import { ConfirmationModal } from '../components/interview/ConfirmationModal'
 import { CodingProblem, Question } from '../../../shared/types'
 import type { RootState } from '../store'
 
@@ -56,6 +57,19 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [userChoseResume, setUserChoseResume] = useState(false)
   const [hiddenVideoElement, setHiddenVideoElement] = useState<HTMLVideoElement | null>(null)
   const [visionSecurityStatus, setVisionSecurityStatus] = useState<any>(null)
+  const [showConfirmationModal, setShowConfirmationModal] = useState(false)
+  const [confirmationModalConfig, setConfirmationModalConfig] = useState<{
+    message: string
+    okText: string
+    onConfirm: () => void
+    onCancel: () => void
+    okButtonProps?: any
+  } | null>(null)
+  const [pendingSubmission, setPendingSubmission] = useState<{
+    code: string
+    timeComplexity?: string
+    spaceComplexity?: string
+  } | null>(null)
   
   const codeEditorRef = useRef<any>(null)
   const hasInitializedRef = useRef(false)
@@ -383,6 +397,18 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         }
       })
 
+      // Skip question confirmation request from main process
+      window.electronAPI.onSkipQuestionRequest(() => {
+        console.log('🎯 [Renderer] Received skip question request - showing confirmation modal')
+        setConfirmationModalConfig({
+          message: 'Are you sure you want to skip this coding problem and move to the next question?',
+          okText: 'Skip question',
+          onConfirm: handleConfirmSkip,
+          onCancel: handleCancelSkip
+        })
+        setShowConfirmationModal(true)
+      })
+
       // Interview completion
       window.electronAPI.onInterviewCompleted(async (results: any) => {
         hasCompletedRef.current = true
@@ -705,9 +731,61 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     }
   }, [])
 
-  const handleSubmit = useCallback(async (code: string, timeComplexity?: string, spaceComplexity?: string) => {
+  const handleSubmit = useCallback(async (code: string, timeComplexity?: string, spaceComplexity?: string, skipConfirmation = false) => {
+    // If skipConfirmation is true (timer expiration), submit directly without modal
+    if (skipConfirmation) {
+      try {
+        console.log('📤 [Interview] Auto-submitting solution (timer expired):', code.length, 'characters')
+        // Get complexity from current problem's notes
+        const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
+          ? complexityNotes[currentCodingProblem.id]
+          : { time: timeComplexity || '', space: spaceComplexity || '' }
+        
+        const result = await window.electronAPI.submitSolution(
+          code, 
+          true, // isTimeout = true
+          complexity.time || undefined, 
+          complexity.space || undefined
+        )
+
+        if (result.success) {
+          console.log('✅ [Interview] Timeout solution submitted successfully')
+          setCurrentCode('')
+          if (result.hasNextProblem) {
+            console.log('➡️ [Interview] Moving to next problem')
+          } else {
+            console.log('🎉 [Interview] All coding problems completed')
+          }
+        } else {
+          console.log('❌ [Interview] Timeout submission failed:', result.feedback)
+        }
+      } catch (error) {
+        console.error('Failed to submit timeout solution:', error)
+      }
+      return
+    }
+
+    // For manual submissions, show confirmation modal
+    console.log('📤 [Interview] Requesting confirmation before submitting solution')
+    setPendingSubmission({ code, timeComplexity, spaceComplexity })
+    setConfirmationModalConfig({
+      message: 'Are you sure you want to submit your solution and move to the next question?',
+      okText: 'Submit solution',
+      onConfirm: confirmSubmit,
+      onCancel: cancelSubmit
+    })
+    setShowConfirmationModal(true)
+  }, [currentCodingProblem, complexityNotes])
+
+  const confirmSubmit = useCallback(async () => {
+    if (!pendingSubmission) return
+    
+    setShowConfirmationModal(false)
+    const { code, timeComplexity, spaceComplexity } = pendingSubmission
+    setPendingSubmission(null)
+
     try {
-      console.log('📤 [Interview] Submitting solution:', code.length, 'characters')
+      console.log('📤 [Interview] Submitting solution after confirmation:', code.length, 'characters')
       // Get complexity from current problem's notes
       const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
         ? complexityNotes[currentCodingProblem.id]
@@ -729,6 +807,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         } else {
           console.log('🎉 [Interview] All coding problems completed')
         }
+        // Reset current code for next problem
+        setCurrentCode('')
       } else {
         console.log('❌ [Interview] Solution needs improvement:', result.feedback)
         // Feedback is already spoken by the orchestrator, no need for alert popup
@@ -739,6 +819,11 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       // Don't show blocking alert - error is already logged
       // The interview flow will handle errors gracefully
     }
+  }, [pendingSubmission, currentCodingProblem, complexityNotes])
+
+  const cancelSubmit = useCallback(() => {
+    setShowConfirmationModal(false)
+    setPendingSubmission(null)
   }, [])
 
   const handleTimerExpire = useCallback(async () => {
@@ -753,44 +838,22 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     isSubmittingTimeoutRef.current = true
     console.log('⏰ [Interview] Coding timer expired for problem:', currentCodingProblem.title)
     
-    // Submit the current code (or empty if no code written)
+    // Submit the current code (or empty if no code written) - skip confirmation for timer expiration
     const codeToSubmit = currentCode.trim() || '// Timeout - no code submitted'
     
-    try {
-      console.log('📤 [Interview] Auto-submitting solution due to timeout:', codeToSubmit.length, 'characters')
-      // Get complexity for timeout submission
-      const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
-        ? complexityNotes[currentCodingProblem.id]
-        : { time: '', space: '' }
-      
-      const result = await window.electronAPI.submitSolution(
-        codeToSubmit, 
-        true, 
-        complexity.time || undefined, 
-        complexity.space || undefined
-      ) // Pass isTimeout = true
-      
-      if (result.success) {
-        console.log('✅ [Interview] Timeout solution submitted successfully')
-        // Reset current code for next problem
-        setCurrentCode('')
-        if (result.hasNextProblem) {
-          console.log('➡️ [Interview] Moving to next problem')
-        } else {
-          console.log('🎉 [Interview] All coding problems completed - interview ending')
-        }
-      } else {
-        console.log('❌ [Interview] Timeout submission failed:', result.feedback)
-      }
-    } catch (error) {
-      console.error('Failed to submit timeout solution:', error)
-    } finally {
-      // Reset the flag after a delay to allow state updates
-      setTimeout(() => {
-        isSubmittingTimeoutRef.current = false
-      }, 2000)
-    }
-  }, [currentCodingProblem, currentCode])
+    // Get complexity for timeout submission
+    const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
+      ? complexityNotes[currentCodingProblem.id]
+      : { time: '', space: '' }
+    
+    // Call handleSubmit with skipConfirmation = true to bypass modal
+    await handleSubmit(codeToSubmit, complexity.time || undefined, complexity.space || undefined, true)
+    
+    // Reset the flag after a delay to allow state updates
+    setTimeout(() => {
+      isSubmittingTimeoutRef.current = false
+    }, 2000)
+  }, [currentCodingProblem, currentCode, complexityNotes, handleSubmit])
 
 
   const currentComplexity =
@@ -990,6 +1053,18 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     onComplete?.({ cancelled: true })
   }, [onComplete])
 
+  const handleConfirmSkip = useCallback(async () => {
+    setShowConfirmationModal(false)
+    console.log('🎯 [Renderer] User confirmed skip question')
+    await window.electronAPI.confirmSkipQuestion(true)
+  }, [])
+
+  const handleCancelSkip = useCallback(async () => {
+    setShowConfirmationModal(false)
+    console.log('🎯 [Renderer] User cancelled skip question')
+    await window.electronAPI.confirmSkipQuestion(false)
+  }, [])
+
   return (
     <>
       <ResumeInterviewModal
@@ -1004,6 +1079,17 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         onRestart={handleStartFreshInterview}
         onCancel={handleCancelModal}
       />
+      
+      {confirmationModalConfig && (
+        <ConfirmationModal
+          visible={showConfirmationModal}
+          message={confirmationModalConfig.message}
+          okText={confirmationModalConfig.okText}
+          onConfirm={confirmationModalConfig.onConfirm}
+          onCancel={confirmationModalConfig.onCancel}
+          okButtonProps={confirmationModalConfig.okButtonProps}
+        />
+      )}
       
         <div
           className="voice-interview-session"

@@ -1,6 +1,6 @@
 // src/pages/InterviewChat.tsx
 import React, { useState, useEffect, useCallback } from 'react';
-import { Space, Button, Modal } from 'antd';
+import { Space, Button } from 'antd';
 import { LeftOutlined } from '@ant-design/icons';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useDispatch } from 'react-redux';
@@ -10,6 +10,7 @@ import { InfoCollection } from '../components/interview/InfoCollection';
 import { InterviewSession } from '../components/interview/InterviewSession';
 import VoiceInterviewSession from './VoiceInterviewSession';
 import { WelcomeBackModal } from '../components/interview/WelcomeBackModal';
+import { ConfirmationModal } from '../components/interview/ConfirmationModal';
 import { useResumeUpload } from '../hooks/api/useResumeUpload';
 import { useInterview } from '../hooks/api/useInterview';
 import { useResumeData } from '../hooks/useResumeData';
@@ -550,17 +551,15 @@ export const InterviewChat: React.FC = () => {
       />
 
       {/* Quit confirmation */}
-      <Modal
-        open={showQuitConfirm}
-        onOk={handleQuit}
-        onCancel={() => setShowQuitConfirm(false)}
+      <ConfirmationModal
+        visible={showQuitConfirm}
+        message="Are you sure you want to quit the interview?"
         okText="Quit interview"
-        okButtonProps={{ danger: true }}
         cancelText="Stay"
-        centered
-      >
-        <p>Are you sure you want to quit the interview?</p>
-      </Modal>
+        okButtonProps={{ danger: true }}
+        onConfirm={handleQuit}
+        onCancel={() => setShowQuitConfirm(false)}
+      />
     </div>
   );
 };

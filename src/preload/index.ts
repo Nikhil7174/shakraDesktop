@@ -98,7 +98,14 @@ const interviewAPI = {
   
   onAudioData: (callback: (data: Uint8Array) => void) => {
     ipcRenderer.on('audio-data', (_event, data) => callback(data))
-  }
+  },
+  
+  // Skip question confirmation
+  onSkipQuestionRequest: (callback: () => void) => {
+    ipcRenderer.on('skip-question-request', () => callback())
+  },
+  confirmSkipQuestion: (confirmed: boolean) => 
+    ipcRenderer.invoke('confirm-skip-question', confirmed)
 }
 
 // Combined API
