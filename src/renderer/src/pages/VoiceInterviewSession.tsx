@@ -70,6 +70,11 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     timeComplexity?: string
     spaceComplexity?: string
   } | null>(null)
+  const pendingSubmissionRef = useRef<{
+    code: string
+    timeComplexity?: string
+    spaceComplexity?: string
+  } | null>(null)
   
   const codeEditorRef = useRef<any>(null)
   const hasInitializedRef = useRef(false)
@@ -731,6 +736,57 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     }
   }, [])
 
+  const handleConfirmSubmit = useCallback(async () => {
+    setShowConfirmationModal(false)
+    
+    const submission = pendingSubmissionRef.current
+    if (!submission) {
+      console.warn('⚠️ [Interview] No pending submission found')
+      return
+    }
+
+    const { code, timeComplexity, spaceComplexity } = submission
+    pendingSubmissionRef.current = null
+    setPendingSubmission(null)
+
+    try {
+      console.log('📤 [Interview] Submitting solution after confirmation:', code.length, 'characters')
+      // Get complexity from current problem's notes
+      const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
+        ? complexityNotes[currentCodingProblem.id]
+        : { time: timeComplexity || '', space: spaceComplexity || '' }
+      
+      const result = await window.electronAPI.submitSolution(
+        code, 
+        false, 
+        complexity.time || undefined, 
+        complexity.space || undefined
+      )
+
+      if (result.success) {
+        console.log('✅ [Interview] Solution submitted successfully')
+        if (result.hasNextProblem) {
+          console.log('➡️ [Interview] Moving to next problem')
+        } else {
+          console.log('🎉 [Interview] All coding problems completed')
+        }
+        setCurrentCode('')
+      } else {
+        console.log('❌ [Interview] Solution needs improvement:', result.feedback)
+      }
+    } catch (error) {
+      console.error('Failed to submit solution:', error)
+      // Don't show blocking alert - error is already logged
+      // The interview flow will handle errors gracefully
+    }
+  }, [currentCodingProblem, complexityNotes])
+
+  const handleCancelSubmit = useCallback(() => {
+    setShowConfirmationModal(false)
+    pendingSubmissionRef.current = null
+    setPendingSubmission(null)
+  }, [])
+
   const handleSubmit = useCallback(async (code: string, timeComplexity?: string, spaceComplexity?: string, skipConfirmation = false) => {
     // If skipConfirmation is true (timer expiration), submit directly without modal
     if (skipConfirmation) {
@@ -767,64 +823,17 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
     // For manual submissions, show confirmation modal
     console.log('📤 [Interview] Requesting confirmation before submitting solution')
-    setPendingSubmission({ code, timeComplexity, spaceComplexity })
+    const submissionData = { code, timeComplexity, spaceComplexity }
+    setPendingSubmission(submissionData)
+    pendingSubmissionRef.current = submissionData
     setConfirmationModalConfig({
       message: 'Are you sure you want to submit your solution and move to the next question?',
       okText: 'Submit solution',
-      onConfirm: confirmSubmit,
-      onCancel: cancelSubmit
+      onConfirm: handleConfirmSubmit,
+      onCancel: handleCancelSubmit
     })
     setShowConfirmationModal(true)
-  }, [currentCodingProblem, complexityNotes])
-
-  const confirmSubmit = useCallback(async () => {
-    if (!pendingSubmission) return
-    
-    setShowConfirmationModal(false)
-    const { code, timeComplexity, spaceComplexity } = pendingSubmission
-    setPendingSubmission(null)
-
-    try {
-      console.log('📤 [Interview] Submitting solution after confirmation:', code.length, 'characters')
-      // Get complexity from current problem's notes
-      const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
-        ? complexityNotes[currentCodingProblem.id]
-        : { time: timeComplexity || '', space: spaceComplexity || '' }
-      
-      const result = await window.electronAPI.submitSolution(
-        code, 
-        false, 
-        complexity.time || undefined, 
-        complexity.space || undefined
-      )
-
-      if (result.success) {
-        console.log('✅ [Interview] Solution submitted successfully')
-        // Feedback will be spoken via TTS
-        // Next problem will be presented automatically if exists
-        if (result.hasNextProblem) {
-          console.log('➡️ [Interview] Moving to next problem')
-        } else {
-          console.log('🎉 [Interview] All coding problems completed')
-        }
-        // Reset current code for next problem
-        setCurrentCode('')
-      } else {
-        console.log('❌ [Interview] Solution needs improvement:', result.feedback)
-        // Feedback is already spoken by the orchestrator, no need for alert popup
-        // Just log and continue - the interview will proceed automatically
-      }
-    } catch (error) {
-      console.error('Failed to submit solution:', error)
-      // Don't show blocking alert - error is already logged
-      // The interview flow will handle errors gracefully
-    }
-  }, [pendingSubmission, currentCodingProblem, complexityNotes])
-
-  const cancelSubmit = useCallback(() => {
-    setShowConfirmationModal(false)
-    setPendingSubmission(null)
-  }, [])
+  }, [currentCodingProblem, complexityNotes, handleConfirmSubmit, handleCancelSubmit])
 
   const handleTimerExpire = useCallback(async () => {
     if (!currentCodingProblem) return
