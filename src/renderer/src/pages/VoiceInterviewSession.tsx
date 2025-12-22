@@ -343,7 +343,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         setEvaluations(prev => [...prev, evaluation])
       })
       
-      // Track evaluation state
+      // Track evaluation state and hint/clarification states
       window.electronAPI.onInterviewStateChange((state: string) => {
         setIsEvaluating(state === 'evaluating_answer' || state === 'evaluating_approach')
       })
@@ -956,6 +956,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               isSpeaking={isSpeaking}
               progress={progress}
               onVisionStatusChange={handleVisionStatusChange}
+              isHint={currentState === 'handling_theoretical_hint' || currentState === 'providing_hint'}
+              isClarification={currentState === 'handling_clarification'}
             />
           </div>
         )
