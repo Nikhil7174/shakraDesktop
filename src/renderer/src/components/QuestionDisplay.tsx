@@ -12,6 +12,8 @@ interface QuestionDisplayProps {
   isSpeaking: boolean
   progress: { current: number, total: number }
   onVisionStatusChange?: (status: any) => void
+  isHint?: boolean
+  isClarification?: boolean
 }
 
 export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
@@ -22,7 +24,9 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
   isListening,
   isSpeaking,
   progress,
-  onVisionStatusChange
+  onVisionStatusChange,
+  isHint = false,
+  isClarification = false
 }) => {
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null)
   
@@ -172,6 +176,8 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
               <div className="video-meta">
                 {displayMeta}
                 {isFollowUp && <span className="follow-up-badge">Follow-up</span>}
+                {isHint && <span className="hint-badge">Hint</span>}
+                {isClarification && <span className="clarification-badge">Clarification</span>}
               </div>
             </div>
             <div className="video-status">
@@ -474,6 +480,34 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
           background: rgba(156, 39, 176, 0.2);
           color: #ab47bc;
           border: 1px solid rgba(156, 39, 176, 0.3);
+          border-radius: 6px;
+          font-size: 9px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+
+        .hint-badge {
+          display: inline-flex;
+          align-items: center;
+          padding: 2px 6px;
+          background: rgba(255, 152, 0, 0.2);
+          color: #ff9800;
+          border: 1px solid rgba(255, 152, 0, 0.3);
+          border-radius: 6px;
+          font-size: 9px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+
+        .clarification-badge {
+          display: inline-flex;
+          align-items: center;
+          padding: 2px 6px;
+          background: rgba(33, 150, 243, 0.2);
+          color: #2196f3;
+          border: 1px solid rgba(33, 150, 243, 0.3);
           border-radius: 6px;
           font-size: 9px;
           font-weight: 600;
