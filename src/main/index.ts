@@ -91,7 +91,7 @@ function createWindow(): void {
     maximizable: true,
     resizable: true,
     // frame: false, // Hide title bar (workaround for Wayland icon issue)
-    // autoHideMenuBar: true, // Hide menu bar
+    autoHideMenuBar: true, // Hide menu bar
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       // SECURITY BEST PRACTICES:
