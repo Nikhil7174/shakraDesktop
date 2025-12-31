@@ -20,6 +20,7 @@ export class VisionSecurityService {
   private readonly PROCESS_INTERVAL = 100 // Process every 100ms (10 FPS)
   private warningManager: WarningStateManager
   private capturedScreenshot: string | null = null
+  private isCodingSection: boolean = false
 
   // Thresholds
   private readonly GAZE_AWAY_THRESHOLD = 3000 // 3 seconds
@@ -166,7 +167,8 @@ export class VisionSecurityService {
     }
 
     // Mobile device detection: Gaze down pattern
-    const mobileDeviceUsageDetected = faceDetected && gazeDirection === 'down'
+    // Skip mobile device detection during coding section (users look down at keyboard naturally)
+    const mobileDeviceUsageDetected = faceDetected && gazeDirection === 'down' && !this.isCodingSection
     if (mobileDeviceUsageDetected) {
       this.warningManager.startWarning('mobile_device_usage')
     } else {
@@ -174,7 +176,10 @@ export class VisionSecurityService {
     }
 
     // Gaze away detection (only when face is detected, excluding down which is mobile device)
-    const gazeAway = faceDetected && gazeDirection !== 'center' && gazeDirection !== 'away' && gazeDirection !== 'down'
+    const gazeAway = faceDetected && 
+                     gazeDirection !== 'center' && 
+                     gazeDirection !== 'away' && 
+                     (!this.isCodingSection || gazeDirection !== 'down')
     if (gazeAway) {
       this.warningManager.startWarning('gaze_away')
     } else {
@@ -336,6 +341,15 @@ export class VisionSecurityService {
     this.warningManager.endAllActiveWarnings()
   }
 
+  setCodingSection(isCodingSection: boolean): void {
+    this.isCodingSection = isCodingSection
+    // End any active gaze down warnings when entering/exiting coding section
+    if (isCodingSection) {
+      this.warningManager.endWarning('mobile_device_usage')
+      this.warningManager.endWarning('gaze_away')
+    }
+  }
+
   cleanup(): void {
     if (this.faceLandmarker) {
       this.faceLandmarker.close()
@@ -349,6 +363,7 @@ export class VisionSecurityService {
     this.blinkHistory = []
     this.warningManager.clear()
     this.capturedScreenshot = null
+    this.isCodingSection = false
   }
 }
 

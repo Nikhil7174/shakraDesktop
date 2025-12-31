@@ -97,6 +97,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     isSpeaking,
     isEvaluating,
     isListening,
+    isCodingSection: !!currentCodingProblem,
     onSecurityAlert: (status) => {
       // Just update UI status - TTS is handled in useVisionSecurity hook
       setVisionSecurityStatus(status)
