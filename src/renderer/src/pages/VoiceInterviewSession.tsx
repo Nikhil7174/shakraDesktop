@@ -8,8 +8,10 @@ import { useVisionSecurity } from '../hooks/useVisionSecurity'
 import { VisionSecurityAlert } from '../components/security/VisionSecurityAlert'
 import { ResumeInterviewModal } from '../components/interview/ResumeInterviewModal'
 import { ConfirmationModal } from '../components/interview/ConfirmationModal'
+import { InterviewFeedback } from '../components/interview/InterviewFeedback'
 import { CodingProblem, Question } from '../../../shared/types'
 import type { RootState } from '../store'
+import type { InterviewSession } from '../types'
 
 interface VoiceInterviewSessionProps {
   interviewId: string
@@ -44,6 +46,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const isListeningRef = useRef(false)
   const [progress, setProgress] = useState({ current: 0, total: questions.length })
   const [evaluations, setEvaluations] = useState<any[]>([])
+  const evaluationsRef = useRef<any[]>([])
   const [codeAnalysis, setCodeAnalysis] = useState<any>(null)
   const [complexityNotes, setComplexityNotes] = useState<Record<string, { time: string; space: string }>>({})
   const [isMonitoring, setIsMonitoring] = useState(false)
@@ -79,6 +82,11 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const codeEditorRef = useRef<any>(null)
   const hasInitializedRef = useRef(false)
   const hasCompletedRef = useRef(false)
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false)
+  const [sessionForModals, setSessionForModals] = useState<InterviewSession | null>(null)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle')
+  const [saveRetryCount, setSaveRetryCount] = useState(0)
+  const saveSummaryRef = useRef<any>(null)
 
   // Initialize vision security tracking that stays active throughout the interview
   // This works even when video windows are hidden (like in coding section)
@@ -89,6 +97,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     isSpeaking,
     isEvaluating,
     isListening,
+    isCodingSection: !!currentCodingProblem,
     onSecurityAlert: (status) => {
       // Just update UI status - TTS is handled in useVisionSecurity hook
       setVisionSecurityStatus(status)
@@ -100,6 +109,11 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   useEffect(() => {
     warningStatsRef.current = warningStats
   }, [warningStats])
+
+  // Keep evaluations ref updated
+  useEffect(() => {
+    evaluationsRef.current = evaluations
+  }, [evaluations])
   
   // Update vision security status from hidden tracking
   // This ensures we always have the latest status for the UI,
@@ -297,6 +311,49 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     initializeInterview()
   }, [interviewId, questions, codingProblems, hasCheckedUnfinished, resumeFromIndex, skipIntro, userChoseResume, unfinishedSession?.questionsAnswered])
 
+  // Save results with retry logic
+  const saveResultsWithRetry = useCallback(async (summary: any, retryCount: number) => {
+    if (!onSaveResultsRef.current) return
+
+    const maxRetries = 3
+    setSaveStatus('saving')
+    setSaveRetryCount(retryCount)
+
+    try {
+      await onSaveResultsRef.current(summary)
+      setSaveStatus('success')
+      setSaveRetryCount(0)
+      
+      // Show success notification
+      window.dispatchEvent(new CustomEvent('dashboard-refresh'))
+      localStorage.setItem('dashboard-needs-refresh', Date.now().toString())
+      
+      // After success, show feedback modal
+      setTimeout(() => {
+        setShowFeedbackModal(true)
+      }, 1000) // Small delay to show success state
+      
+    } catch (error) {
+      console.error(`❌ Failed to save interview results (attempt ${retryCount + 1}/${maxRetries}):`, error)
+      
+      if (retryCount < maxRetries - 1) {
+        // Retry after delay
+        setTimeout(() => {
+          saveResultsWithRetry(summary, retryCount + 1)
+        }, 2000 * (retryCount + 1)) // Exponential backoff: 2s, 4s, 6s
+      } else {
+        // Max retries reached
+        setSaveStatus('error')
+        setSaveRetryCount(retryCount + 1)
+        
+        // Still show feedback modal even if save failed
+        setTimeout(() => {
+          setShowFeedbackModal(true)
+        }, 2000)
+      }
+    }
+  }, [])
+
   // Set up event listeners
   useEffect(() => {
     const setupEventListeners = () => {
@@ -345,7 +402,11 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
       // Evaluations
       window.electronAPI.onEvaluation((evaluation: any) => {
-        setEvaluations(prev => [...prev, evaluation])
+        setEvaluations(prev => {
+          const updated = [...prev, evaluation]
+          evaluationsRef.current = updated
+          return updated
+        })
       })
       
       // Track evaluation state and hint/clarification states
@@ -417,72 +478,105 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       // Interview completion
       window.electronAPI.onInterviewCompleted(async (results: any) => {
         hasCompletedRef.current = true
+        
+        // Mark that an interview has been completed in this app session
+        sessionStorage.setItem('interviewCompletedInSession', 'true');
+        
         // For now, rely on WarningStateManager stats which are used in onFinalEvaluationReady
         console.log('📊 [Renderer] Interview completed - final warning stats will be attached in final evaluation payload')
         
         // Note: Final stats will be sent to backend via final evaluation payload
         // No need to send to main process - logging stays in renderer
         
-        // Save results if onSaveResults is provided
-        if (onSaveResultsRef.current && interviewLinkId) {
-          try {
-            // Create summary similar to InterviewCompletionModal
-            const totalQuestions = questions.length + codingProblems.length
-            const theoreticalScore = evaluations.length > 0 
-              ? evaluations.reduce((sum, ev) => sum + (ev.score || 0), 0) / evaluations.length 
-              : 0
-            
-            const summary = {
-              sessionId: interviewId,
-              interviewLinkId: interviewLinkId,
-              candidateId: results?.candidateId || 'unknown',
-              candidateName: resumeData?.name || user?.fullName || 'Unknown',
-              candidateEmail: user?.email || resumeData?.email || 'unknown@example.com',
-              candidatePhone: resumeData?.phone || '',
-              completedAt: new Date().toISOString(),
-              startTime: results?.startTime || new Date().toISOString(),
-              endTime: new Date().toISOString(),
-              duration: results?.duration || 0,
-              score: Math.round(theoreticalScore),
-              totalQuestions: totalQuestions,
-              correctAnswers: evaluations.filter(ev => ev.score >= 70).length,
-              timeSpent: results?.timeSpent || 0,
-              strengths: theoreticalScore >= 80 ? ['Excellent technical knowledge'] : ['Good understanding'],
-              areasForImprovement: theoreticalScore < 60 ? ['Review fundamentals'] : ['Continue practicing'],
-              overallFeedback: `Interview completed with ${Math.round(theoreticalScore)}% average score.`,
-              detailedAnswers: evaluations.map(ev => ({
-                questionId: ev.questionId || '',
-                question: ev.question || '',
-                userAnswer: ev.answer || '',
-                correctAnswer: '',
-                isCorrect: ev.score >= 70,
-                timeTaken: ev.timeTaken || 0
-              })),
-              questionAnalysis: {
-                easyQuestions: questions.filter(q => (q as any).difficulty === 'easy').length,
-                mediumQuestions: questions.filter(q => (q as any).difficulty === 'medium').length,
-                hardQuestions: questions.filter(q => (q as any).difficulty === 'hard').length,
-                correctByDifficulty: {
-                  easy: 0,
-                  medium: 0,
-                  hard: 0
-                }
-              }
-            }
-            
-            console.log('💾 Saving interview results:', summary)
-            await onSaveResultsRef.current(summary)
-            console.log('✅ Interview results saved successfully')
-          } catch (error) {
-            console.error('❌ Failed to save interview results:', error)
-          }
+        // Create a session object for the modals
+        // Use ref to get current evaluations (closure issue fix)
+        const currentEvaluations = evaluationsRef.current
+        const sessionObject: InterviewSession = {
+          sessionId: interviewId,
+          interviewLinkId: interviewLinkId,
+          candidateId: results?.candidateId || 'unknown',
+          status: 'completed',
+          questions: questions.map((q, idx) => ({
+            id: q.id || `q-${idx}`,
+            question: q.question || '',
+            type: 'technical' as const,
+            difficulty: (q as any).difficulty || 'medium',
+            timeLimit: 300,
+            options: [],
+            answeredAt: (q as any).answeredAt,
+            correctAnswerId: (q as any).correctAnswerId,
+          })),
+          answers: currentEvaluations.map(ev => ({
+            questionId: ev.questionId || '',
+            answer: ev.answer || '',
+            answeredAt: new Date(),
+            timeTaken: ev.timeTaken || 0,
+            score: ev.score,
+            feedback: ev.feedback,
+            code: ev.code // Include code for coding questions
+          })),
+          startTime: new Date(results?.startTime || Date.now()),
+          endTime: new Date(),
+          duration: results?.duration || 0
         }
         
-        // NOTE: Don't clear unfinished interview here - the payload needs to be sent first
-        // The main process will clear conversations after payload is successfully sent via markPayloadSent()
-        // This event (onInterviewCompleted) fires before the final evaluation payload is sent
+        setSessionForModals(sessionObject)
         
-        onCompleteRef.current?.(results)
+        // Save results in the background (non-blocking)
+        if (onSaveResultsRef.current && interviewLinkId) {
+          // Create summary for saving
+          const totalQuestions = questions.length + codingProblems.length
+          const theoreticalScore = currentEvaluations.length > 0 
+            ? currentEvaluations.reduce((sum, ev) => sum + (ev.score || 0), 0) / currentEvaluations.length 
+            : 0
+          
+          const summary = {
+            sessionId: interviewId,
+            interviewLinkId: interviewLinkId,
+            candidateId: results?.candidateId || 'unknown',
+            candidateName: resumeData?.name || user?.fullName || 'Unknown',
+            candidateEmail: user?.email || resumeData?.email || 'unknown@example.com',
+            candidatePhone: resumeData?.phone || '',
+            completedAt: new Date().toISOString(),
+            startTime: results?.startTime || new Date().toISOString(),
+            endTime: new Date().toISOString(),
+            duration: results?.duration || 0,
+            score: Math.round(theoreticalScore),
+            totalQuestions: totalQuestions,
+            correctAnswers: currentEvaluations.filter(ev => ev.score >= 70).length,
+            timeSpent: results?.timeSpent || 0,
+            strengths: theoreticalScore >= 80 ? ['Excellent technical knowledge'] : ['Good understanding'],
+            areasForImprovement: theoreticalScore < 60 ? ['Review fundamentals'] : ['Continue practicing'],
+            overallFeedback: `Interview completed with ${Math.round(theoreticalScore)}% average score.`,
+            detailedAnswers: currentEvaluations.map(ev => ({
+              questionId: ev.questionId || '',
+              question: ev.question || '',
+              userAnswer: ev.answer || '',
+              correctAnswer: '',
+              isCorrect: ev.score >= 70,
+              timeTaken: ev.timeTaken || 0
+            })),
+            questionAnalysis: {
+              easyQuestions: questions.filter(q => (q as any).difficulty === 'easy').length,
+              mediumQuestions: questions.filter(q => (q as any).difficulty === 'medium').length,
+              hardQuestions: questions.filter(q => (q as any).difficulty === 'hard').length,
+              correctByDifficulty: {
+                easy: 0,
+                medium: 0,
+                hard: 0
+              }
+            }
+          }
+          
+          // Store summary for retry
+          saveSummaryRef.current = summary
+          
+          // Start saving with retry logic
+          saveResultsWithRetry(summary, 0)
+        } else {
+          // No save needed, go directly to feedback
+          setShowFeedbackModal(true)
+        }
       })
     }
 
@@ -965,7 +1059,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               isSpeaking={isSpeaking}
               progress={progress}
               onVisionStatusChange={handleVisionStatusChange}
-              isHint={currentState === 'handling_theoretical_hint' || currentState === 'providing_hint'}
+              isHint={currentState === 'handling_theoretical_hint'}
               isClarification={currentState === 'handling_clarification'}
             />
           </div>
@@ -999,11 +1093,52 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
             <div className="glassmorphic-card wrap-up-card">
               <div className="wrap-up-icon">
                 <div className="wrap-up-center">
-                  <span>✓</span>
+                  {saveStatus === 'saving' ? (
+                    <div style={{
+                      width: 24,
+                      height: 24,
+                      border: '3px solid rgba(76, 175, 80, 0.3)',
+                      borderTopColor: '#4caf50',
+                      borderRadius: '50%',
+                      animation: 'spin 1s linear infinite'
+                    }} />
+                  ) : saveStatus === 'success' ? (
+                    <span>✓</span>
+                  ) : saveStatus === 'error' ? (
+                    <span style={{ color: '#ff4d4f', fontSize: '32px' }}>⚠</span>
+                  ) : (
+                    <span>✓</span>
+                  )}
                 </div>
               </div>
               <h2 className="loading-title">Interview Complete</h2>
-              <p className="loading-subtitle">Thanks for the great conversation. We'll review everything and update you shortly.</p>
+              <p className="loading-subtitle">
+                {saveStatus === 'saving' 
+                  ? `Saving your results${saveRetryCount > 0 ? ` (retry ${saveRetryCount + 1}/3)...` : '...'}`
+                  : saveStatus === 'success'
+                  ? 'Your results have been saved successfully!'
+                  : saveStatus === 'error'
+                  ? `Failed to save results after ${saveRetryCount} attempts. Your feedback is still important!`
+                  : 'Thanks for the great conversation. We\'ll review everything and update you shortly.'}
+              </p>
+              {saveStatus === 'error' && saveSummaryRef.current && (
+                <button
+                  onClick={() => saveResultsWithRetry(saveSummaryRef.current, 0)}
+                  style={{
+                    marginTop: '16px',
+                    padding: '8px 16px',
+                    background: 'rgba(9, 88, 217, 0.1)',
+                    border: '1px solid rgba(9, 88, 217, 0.3)',
+                    borderRadius: '6px',
+                    color: '#0958d9',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    fontWeight: 500,
+                  }}
+                >
+                  Retry Saving
+                </button>
+              )}
             </div>
           </div>
         )
@@ -1076,6 +1211,19 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     await window.electronAPI.confirmSkipQuestion(false)
   }, [])
 
+  // Handle feedback modal complete - call onComplete
+  const handleFeedbackComplete = useCallback(() => {
+    setShowFeedbackModal(false)
+    onCompleteRef.current?.({})
+  }, [])
+
+  // Handle feedback modal skip - call onComplete
+  const handleFeedbackSkip = useCallback(() => {
+    setShowFeedbackModal(false)
+    onCompleteRef.current?.({})
+  }, [])
+
+
   return (
     <>
       <ResumeInterviewModal
@@ -1099,6 +1247,16 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           onConfirm={confirmationModalConfig.onConfirm}
           onCancel={confirmationModalConfig.onCancel}
           okButtonProps={confirmationModalConfig.okButtonProps}
+        />
+      )}
+
+      {/* Feedback Modal */}
+      {showFeedbackModal && sessionForModals && (
+        <InterviewFeedback
+          visible={showFeedbackModal}
+          session={sessionForModals}
+          onComplete={handleFeedbackComplete}
+          onSkip={handleFeedbackSkip}
         />
       )}
       

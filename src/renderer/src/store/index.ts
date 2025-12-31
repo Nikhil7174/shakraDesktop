@@ -12,10 +12,16 @@ import interviewReducer from './slices/interviewSlice';
 import authReducer from './slices/authSlice';
 import securityReducer from './slices/securitySlice';
 
+const authPersistConfig = {
+  key: 'auth',
+  storage,
+  whitelist: ['user', 'token', 'isAuthenticated'], 
+};
+
 const persistConfig = {
   key: 'root',
   storage,
-  whitelist: ['user', 'interview', 'auth'], // Persist user data, interview data, and auth
+  whitelist: ['user', 'interview'], 
 };
 
 const rootReducer = combineReducers({
@@ -23,7 +29,7 @@ const rootReducer = combineReducers({
   user: userReducer,
   session: sessionReducer,
   interview: interviewReducer,
-  auth: authReducer,
+  auth: persistReducer(authPersistConfig, authReducer),
   security: securityReducer,
 });
 

@@ -60,6 +60,8 @@ export class ConfigService {
 
   constructor(serverUrl?: string) {
     // Use provided server URL or fallback to default
+    // For testing: use localhost:3001
+    // For production: use https://crisp-server-n0r1.onrender.com
     this.serverUrl = serverUrl || process.env.SERVER_URL || 'https://crisp-server-n0r1.onrender.com'
     this.encryptionKey = getEncryptionKey()
   }

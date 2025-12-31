@@ -9,6 +9,7 @@ interface UseVisionSecurityOptions {
   isSpeaking?: boolean
   isEvaluating?: boolean
   isListening?: boolean
+  isCodingSection?: boolean
 }
 
 const WARNING_MESSAGES: Record<string, string[]> = {
@@ -40,7 +41,8 @@ export const useVisionSecurity = ({
   onSecurityAlert,
   isSpeaking = false,
   isEvaluating = false,
-  isListening = false
+  isListening = false,
+  isCodingSection = false
 }: UseVisionSecurityOptions) => {
   const [status, setStatus] = useState<VisionSecurityStatus | null>(null)
   const [isInitialized, setIsInitialized] = useState(false)
@@ -152,6 +154,12 @@ export const useVisionSecurity = ({
       setIsInitialized(false)
     }
   }, [enabled])
+
+  useEffect(() => {
+    if (serviceRef.current) {
+      serviceRef.current.setCodingSection(isCodingSection)
+    }
+  }, [isCodingSection])
 
   // Process warning stack: pop latest warning and speak it, then clear ALL stacks
   const processWarningStack = useCallback(() => {

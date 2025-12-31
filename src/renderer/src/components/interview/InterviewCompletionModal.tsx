@@ -1,15 +1,15 @@
 // src/components/interview/InterviewCompletionModal.tsx
-import React, { useState, useEffect } from 'react';
-import { Modal, Typography, Space, Button, Progress, App } from 'antd';
+import React, { useState, useEffect, useRef } from 'react';
+import { Modal, Typography, Space, Progress, App } from 'antd';
 import { CheckCircleOutlined, TrophyOutlined, LoadingOutlined } from '@ant-design/icons';
 import { useSelector } from 'react-redux';
-import { colors, spacing } from '../../styles';
+import { colors, spacing, borderRadius, typography } from '../../styles';
 import { useInterview } from '../../hooks/api/useInterview';
 import type { InterviewSession } from '../../types';
 import type { RootState } from '../../store';
 // import SessionManager from '../../services/SessionManager'; // No longer needed
 
-const { Title, Paragraph } = Typography;
+const { Title, Paragraph, Text } = Typography;
 
 interface InterviewCompletionModalProps {
     visible: boolean;
@@ -32,11 +32,53 @@ export const InterviewCompletionModal: React.FC<InterviewCompletionModalProps> =
     const { user } = useSelector((state: RootState) => state.auth);
     const [saveProgress, setSaveProgress] = useState(0);
     const [hasTriggeredCallback, setHasTriggeredCallback] = useState(false);
+    const [hasAutoAdvanced, setHasAutoAdvanced] = useState(false);
+    const autoAdvanceTimerRef = useRef<NodeJS.Timeout | null>(null);
     const { validateCode } = useInterview();
 
     useEffect(() => {
         if (visible) {
             handleSaveAndComplete();
+        }
+    }, [visible]);
+
+    // Auto-advance to feedback modal after 2 seconds when saving is complete
+    useEffect(() => {
+        // Check if we should auto-advance: visible, not saving, progress complete, and haven't advanced yet
+        const shouldAdvance = visible && !isSaving && saveProgress === 100 && !hasAutoAdvanced;
+        
+        if (shouldAdvance) {
+            console.log('🔄 [CompletionModal] Conditions met for auto-advance:', {
+                visible,
+                isSaving,
+                saveProgress,
+                hasAutoAdvanced
+            });
+            console.log('🔄 [CompletionModal] Auto-advancing to feedback form in 2 seconds...');
+            setHasAutoAdvanced(true);
+            const timer = setTimeout(() => {
+                console.log('🔄 [CompletionModal] Auto-advancing now...');
+                onComplete();
+            }, 2000); // 2 seconds delay
+            
+            return () => {
+                console.log('🔄 [CompletionModal] Cleaning up auto-advance timer');
+                clearTimeout(timer);
+            };
+        }
+        
+        return undefined;
+    }, [visible, isSaving, saveProgress, hasAutoAdvanced, onComplete]);
+
+    // Reset auto-advance flag when modal closes
+    useEffect(() => {
+        if (!visible) {
+            setHasAutoAdvanced(false);
+            // Clear timer if modal closes
+            if (autoAdvanceTimerRef.current) {
+                clearTimeout(autoAdvanceTimerRef.current);
+                autoAdvanceTimerRef.current = null;
+            }
         }
     }, [visible]);
 
@@ -257,7 +299,23 @@ export const InterviewCompletionModal: React.FC<InterviewCompletionModalProps> =
                 // Mark interview as inactive - this should be handled by useSessionManager
                 // SessionManager.setInterviewActive(false);
 
-                // Don't auto-close - wait for user to click button
+                // Set isSaving to false AFTER setting progress to 100
+                setIsSaving(false);
+                
+                // Trigger auto-advance after 2 seconds
+                console.log('🔄 [CompletionModal] Saving complete, will auto-advance in 2 seconds...');
+                
+                // Clear any existing timer
+                if (autoAdvanceTimerRef.current) {
+                    clearTimeout(autoAdvanceTimerRef.current);
+                }
+                
+                autoAdvanceTimerRef.current = setTimeout(() => {
+                    console.log('🔄 [CompletionModal] Auto-advancing to feedback form now...');
+                    setHasAutoAdvanced(true);
+                    autoAdvanceTimerRef.current = null;
+                    onComplete();
+                }, 2000);
             }
         } catch (error) {
             console.error('Error saving results:', error);
@@ -265,11 +323,29 @@ export const InterviewCompletionModal: React.FC<InterviewCompletionModalProps> =
                 message: 'Save Failed',
                 description: 'Failed to save your interview results. Please try again.'
             });
-        } finally {
             setIsSaving(false);
         }
     };
 
+
+    // Calculate score for display
+    const calculateScore = () => {
+        if (!session) return 0;
+        const answers = session.answers || [];
+        const correctAnswers = answers.filter(answer => {
+            const question = session.questions?.find(q => q.id === answer.questionId);
+            return question && answer.selectedOptionId === question.correctAnswerId;
+        }).length;
+        const totalQuestions = session.questions?.length || 0;
+        return totalQuestions > 0 ? Math.round((correctAnswers / totalQuestions) * 100) : 0;
+    };
+
+    const score = calculateScore();
+    const correctAnswers = session ? (session.answers || []).filter(answer => {
+        const question = session.questions?.find(q => q.id === answer.questionId);
+        return question && answer.selectedOptionId === question.correctAnswerId;
+    }).length : 0;
+    const totalQuestions = session?.questions?.length || 0;
 
     return (
         <Modal
@@ -278,92 +354,208 @@ export const InterviewCompletionModal: React.FC<InterviewCompletionModalProps> =
             maskClosable={false}
             footer={null}
             centered
-            width={600}
-            style={{ textAlign: 'center' }}
+            width={560}
+            styles={{
+                body: {
+                    padding: `${spacing.xl}px ${spacing.lg}px`,
+                },
+                content: {
+                    borderRadius: borderRadius.xl,
+                    overflow: 'hidden',
+                }
+            }}
         >
-            <Space direction="vertical" size="large" style={{ width: '100%', padding: spacing.lg }}>
-                {/* Success Icon */}
-                <div style={{ fontSize: 64, color: colors.success.main }}>
-                    {isSaving ? <LoadingOutlined spin /> : <CheckCircleOutlined />}
+            <div style={{ 
+                display: 'flex', 
+                flexDirection: 'column', 
+                alignItems: 'center',
+                textAlign: 'center',
+                width: '100%'
+            }}>
+                {/* Icon Container with Animation */}
+                <div style={{
+                    width: 80,
+                    height: 80,
+                    borderRadius: '50%',
+                    background: isSaving 
+                        ? `linear-gradient(135deg, ${colors.primary.light} 0%, ${colors.primary.main} 100%)`
+                        : `linear-gradient(135deg, ${colors.success.light} 0%, ${colors.success.main} 100%)`,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    marginBottom: spacing.lg,
+                    boxShadow: isSaving 
+                        ? colors.shadows.primary 
+                        : `0 8px 24px rgba(82, 196, 26, 0.2)`,
+                    transition: 'all 0.3s ease',
+                }}>
+                    {isSaving ? (
+                        <LoadingOutlined style={{ fontSize: 40, color: colors.primary.contrast }} spin />
+                    ) : (
+                        <CheckCircleOutlined style={{ fontSize: 40, color: colors.primary.contrast }} />
+                    )}
                 </div>
 
                 {/* Title */}
-                <Title level={2} style={{ margin: 0, color: colors.success.main }}>
-                    {isSaving ? 'Saving Your Results...' : 'Interview Completed!'}
+                <Title 
+                    level={2} 
+                    style={{ 
+                        margin: 0,
+                        marginBottom: spacing.sm,
+                        color: colors.neutral[900],
+                        fontWeight: typography.fontWeight.semibold,
+                        fontSize: typography.fontSize['3xl'],
+                    }}
+                >
+                    {isSaving ? 'Saving Your Results' : 'Interview Completed!'}
                 </Title>
 
                 {/* Message */}
-                <Paragraph style={{ fontSize: 16, margin: 0 }}>
-                    {isSaving ?
-                        'Thank you for completing the interview. We are saving your results...' :
-                        'Thank you for completing the interview! Your results have been saved successfully. Click the button below to return to the home page.'
+                <Paragraph 
+                    style={{ 
+                        fontSize: typography.fontSize.base,
+                        color: colors.neutral[600],
+                        margin: 0,
+                        marginBottom: spacing.xl,
+                        lineHeight: typography.lineHeight.relaxed,
+                        maxWidth: 420,
+                    }}
+                >
+                    {isSaving
+                        ? 'Please wait while we save your interview results securely...'
+                        : 'Your interview results have been saved successfully. Thank you for your participation!'
                     }
                 </Paragraph>
 
                 {/* Progress Bar */}
                 {isSaving && (
-                    <div style={{ width: '100%' }}>
+                    <div style={{ 
+                        width: '100%', 
+                        maxWidth: 420,
+                        marginBottom: spacing.lg 
+                    }}>
                         <Progress
                             percent={saveProgress}
-                            strokeColor={colors.success.main}
+                            strokeColor={{
+                                '0%': colors.primary.light,
+                                '100%': colors.primary.main,
+                            }}
+                            trailColor={colors.neutral[100]}
                             showInfo={true}
                             format={(percent) => `${percent}%`}
+                            strokeWidth={8}
+                            style={{
+                                marginBottom: spacing.sm,
+                            }}
                         />
-                        <Paragraph type="secondary" style={{ marginTop: spacing.sm }}>
-                            Saving your interview results...
-                        </Paragraph>
+                        <Text 
+                            type="secondary" 
+                            style={{ 
+                                fontSize: typography.fontSize.sm,
+                                color: colors.neutral[500],
+                            }}
+                        >
+                            Processing your responses...
+                        </Text>
                     </div>
                 )}
 
-                {/* Quick Stats */}
+                {/* Stats Card */}
                 {!isSaving && session && (
                     <div style={{
-                        backgroundColor: colors.background.secondary,
-                        padding: spacing.md,
-                        borderRadius: 8,
-                        border: `1px solid ${colors.neutral[200]}`
+                        width: '100%',
+                        maxWidth: 420,
+                        background: `linear-gradient(135deg, ${colors.background.secondary} 0%, ${colors.background.primary} 100%)`,
+                        padding: spacing.lg,
+                        borderRadius: borderRadius.lg,
+                        border: `1px solid ${colors.neutral[200]}`,
+                        boxShadow: colors.shadows.sm,
+                        marginBottom: spacing.md,
                     }}>
-                        <Space direction="vertical" size="small">
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: spacing.sm }}>
-                                <TrophyOutlined style={{ color: colors.warning.main }} />
-                                <span style={{ fontWeight: 'bold' }}>
-                                    Score: {(() => {
-                                        const answers = session.answers || [];
-                                        const correctAnswers = answers.filter(answer => {
-                                            const question = session.questions?.find(q => q.id === answer.questionId);
-                                            return question && answer.selectedOptionId === question.correctAnswerId;
-                                        }).length;
-                                        const totalQuestions = session.questions?.length || 0;
-                                        return totalQuestions > 0 ? Math.round((correctAnswers / totalQuestions) * 100) : 0;
-                                    })()}%
-                                </span>
+                        <Space direction="vertical" size="small" style={{ width: '100%' }}>
+                            <div style={{ 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                justifyContent: 'center', 
+                                gap: spacing.sm,
+                                marginBottom: spacing.xs,
+                            }}>
+                                <div style={{
+                                    width: 40,
+                                    height: 40,
+                                    borderRadius: '50%',
+                                    background: `linear-gradient(135deg, ${colors.warning.light} 0%, ${colors.warning.main} 100%)`,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    boxShadow: `0 4px 12px rgba(250, 173, 20, 0.2)`,
+                                }}>
+                                    <TrophyOutlined style={{ 
+                                        fontSize: 20, 
+                                        color: colors.primary.contrast 
+                                    }} />
+                                </div>
+                                <div>
+                                    <Text style={{ 
+                                        fontSize: typography.fontSize['2xl'],
+                                        fontWeight: typography.fontWeight.bold,
+                                        color: colors.neutral[900],
+                                    }}>
+                                        {score}%
+                                    </Text>
+                                </div>
                             </div>
-                            <div style={{ fontSize: 14, color: colors.neutral[600] }}>
-                                {(() => {
-                                    const answers = session.answers || [];
-                                    const correctAnswers = answers.filter(answer => {
-                                        const question = session.questions?.find(q => q.id === answer.questionId);
-                                        return question && answer.selectedOptionId === question.correctAnswerId;
-                                    }).length;
-                                    const totalQuestions = session.questions?.length || 0;
-                                    return `${correctAnswers} out of ${totalQuestions} questions correct`;
-                                })()}
-                            </div>
+                            <Text style={{ 
+                                fontSize: typography.fontSize.sm,
+                                color: colors.neutral[600],
+                                fontWeight: typography.fontWeight.medium,
+                            }}>
+                                {correctAnswers} of {totalQuestions} questions answered correctly
+                            </Text>
                         </Space>
                     </div>
                 )}
 
-                {/* Action Button */}
-                <Button
-                    type="primary"
-                    size="large"
-                    onClick={onComplete}
-                    style={{ minWidth: 200 }}
-                    disabled={isSaving}
-                >
-                    {isSaving ? 'Saving...' : 'Return to Home'}
-                </Button>
-            </Space>
+                {/* Auto-advancing indicator */}
+                {!isSaving && saveProgress === 100 && (
+                    <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: spacing.sm,
+                        marginTop: spacing.md,
+                    }}>
+                        <div style={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: '50%',
+                            background: colors.primary.main,
+                            animation: 'pulse 1.5s ease-in-out infinite',
+                        }} />
+                        <Text 
+                            type="secondary" 
+                            style={{ 
+                                fontSize: typography.fontSize.sm,
+                                color: colors.neutral[500],
+                            }}
+                        >
+                            Redirecting to feedback form...
+                        </Text>
+                    </div>
+                )}
+            </div>
+
+            <style>{`
+                @keyframes pulse {
+                    0%, 100% {
+                        opacity: 1;
+                        transform: scale(1);
+                    }
+                    50% {
+                        opacity: 0.5;
+                        transform: scale(0.9);
+                    }
+                }
+            `}</style>
         </Modal>
     );
 };

@@ -145,7 +145,15 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         monacoEditorRef.current = null
       }
     }
-  }, [problem.id, problem.language, selectedLanguage, readOnly])
+  }, [problem.id, problem.language, selectedLanguage])
+
+  useEffect(() => {
+    if (!monacoEditorRef.current) return
+    const currentReadOnly = monacoEditorRef.current.getOption(monaco.editor.EditorOption.readOnly)
+    if (currentReadOnly !== readOnly) {
+      monacoEditorRef.current.updateOptions({ readOnly })
+    }
+  }, [readOnly])
 
   // Simple 60-second timer - starts when monitoring begins, sends every 60 seconds
   useEffect(() => {

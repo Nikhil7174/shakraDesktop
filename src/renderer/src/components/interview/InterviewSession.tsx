@@ -5,6 +5,7 @@ import { RobotOutlined } from '@ant-design/icons';
 import { colors, spacing } from '../../styles';
 import { ChatContainer } from './chat';
 import { InterviewCompletionModal } from './InterviewCompletionModal';
+import { InterviewFeedback } from './InterviewFeedback';
 import { SecurityStatus } from '../security/SecurityStatus';
 // import SessionManager from '../../services/SessionManager'; // No longer needed
 import type { InterviewSession as InterviewSessionType, ChatMessage } from '../../types';
@@ -32,6 +33,7 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({
   const [isInterviewCompleted, setIsInterviewCompleted] = useState(false);
   const [sessionRestored, setSessionRestored] = useState(false);
   const [showCompletionModal, setShowCompletionModal] = useState(false);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
 
   // Add a state to track user answers locally
   // Memoize current question to avoid recalculation
@@ -187,10 +189,28 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({
   }, [notification, hasShownCompletionToast]);
 
   const handleCompletion = useCallback(() => {
+    // Close completion modal and show feedback modal
+    setShowCompletionModal(false);
+    setShowFeedbackModal(true);
+  }, []);
+
+  const handleFeedbackComplete = useCallback(() => {
     // Session clearing should be handled by useSessionManager
     // This component should not directly manage sessions
     
-    // Call the onComplete callback to redirect to home
+    // Close feedback modal and call the onComplete callback to redirect to home
+    setShowFeedbackModal(false);
+    if (onComplete) {
+      onComplete();
+    } else {
+      // Fallback: redirect to home page
+      window.location.href = '/';
+    }
+  }, [onComplete]);
+
+  const handleFeedbackSkip = useCallback(() => {
+    // Skip feedback and complete
+    setShowFeedbackModal(false);
     if (onComplete) {
       onComplete();
     } else {
@@ -235,6 +255,16 @@ export const InterviewSession: React.FC<InterviewSessionProps> = ({
           onComplete={handleCompletion}
           onSaveResults={onSaveResults}
           onSaveSuccess={handleSaveSuccess}
+        />
+      )}
+
+      {/* Feedback Modal */}
+      {showFeedbackModal && currentSession && (
+        <InterviewFeedback
+          visible={showFeedbackModal}
+          session={currentSession}
+          onComplete={handleFeedbackComplete}
+          onSkip={handleFeedbackSkip}
         />
       )}
     </Card>
