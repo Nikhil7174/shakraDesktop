@@ -4,6 +4,8 @@ import { UserOutlined, LockOutlined } from '@ant-design/icons';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { colors, spacing } from '../styles';
 import { useAuth } from '../hooks/useAuth';
+import { useAppDispatch } from '../store';
+import { setLoading } from '../store/slices/authSlice';
 
 const { Title, Text } = Typography;
 
@@ -14,11 +16,19 @@ export const Login: React.FC = () => {
   const location = useLocation();
   console.log('✅ [Login] Location:', location);
   const { login, loading, isAuthenticated, user } = useAuth();
+  const dispatch = useAppDispatch();
   const [form] = Form.useForm();
   
   useEffect(() => {
     console.log('✅ [Login] Component mounted');
-  }, []);
+    dispatch(setLoading(false));
+  }, [dispatch]);
+
+  useEffect(() => {
+    return () => {
+      dispatch(setLoading(false));
+    };
+  }, [dispatch]);
 
   // Get return to path from navigation state
   const returnTo = (location.state as any)?.returnTo;
