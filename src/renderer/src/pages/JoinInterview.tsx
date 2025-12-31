@@ -9,6 +9,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { setCurrentSession } from '../store/slices/interviewSlice';
 import { API_BASE_URL } from '../constants/api';
 import { extractToken, extractTokenFromHash, extractTokenFromSearch } from '../utils/tokenExtractor';
+import { RestartModal } from '../components/interview/RestartModal';
 import axios from 'axios';
 
 const { Title, Paragraph, Text } = Typography;
@@ -24,6 +25,7 @@ export const JoinInterview: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [validating, setValidating] = useState(false);
   const [linkInfo, setLinkInfo] = useState<any>(null);
+  const [showRestartModal, setShowRestartModal] = useState(false);
 
   const handleBack = () => {
     const from = (location.state as any)?.from;
@@ -72,6 +74,15 @@ export const JoinInterview: React.FC = () => {
   const handleValidateLink = async (token: string) => {
     if (!token.trim()) {
       message.error('Please enter a valid interview link');
+      return;
+    }
+
+    // Check if an interview was completed in this app session
+    const interviewCompleted = sessionStorage.getItem('interviewCompletedInSession');
+    
+    if (interviewCompleted === 'true') {
+      // Show modal to prevent validating link
+      setShowRestartModal(true);
       return;
     }
 
@@ -230,6 +241,12 @@ export const JoinInterview: React.FC = () => {
           )}
         </Space>
       </Card>
+
+      {/* Restart App Modal */}
+      <RestartModal
+        open={showRestartModal}
+        onClose={() => setShowRestartModal(false)}
+      />
     </div>
   );
 };

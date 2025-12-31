@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Card,
   Button,
@@ -10,7 +10,6 @@ import {
   Statistic,
   Empty,
   Tooltip,
-  Modal,
 } from 'antd';
 import {
   ClockCircleOutlined,
@@ -26,6 +25,7 @@ import { useNavigate } from 'react-router-dom';
 import { colors, spacing } from '../styles';
 import { API_BASE_URL } from '../constants/api';
 import { useAppSelector } from '../store';
+import { RestartModal } from '../components/interview/RestartModal';
 
 const { Title, Text } = Typography;
 
@@ -439,20 +439,10 @@ export const CandidateDashboard: React.FC = () => {
       </div>
 
       {/* Restart App Modal */}
-      <Modal
-        title="Restart Required"
+      <RestartModal
         open={showRestartModal}
-        onCancel={() => setShowRestartModal(false)}
-        footer={[
-          <Button key="close" type="primary" onClick={() => setShowRestartModal(false)}>
-            Close
-          </Button>
-        ]}
-        centered
-        maskClosable={false}
-      >
-        <p>Kindly restart the Shakra app to give a new interview.</p>
-      </Modal>
+        onClose={() => setShowRestartModal(false)}
+      />
     </div>
   );
 };

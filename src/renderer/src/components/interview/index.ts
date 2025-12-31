@@ -5,3 +5,4 @@ export { WelcomeBackModal } from './WelcomeBackModal';
 export { InterviewSummary } from './InterviewSummary';
 export { CollapsibleChat } from './CollapsibleChat';
 export { InterviewCompletionModal } from './InterviewCompletionModal';
+export { RestartModal } from './RestartModal';
