@@ -315,6 +315,9 @@ export const InterviewChat: React.FC = () => {
       // The main process will clear conversations after payload is successfully sent via markPayloadSent()
       // Only clear Redux state (UI state), not main process state
 
+      // Mark that an interview has been completed in this app session
+      sessionStorage.setItem('interviewCompletedInSession', 'true');
+
       // Clear all session data using unified method (Redux only)
       clearAllSessions();
 

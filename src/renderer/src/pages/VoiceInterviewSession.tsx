@@ -477,6 +477,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       // Interview completion
       window.electronAPI.onInterviewCompleted(async (results: any) => {
         hasCompletedRef.current = true
+        
+        // Mark that an interview has been completed in this app session
+        sessionStorage.setItem('interviewCompletedInSession', 'true');
+        
         // For now, rely on WarningStateManager stats which are used in onFinalEvaluationReady
         console.log('📊 [Renderer] Interview completed - final warning stats will be attached in final evaluation payload')
         

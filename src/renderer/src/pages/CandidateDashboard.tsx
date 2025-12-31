@@ -10,6 +10,7 @@ import {
   Statistic,
   Empty,
   Tooltip,
+  Modal,
 } from 'antd';
 import {
   ClockCircleOutlined,
@@ -51,6 +52,7 @@ export const CandidateDashboard: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastFetched, setLastFetched] = useState<Date | null>(null);
+  const [showRestartModal, setShowRestartModal] = useState(false);
   
   // Memoized fetch function - React will handle when to call this
   const fetchAttempts = useCallback(async () => {
@@ -178,6 +180,15 @@ export const CandidateDashboard: React.FC = () => {
   }, [logout, navigate]);
 
   const handleJoinInterview = useCallback(() => {
+    // Check if an interview was completed in this app session
+    const interviewCompleted = sessionStorage.getItem('interviewCompletedInSession');
+    
+    if (interviewCompleted === 'true') {
+      // Show modal to prevent starting new interview
+      setShowRestartModal(true);
+      return;
+    }
+    
     // Pass a flag to tell InterviewChat to check for existing session
     navigate('/interview', { state: { checkExistingSession: true } });
   }, [navigate]);
@@ -426,6 +437,22 @@ export const CandidateDashboard: React.FC = () => {
           )}
         </Card>
       </div>
+
+      {/* Restart App Modal */}
+      <Modal
+        title="Restart Required"
+        open={showRestartModal}
+        onCancel={() => setShowRestartModal(false)}
+        footer={[
+          <Button key="close" type="primary" onClick={() => setShowRestartModal(false)}>
+            Close
+          </Button>
+        ]}
+        centered
+        maskClosable={false}
+      >
+        <p>Kindly restart the Shakra app to give a new interview.</p>
+      </Modal>
     </div>
   );
 };
