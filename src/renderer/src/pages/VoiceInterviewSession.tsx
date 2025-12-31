@@ -1058,7 +1058,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               isSpeaking={isSpeaking}
               progress={progress}
               onVisionStatusChange={handleVisionStatusChange}
-              isHint={currentState === 'handling_theoretical_hint' || currentState === 'providing_hint'}
+              isHint={currentState === 'handling_theoretical_hint'}
               isClarification={currentState === 'handling_clarification'}
             />
           </div>
