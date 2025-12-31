@@ -15,8 +15,8 @@ export class ProcessMonitor {
   // Blacklist of applications that should be blocked (comprehensive list of major user applications)
   private readonly blockedApps = [
     // Browsers (all major browsers)
-     'firefox', 'edge', 'opera', 'brave', 'safari', 'vivaldi', 'tor',
-     'msedge', 'iexplore', 'waterfox', 'pale moon', 'chrome', 'chromium',
+      'edge', 'opera', 'brave', 'safari', 'vivaldi', 'tor',
+     'msedge', 'iexplore', 'waterfox', 'pale moon', , 'chromium',
     
     // AI/Chat applications and assistants
     'chatgpt', 'claude', 'copilot', 'gemini', 'bard', 'openai', 'anthropic',
@@ -60,7 +60,7 @@ export class ProcessMonitor {
     'aider ai', 'aider coding', 'aider chat', 'aider assistant',
     'continue ai', 'continue.dev', 'continue extension', 'continue chat',
     'blackbox ai', 'blackbox code', 'blackbox chat', 'blackbox assistant',
-    'replit ghostwriter', 'replit ai', 'replit copilot', 'replit chat', 'cursor',
+    'replit ghostwriter', 'replit ai', 'replit copilot', 'replit chat', 
     'cursor ai', 'cursor chat', 'cursor copilot', 'cursor assistant',
     'ai pair programming', 'ai code completion', 'ai code review',
     'ai code generator', 'ai code assistant', 'ai programming',
@@ -114,7 +114,7 @@ export class ProcessMonitor {
     'davinci resolve', 'final cut', 'imovie',
     
     // Screen sharing/recording tools
-    'obs', 'streamlabs', 'xsplit', 'bandicam', 'fraps', 'camtasia',
+     'streamlabs', 'xsplit', 'bandicam', 'fraps', 'camtasia',
     'screencast', 'screen recorder', 'sharex', 'greenshot',
     
     // Virtual machines and containers
@@ -269,7 +269,7 @@ export class ProcessMonitor {
         command = `kill -9 ${pid}`
       }
 
-      console.log(`Attempting to kill process: ${processName} (PID: ${pid})`)
+      // console.log(`Attempting to kill process: ${processName} (PID: ${pid})`)
       
       const { stderr } = await execAsync(command)
       
@@ -286,7 +286,7 @@ export class ProcessMonitor {
       if (errorMsg.includes('not found') || errorMsg.includes('No such process')) {
         return { success: true } // Consider it successful if process doesn't exist
       }
-      console.error(`Failed to kill process ${processName} (PID: ${pid}):`, errorMsg)
+      // console.error(`Failed to kill process ${processName} (PID: ${pid}):`, errorMsg)
       return { success: false, error: errorMsg }
     }
   }
@@ -464,7 +464,7 @@ export class ProcessMonitor {
         
         // Log failed kills
         killResults.filter(r => !r.killed).forEach(result => {
-          console.log(`❌ Failed to kill ${result.name} (PID: ${result.pid}): ${result.error}`)
+          // console.log(`❌ Failed to kill ${result.name} (PID: ${result.pid}): ${result.error}`)
         })
       }
       
@@ -675,7 +675,7 @@ export class ProcessMonitor {
   start(): void {
     // Kill all non-whitelisted processes immediately on startup
     this.killAllOnStartup().catch(err => {
-      console.error('Failed to kill processes on startup:', err)
+      // console.error('Failed to kill processes on startup:', err)
     })
     
     // Check every 3 seconds (reduced frequency to prevent crashes)

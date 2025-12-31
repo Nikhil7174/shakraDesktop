@@ -4,8 +4,10 @@ export const API_CONFIG = {
     LOCAL_URL: 'http://localhost:3001/api',
 } as const;
 
-// Use local URL only in dev mode, always use production URL for packaged builds
-export const API_BASE_URL = 'https://crisp-server-n0r1.onrender.com/api';
+// Use local URL for testing, switch to production URL when ready
+// For testing: use LOCAL_URL
+// For production: use BASE_URL or production URL
+export const API_BASE_URL = 'http://localhost:3001/api'; // Changed to localhost for testing
 
 // Export individual configs for specific use cases
 export const { BASE_URL, LOCAL_URL } = API_CONFIG;
