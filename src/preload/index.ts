@@ -31,7 +31,9 @@ const interviewAPI = {
     ipcRenderer.on('vision-security-alert', (_event, alert) => callback(alert))
   },
   
-  // STT token management
+  // LiveKit token management
+  getLivekitToken: (roomName: string, participantName?: string) => ipcRenderer.invoke('get-livekit-token', roomName, participantName),
+  // Legacy STT token management (for backwards compatibility)
   getSTTToken: () => ipcRenderer.invoke('get-stt-token'),
   updateSTTToken: (token: string) => ipcRenderer.invoke('update-stt-token', token),
   
@@ -74,6 +76,10 @@ const interviewAPI = {
   
   onSpeakingStateChange: (callback: (speaking: boolean) => void) => {
     ipcRenderer.on('speaking-state-change', (_event, speaking) => callback(speaking))
+  },
+
+  onUserSpeakingStateChange: (callback: (speaking: boolean) => void) => {
+    ipcRenderer.on('user-speaking-state-change', (_event, speaking) => callback(speaking))
   },
   
   onEvaluation: (callback: (evaluation: any) => void) => {

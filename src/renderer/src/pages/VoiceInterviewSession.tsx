@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useSelector } from 'react-redux'
+import { LiveKitRoom, RoomAudioRenderer } from '@livekit/components-react'
 import { CodeEditor } from '../components/CodeEditor'
 import { AudioVisualizer } from '../components/AudioVisualizer'
 import { QuestionDisplay } from '../components/QuestionDisplay'
@@ -42,6 +43,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [currentCodingProblem, setCurrentCodingProblem] = useState<CodingProblem | null>(null)
   const [isListening, setIsListening] = useState(false)
   const [isSpeaking, setIsSpeaking] = useState(false)
+  const [isUserSpeaking, setIsUserSpeaking] = useState(false)
   const [isEvaluating, setIsEvaluating] = useState(false)
   const isListeningRef = useRef(false)
   const [progress, setProgress] = useState({ current: 0, total: questions.length })
@@ -53,7 +55,9 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [currentCode, setCurrentCode] = useState<string>('')
   const [hasMicStream, setHasMicStream] = useState(false)
   const isSubmittingTimeoutRef = useRef(false)
-  const lastAudioTimeRef = useRef(0)
+  const [livekitToken, setLivekitToken] = useState<string | null>(null)
+  const [livekitUrl, setLivekitUrl] = useState<string | null>(null)
+  const [livekitRoomName, setLivekitRoomName] = useState<string | null>(null)
   const [showResumeModal, setShowResumeModal] = useState(false)
   const [unfinishedSession, setUnfinishedSession] = useState<any>(null)
   const [hasCheckedUnfinished, setHasCheckedUnfinished] = useState(false)
@@ -258,26 +262,34 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           return
         }
 
-        // Get fresh STT token
-        const tokenResult = await window.electronAPI.getSTTToken()
+        // Get LiveKit room token
+        const roomName = `interview-${interviewId}`
+        const tokenResult = await window.electronAPI.getLivekitToken?.(roomName, 'candidate') || 
+                           await window.electronAPI.getSTTToken() // Fallback for backwards compatibility
         if (!tokenResult.success || !tokenResult.token) {
-          console.error('Failed to get STT token:', tokenResult.error)
+          console.error('Failed to get LiveKit token:', tokenResult.error)
           return
         }
 
-        // Update STT service with new token
-        const updateResult = await window.electronAPI.updateSTTToken(tokenResult.token)
-        if (!updateResult.success) {
-          console.error('Failed to update STT token:', updateResult.error)
-          return
+        console.log('🎤 [Renderer] LiveKit token obtained, room:', roomName)
+        console.log('🎤 [Renderer] Token:', tokenResult.token?.substring(0, 50) + '...', 'URL:', tokenResult.url)
+        
+        // Store token and URL for LiveKitRoom
+        // LiveKitRoom expects full URL with wss:// protocol
+        let serverUrl = tokenResult.url || 'shakra-ypfk18zl.livekit.cloud'
+        // Ensure URL has wss:// protocol
+        if (!serverUrl.startsWith('wss://') && !serverUrl.startsWith('ws://')) {
+          serverUrl = `wss://${serverUrl.replace(/^(https?):\/\//, '')}`
+        } else if (serverUrl.startsWith('https://')) {
+          serverUrl = serverUrl.replace('https://', 'wss://')
+        } else if (serverUrl.startsWith('http://')) {
+          serverUrl = serverUrl.replace('http://', 'ws://')
         }
-
-        console.log('🎤 [Renderer] STT service updated with fresh token')
-
-        // Wait for main to request audio capture, then start mic streaming
-        window.electronAPI.onAudioCaptureRequired(() => {
-          startMicrophoneStreaming()
-        })
+        
+        setLivekitToken(tokenResult.token)
+        setLivekitUrl(serverUrl)
+        setLivekitRoomName(roomName)
+        setHasMicStream(true) // LiveKit handles mic automatically
 
         // Determine resume parameters (props take priority; else use user choice)
         const effectiveResumeFromIndex = typeof resumeFromIndex === 'number'
@@ -398,6 +410,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
       window.electronAPI.onSpeakingStateChange((speaking: boolean) => {
         setIsSpeaking(speaking)
+      })
+
+      window.electronAPI.onUserSpeakingStateChange?.((speaking: boolean) => {
+        setIsUserSpeaking(speaking)
       })
 
       // Evaluations
@@ -633,8 +649,15 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     animate()
   }
 
-  // Microphone capture and streaming to main (16k PCM mono)
+  // Microphone capture removed - LiveKit handles audio automatically
+  // This function is kept for backwards compatibility but does nothing
   const startMicrophoneStreaming = async () => {
+    console.log('🎤 [Renderer] Audio capture handled by LiveKit automatically')
+    setHasMicStream(true)
+  }
+  
+  // Legacy function - no longer needed with LiveKit
+  const startMicrophoneStreamingLegacy = async () => {
     try {
       // Request high-quality audio with noise suppression and echo cancellation
       // Request high-quality audio with noise suppression and echo cancellation enabled
@@ -1038,6 +1061,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               introMeta="Ready to begin"
               isListening={isListening}
               isSpeaking={isSpeaking}
+              isUserSpeaking={isUserSpeaking}
               progress={progress}
               onVisionStatusChange={handleVisionStatusChange}
             />
@@ -1057,6 +1081,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               followUpQuestionText={followUpQuestionText}
               isListening={isListening}
               isSpeaking={isSpeaking}
+              isUserSpeaking={isUserSpeaking}
               progress={progress}
               onVisionStatusChange={handleVisionStatusChange}
               isHint={currentState === 'handling_theoretical_hint'}
@@ -1224,7 +1249,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   }, [])
 
 
-  return (
+  // Wrap with LiveKitRoom if token is available
+  const content = (
     <>
       <ResumeInterviewModal
         visible={showResumeModal}
@@ -1589,8 +1615,65 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         }
       `}</style>
       </div>
+      
+      {/* LiveKit Audio Renderer - handles AI voice playback */}
+      {livekitToken && livekitUrl && (
+        <RoomAudioRenderer />
+      )}
     </>
   )
+
+  // Wrap with LiveKitRoom if we have a token
+  if (livekitToken && livekitUrl && livekitRoomName) {
+    // Ensure serverUrl has proper wss:// protocol
+    let serverUrl = livekitUrl
+    if (!serverUrl.startsWith('wss://') && !serverUrl.startsWith('ws://')) {
+      serverUrl = `wss://${serverUrl.replace(/^(https?):\/\//, '')}`
+    } else if (serverUrl.startsWith('https://')) {
+      serverUrl = serverUrl.replace('https://', 'wss://')
+    }
+    
+    console.log('🎤 [LiveKit] Connecting to room:', livekitRoomName, 'URL:', serverUrl, 'Token length:', livekitToken.length)
+    
+    return (
+      <LiveKitRoom
+        video={false}
+        audio={true}
+        connect={true}
+        token={livekitToken}
+        serverUrl={serverUrl}
+        options={{
+          adaptiveStream: true,
+          dynacast: true,
+        }}
+        onConnected={(room) => {
+          // Room parameter might be undefined or not have a name property
+          const roomName = room?.name || livekitRoomName || 'unknown'
+          console.log('🎤 [LiveKit] Connected to room:', roomName)
+          // Don't auto-enable listening on connect - wait for backend state change
+          // This keeps mic off during intro until the first question
+          setIsListening(false)
+        }}
+        onDisconnected={() => {
+          console.log('🎤 [LiveKit] Disconnected from room')
+          setIsListening(false)
+        }}
+        onError={(error) => {
+          console.error('🎤 [LiveKit] Error:', error)
+          // Log more details about the error
+          if (error instanceof Error) {
+            console.error('🎤 [LiveKit] Error message:', error.message)
+            console.error('🎤 [LiveKit] Error stack:', error.stack)
+          }
+        }}
+      >
+        {content}
+      </LiveKitRoom>
+    )
+  }
+
+  // Fallback: render without LiveKit if token not available yet
+  return content
 }
 
 export default VoiceInterviewSession

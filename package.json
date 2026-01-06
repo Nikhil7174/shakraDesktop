@@ -29,6 +29,11 @@
     "@ant-design/icons": "^5.6.1",
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
+    "@livekit/agents": "^1.0.31",
+    "@livekit/agents-plugin-openai": "^1.0.31",
+    "@livekit/agents-plugin-silero": "^1.0.31",
+    "@livekit/components-react": "^2.9.17",
+    "@livekit/rtc-node": "^0.13.22",
     "@mediapipe/tasks-vision": "^0.10.21",
     "@monaco-editor/loader": "^1.6.1",
     "@monaco-editor/react": "^4.7.0",
@@ -39,6 +44,8 @@
     "dayjs": "^1.11.18",
     "electron-updater": "^6.3.9",
     "framer-motion": "^12.23.22",
+    "livekit-client": "^2.16.1",
+    "livekit-server-sdk": "^2.15.0",
     "localforage": "^1.10.0",
     "monaco-editor": "^0.53.0",
     "node-machine-id": "^1.1.12",
@@ -49,7 +56,8 @@
     "redux-persist": "^6.0.0",
     "say": "^0.16.0",
     "speaker": "^0.5.4",
-    "ws": "^8.18.3"
+    "ws": "^8.18.3",
+    "zod": "^4.3.4"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",

@@ -1,42 +1,10 @@
 import { EventEmitter } from 'events'
-import { STTService, createSTTService, STTConfig, STTTokenConfig } from './services/stt-service'
 import { LLMService, createLLMService, Question, Evaluation } from './services/llm-service'
-import { TTSService, createTTSService, TTSConfig } from './services/tts-service'
 import { InterviewStateMachine, InterviewState } from './services/state-machine'
 import { CodeAnalysisService, createCodeAnalysisService, CodingProblem } from './services/code-analysis-service'
 import { FinalEvaluationPayload, ConversationMessage } from '../shared/types'
 import { createFinalEvaluationPayload } from './utils/final-evaluation'
-
-// SpeechGate: Promise-based TTS wrapper for sequencing
-class SpeechGate {
-  private current?: Promise<void>
-  private interrupted = false
-
-  constructor(private tts: TTSService) {}
-
-  speak(text: string): Promise<void> {
-    this.interrupted = false
-    this.current = this.tts.playText(text)
-    return this.current
-  }
-
-  wait(): Promise<void> {
-    return this.current ?? Promise.resolve()
-  }
-
-  async stop(): Promise<void> {
-    this.interrupted = true
-    await this.tts.stop().catch(() => {})
-  }
-
-  wasInterrupted(): boolean {
-    return this.interrupted
-  }
-
-  isSpeaking(): boolean {
-    return this.tts.isCurrentlyPlaying()
-  }
-}
+import { InterviewAgent } from './services/livekit-agent'
 
 // TransitionQueue: Serialize critical actions (concurrency = 1)
 class TransitionQueue {
@@ -78,10 +46,19 @@ interface SpeechContext {
 // }
 
 export interface InterviewConfig {
-  stt: STTConfig | STTTokenConfig
   llm: { serverUrl: string }
-  tts: TTSConfig
   codeAnalysis: { serverUrl: string }
+  livekit?: {
+    url: string
+    apiKey: string
+    apiSecret: string
+    openaiApiKey: string
+    sttProvider?: 'assemblyai' | 'openai' | 'whisper'
+    sttApiKey?: string
+    llmModel?: string
+    ttsVoice?: string
+    ttsModel?: string
+  }
 }
 
 export interface InterviewSession {
@@ -97,19 +74,15 @@ export interface InterviewSession {
 }
 
 export class InterviewOrchestrator extends EventEmitter {
-  private stt!: STTService
   private llm!: LLMService
-  private tts!: TTSService
   private stateMachine: InterviewStateMachine
   private codeAnalysis!: CodeAnalysisService
   private currentSession: InterviewSession | null = null
   private isInitialized = false
-  private speechGate!: SpeechGate
   private transitionQueue!: TransitionQueue
   private currentSpeakOptions?: SpeakOptions
   private softStopRequested = false
-  private micPaused = false
-  private suppressAutoMicResume = false
+  private livekitAgent: InterviewAgent | null = null
   private autoHintInProgress = false // Track if auto-hint is currently being generated
   private userSpeaking = false
   private liveTranscriptTimeout: NodeJS.Timeout | null = null
@@ -123,6 +96,9 @@ export class InterviewOrchestrator extends EventEmitter {
   private pendingSecurityWarning: string | null = null // Queue for security warnings while other TTS is playing
   private isSecurityWarningInProgress = false // Flag to prevent concurrent security warning TTS
   private skipConfirmationResolve: ((confirmed: boolean) => void) | null = null // For skip question confirmation
+  // Track interruption retries per question (resets for each new question)
+  private questionInterruptionRetries: number = 0 // Tracks how many times current question was interrupted
+  private currentQuestionText: string | null = null // Store current question text for retry
   // Centralized conversation history manager
   // Maintains full conversation history throughout the interview
   private fullConversationHistory: ConversationMessage[] = []
@@ -358,14 +334,56 @@ export class InterviewOrchestrator extends EventEmitter {
   async initialize(config: InterviewConfig): Promise<void> {
     try {
       // Initialize services
-      this.stt = createSTTService(config.stt)
       this.llm = createLLMService(config.llm.serverUrl)
-      this.tts = createTTSService(config.tts)
       this.codeAnalysis = createCodeAnalysisService(config.codeAnalysis.serverUrl)
 
-      // Initialize SpeechGate and TransitionQueue
-      this.speechGate = new SpeechGate(this.tts)
+      // Initialize TransitionQueue
       this.transitionQueue = new TransitionQueue()
+
+      // Initialize LiveKit agent if configured
+      if (config.livekit) {
+        this.livekitAgent = new InterviewAgent({
+          livekitUrl: config.livekit.url,
+          livekitApiKey: config.livekit.apiKey,
+          livekitApiSecret: config.livekit.apiSecret,
+          openaiApiKey: config.livekit.openaiApiKey,
+          sttProvider: config.livekit.sttProvider || 'openai',
+          sttApiKey: config.livekit.sttApiKey,
+          llmModel: config.livekit.llmModel || 'gpt-4o-mini',
+          ttsVoice: config.livekit.ttsVoice || 'alloy',
+          ttsModel: config.livekit.ttsModel || 'tts-1',
+        })
+
+        // Set up agent event listeners
+        // Use custom LLMService evaluation - LiveKit agent only handles STT/TTS, not LLM responses
+        this.livekitAgent.on('userSpeech', ({ text }) => {
+          this.handleTranscript(text).catch(err => {
+            console.error('Error handling transcript:', err)
+          })
+        })
+
+        this.livekitAgent.on('userSpeakingStarted', () => {
+          console.log('🎤 [Orchestrator] User started speaking')
+          this.userSpeaking = true
+          this.emit('userSpeakingStarted')
+        })
+
+        this.livekitAgent.on('userSpeakingEnded', () => {
+          console.log('🎤 [Orchestrator] User stopped speaking')
+          this.userSpeaking = false
+          this.emit('userSpeakingEnded')
+        })
+
+        this.livekitAgent.on('agentSpeechStarted', () => {
+          console.log('🎤 [Orchestrator] Agent started speaking')
+          this.emit('speakingStarted')
+        })
+
+        this.livekitAgent.on('agentSpeechEnded', () => {
+          console.log('🎤 [Orchestrator] Agent stopped speaking')
+          this.emit('speakingCompleted')
+        })
+      }
 
       // Set up service listeners
       this.setupServiceListeners()
@@ -380,26 +398,20 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private updateListeningState(state: InterviewState): void {
+    // With LiveKit, VAD handles listening automatically
+    // This method is kept for state tracking but doesn't need to manage mic state
     const shouldListen = 
       state === InterviewState.WAITING_FOR_ANSWER ||
       state === InterviewState.WAITING_FOR_APPROACH ||
-      state === InterviewState.INTRO || // Allow listening during intro for "ready"
-      state === InterviewState.HANDLING_THEORETICAL_HINT || // Allow listening for hint interaction
-      state === InterviewState.HANDLING_CLARIFICATION || // Allow listening for clarification interaction
-      state === InterviewState.MONITORING_CODE || // Allow listening during coding
+      state === InterviewState.INTRO ||
+      state === InterviewState.HANDLING_THEORETICAL_HINT ||
+      state === InterviewState.HANDLING_CLARIFICATION ||
+      state === InterviewState.MONITORING_CODE ||
       state === InterviewState.CODING_PROBLEM ||
       state === InterviewState.FOLLOW_UP
 
-    console.log(`🎤 [Main] Setting listening to ${shouldListen} for ${state} state`)
-    
-    if (shouldListen) {
-      // ensure mic is unpaused if we're supposed to be listening
-      // Force unpause to prevent stuck state from previous TTS interactions
-      this.setMicPaused(false, 'state-change-to-listening')
-      this.suppressAutoMicResume = false // Reset suppression state just in case
-    }
-    // NOTE: We do NOT stop STT listening here - STT should stay connected throughout
-    // the interview. We only manage mic pause state to control audio streaming.
+    console.log(`🎤 [Main] Listening state: ${shouldListen} for ${state} state`)
+    // LiveKit agent handles VAD automatically, no manual mic management needed
   }
 
   private setupStateMachineListeners(): void {
@@ -414,18 +426,14 @@ export class InterviewOrchestrator extends EventEmitter {
       const introText = "Hello! Welcome to your technical interview. I'll be conducting your interview today. Lets start with some theoretical questions."
       // const introText = "Hello!"
 
-      // Keep mic paused between intro and question
-      this.suppressAutoMicResume = true
+      // LiveKit handles audio automatically
       const result = await this.speakWithPolicy(introText, {
         interruptible: true,
         bargeInPolicy: 'hard'
       })
       if (result.completed) {
-        // Transition to first question immediately (mic stays paused)
+        // Transition to first question immediately
         await this.stateMachine.transition('begin_questions')
-      } else {
-        // If interrupted, allow mic to resume
-        this.suppressAutoMicResume = false
       }
     })
 
@@ -481,26 +489,22 @@ export class InterviewOrchestrator extends EventEmitter {
       this.llm.incrementFollowUpDepth()
       console.log('🎯 [Interview] Follow-up depth incremented to:', this.stateMachine.getFollowUpDepth())
       
-      // Follow-ups are interruptible with hard stop
-      const result = await this.speakWithPolicy(followUp, {
-        interruptible: true,
-        bargeInPolicy: 'hard'
-      })
-      console.log('🎯 [Interview] Follow-up speech result:', result)
-      // Only transition if completed
-      if (result.completed) {
-        console.log('🎯 [Interview] Follow-up completed, transitioning to follow_up_asked')
-        await this.stateMachine.transition('follow_up_asked')
-        // Start silence timer for automatic hints on follow-up questions (40 seconds)
-        this.stateMachine.startSilenceTimer(40000)
-        console.log('🎯 [Interview] Silence timer started for follow-up question')
-      } else {
-        console.log('🎯 [Interview] Follow-up was interrupted, not transitioning')
-      }
+      // Reset interruption retry counter for follow-up question
+      this.questionInterruptionRetries = 0
+      this.currentQuestionText = followUp
+      
+      // Call helper method to handle follow-up with retry logic
+      await this.speakFollowUpQuestion(followUp)
     })
 
     this.stateMachine.on('codingIntroStarted', async () => {
-      console.log('🎯 [Interview] Coding intro started')
+      console.log('🎯 [Interview] Coding intro started - emitting state change to renderer')
+      
+      // Emit state change immediately so UI can show transition state
+      this.emit('stateChanged', { 
+        from: this.stateMachine.getState(), 
+        to: InterviewState.CODING_INTRO 
+      })
       
       // Debug: Log coding problems availability
       console.log('🎯 [Interview] Debug - currentSession:', !!this.currentSession)
@@ -525,8 +529,7 @@ export class InterviewOrchestrator extends EventEmitter {
       // Only speak transition message if we actually had theoretical questions
       if (this.hadTheoreticalQuestions) {
         console.log('🎯 [Interview] Theoretical questions completed, transitioning to coding phase')
-        // Speak intro to coding section - keep mic paused until problem intro
-        this.suppressAutoMicResume = true
+        // Speak intro to coding section
         const introText = "Great work on the theoretical questions! Now let's move to the coding section."
         const result = await this.speakWithPolicy(introText, {
           interruptible: false,
@@ -534,28 +537,22 @@ export class InterviewOrchestrator extends EventEmitter {
         })
         
         console.log(`🎯 [Interview] ${this.currentSession?.codingProblems?.length || 0} coding problem(s) available`)
-        // Only transition if intro completed (mic stays paused)
+        // Only transition if intro completed
         if (result.completed || result.softStopped) {
           await this.stateMachine.transition('coding_problem_presented')
-        } else {
-          this.suppressAutoMicResume = false
         }
       } else {
         // Coding-only interview - speak welcome message here (centralized, no duplication)
         console.log('🎯 [Interview] Coding-only interview, speaking welcome message')
-        // Keep mic paused until problem intro
-        this.suppressAutoMicResume = true
         const introText = "Welcome! Today we'll focus on coding problems. Let's begin."
         const result = await this.speakWithPolicy(introText, {
           interruptible: false,
           bargeInPolicy: 'soft'
         })
         
-        // Only transition if intro completed (mic stays paused)
+        // Only transition if intro completed
         if (result.completed || result.softStopped) {
           await this.stateMachine.transition('coding_problem_presented')
-        } else {
-          this.suppressAutoMicResume = false
         }
       }
     })
@@ -675,42 +672,12 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private setupServiceListeners(): void {
-    this.setupSTTListeners()
     this.setupLLMListeners()
-    this.setupTTSListeners()
     this.setupCodeAnalysisListeners()
+    // STT/TTS listeners removed - LiveKit agent handles these
   }
 
-  private setupSTTListeners(): void {
-    // STT listeners
-    this.stt.on('transcript', async (transcript) => {
-      this.markUserSpeakingActivity()
-      // Clear silence timer as soon as user starts speaking (interim or final)
-      const currentState = this.stateMachine.getState()
-      if (currentState === InterviewState.WAITING_FOR_ANSWER || 
-          currentState === InterviewState.THEORETICAL_QUESTION ||
-          currentState === InterviewState.WAITING_FOR_APPROACH ||
-          currentState === InterviewState.MONITORING_CODE) {
-        // User is speaking - clear any silence timeout
-        this.stateMachine.clearSilenceTimer()
-        console.log('🎯 [Interview] User is speaking - silence timer cleared')
-      }
-      
-      // Only process final transcripts
-      if (transcript.isFinal) {
-        console.log('🎯 [Interview] Final transcript received:', transcript.text)
-        await this.handleTranscript(transcript.text)
-      }
-    })
-
-    this.stt.on('connected', () => {
-      this.emit('sttConnected')
-    })
-
-    this.stt.on('disconnected', () => {
-      this.emit('sttDisconnected')
-    })
-  }
+  // STT listeners removed - LiveKit agent handles transcription events
 
   private setupLLMListeners(): void {
     // LLM listeners
@@ -726,42 +693,7 @@ export class InterviewOrchestrator extends EventEmitter {
     })
   }
 
-  private setupTTSListeners(): void {
-    // TTS listeners
-    this.tts.on('playbackStarted', () => {
-      // For security warnings, do NOT pause the mic – we want STT to keep hearing the user
-      if (this.currentSpeechContext?.source === 'security_warning') {
-        console.log('🎯 [Security] TTS started for security warning - NOT pausing mic')
-        this.emit('speakingStarted')
-        return
-      }
-
-      console.log('🎯 [Interview] TTS started - pausing mic')
-      this.setMicPaused(true, 'tts-playback-started')
-      this.emit('speakingStarted')
-    })
-
-    this.tts.on('playbackCompleted', () => {
-      // For security warnings, we never paused the mic, so just emit speakingCompleted
-      if (this.currentSpeechContext?.source === 'security_warning') {
-        console.log('🎯 [Security] TTS completed for security warning - mic was never paused')
-        this.emit('speakingCompleted')
-        return
-      }
-
-      console.log('🎯 [Interview] TTS completed - resuming mic after 100ms grace period')
-      if (this.suppressAutoMicResume) {
-        console.log('🎯 [Interview] Mic resume suppressed (batch speaking in progress)')
-      } else {
-        // Add grace period before resuming mic to avoid echo tail
-        setTimeout(() => {
-          this.setMicPaused(false, 'tts-playback-completed')
-          console.log('🎯 [Interview] Mic resumed')
-        }, 100)
-      }
-      this.emit('speakingCompleted')
-    })
-  }
+  // TTS listeners removed - LiveKit agent handles TTS events
 
   private markUserSpeakingActivity(): void {
     this.userSpeaking = true
@@ -774,14 +706,7 @@ export class InterviewOrchestrator extends EventEmitter {
     }, 1500)
   }
 
-  private setMicPaused(paused: boolean, source: string): void {
-    if (this.micPaused === paused) {
-      return
-    }
-    this.micPaused = paused
-    console.log(`🎯 [Interview] Mic ${paused ? 'paused' : 'resumed'} (${source})`)
-    this.emit('micPauseStateChanged', !paused)
-  }
+  // Mic management removed - LiveKit handles echo cancellation automatically
 
   private setupCodeAnalysisListeners(): void {
     // Code analysis listeners
@@ -807,7 +732,7 @@ export class InterviewOrchestrator extends EventEmitter {
     }
   }
 
-  clearSession(): void {
+  async clearSession(): Promise<void> {
     console.log('🎯 [Interview] Clearing session')
     
     // IMPORTANT: Don't clear conversations if payload hasn't been sent yet
@@ -822,8 +747,8 @@ export class InterviewOrchestrator extends EventEmitter {
       this.currentQuestionId = null
       this.llm.reset()
       // Stop any ongoing TTS
-      if (this.speechGate) {
-        this.speechGate.stop()
+      if (this.livekitAgent) {
+        await this.livekitAgent.stop()
       }
       return // Exit early, don't clear conversations
     }
@@ -839,8 +764,8 @@ export class InterviewOrchestrator extends EventEmitter {
     this.llm.reset()
     this.payloadSent = false // Reset flag for next interview
     // Stop any ongoing TTS
-    if (this.speechGate) {
-      this.speechGate.stop()
+    if (this.livekitAgent) {
+      await this.livekitAgent.stop()
     }
     console.log('🎯 [Interview] Session fully cleared (payload was sent)')
   }
@@ -902,11 +827,23 @@ export class InterviewOrchestrator extends EventEmitter {
     // The problem will be set in the presentCodingProblem handler when it's actually needed
 
     try {
+      // Start LiveKit agent if configured
+      if (this.livekitAgent) {
+        const roomName = `interview-${session.id}`
+        console.log('🎤 [Orchestrator] Starting LiveKit agent for room:', roomName)
+        try {
+          await this.livekitAgent.start(roomName, 'interview-agent')
+          console.log('🎤 [Orchestrator] LiveKit agent started successfully')
+        } catch (error) {
+          console.error('🎤 [Orchestrator] Failed to start LiveKit agent:', error)
+          // Don't throw - allow interview to continue without agent
+        }
+      }
+
       // Start audio capture
       await this.startAudioCapture()
 
-      // Start STT
-      await this.stt.startListening()
+      // LiveKit agent handles audio/STT automatically when connected
 
       // Check if we have theoretical questions
       const hasTheoreticalQuestions = session.questions && session.questions.length > 0
@@ -983,24 +920,35 @@ export class InterviewOrchestrator extends EventEmitter {
       return
     }
 
-    this.setMicPaused(true, 'llm-processing')
     try {
       // Implement barge-in: stop TTS if candidate starts speaking
-      if (this.speechGate.isSpeaking()) {
-        console.log('🎯 [Interview] 🛑 Barge-in detected!')
+      // LiveKit handles barge-in automatically via VAD, but we can still stop explicitly
+      // Only stop if interruptions are allowed AND user has been speaking for at least 2 seconds
+      // The agent's stop() method now handles the 2-second check internally
+      if (this.livekitAgent?.getIsSpeaking() && this.userSpeaking) {
+        console.log('🎯 [Interview] 🛑 Barge-in detected (user has been speaking)')
         if (this.currentSpeakOptions) {
-          if (this.currentSpeakOptions.bargeInPolicy === 'soft') {
+          // Check if interruptions are allowed
+          if (this.currentSpeakOptions.interruptible === false) {
+            console.log('🎯 [Interview] Interruptions not allowed, ignoring barge-in')
+            // Don't stop, but still clear silence timer since user is speaking
+            this.stateMachine.clearSilenceTimer()
+          } else if (this.currentSpeakOptions.bargeInPolicy === 'soft') {
             console.log('🎯 [Interview] Soft stop requested (finish current sentence)')
             this.softStopRequested = true
+            this.stateMachine.clearSilenceTimer()
           } else {
             console.log('🎯 [Interview] Hard stop requested (stop immediately)')
-            await this.speechGate.stop()
+            // Agent's stop() method will check if user has been speaking for 2+ seconds
+            await this.livekitAgent.stop()
+            this.stateMachine.clearSilenceTimer()
           }
         } else {
-          // Default to hard stop if no options set
-          await this.speechGate.stop()
+          // Default to hard stop if no options set (interruptions allowed by default)
+          // Agent's stop() method will check if user has been speaking for 2+ seconds
+          await this.livekitAgent.stop()
+          this.stateMachine.clearSilenceTimer()
         }
-        this.stateMachine.clearSilenceTimer()
       }
       
       if (currentState === InterviewState.WAITING_FOR_ANSWER || currentState === InterviewState.THEORETICAL_QUESTION) {
@@ -1392,18 +1340,40 @@ export class InterviewOrchestrator extends EventEmitter {
         // If there's text to speak, speak it first (if not included in evaluation feedback)
         // If evaluation is present, handleEvaluation will speak the feedback
         if (response.text && (!response.evaluation || !response.evaluation.feedback)) {
-           await this.speakWithPolicy(response.text, {
+          const speakResult = await this.speakWithPolicy(response.text, {
             interruptible: false,
             bargeInPolicy: 'soft'
           })
+          
+          // Only proceed if speech completed
+          if (!speakResult.completed && !speakResult.softStopped) {
+            console.log('🎯 [Interview] Skip message not completed, waiting...')
+            return
+          }
         }
         
         // Handle evaluation if present (records score 0 and transitions)
         if (response.evaluation) {
-           await this.handleEvaluation(response.evaluation)
+          console.log('🎯 [Interview] Handling skip evaluation:', response.evaluation)
+          await this.handleEvaluation(response.evaluation)
         } else {
-           // Fallback if no evaluation provided
-           await this.forceMoveToNextQuestion()
+          // Fallback if no evaluation provided - create one and handle it
+          console.log('🎯 [Interview] No evaluation provided for skip, creating default evaluation')
+          const currentQuestion = this.llm.getCurrentQuestion()
+          if (currentQuestion) {
+            const skipEvaluation: Evaluation = {
+              questionId: currentQuestion.id,
+              candidateAnswer: "User requested to skip this question",
+              keyPointsCovered: [],
+              score: 0,
+              needsFollowUp: false,
+              feedback: response.text || "Alright, let's move to the next question."
+            }
+            await this.handleEvaluation(skipEvaluation)
+          } else {
+            // Last resort: force move to next question
+            await this.forceMoveToNextQuestion()
+          }
         }
       } else if (response.action === 'evaluate' && response.evaluation) {
         console.log('🎯 [Interview] 📊 Handling evaluation:', response.evaluation)
@@ -2118,8 +2088,7 @@ export class InterviewOrchestrator extends EventEmitter {
       console.log('🎯 [Interview] ⚠️ Not in listening state, ignoring transcript. Current state:', currentState)
     }
     } finally {
-      // Always clear llm-processing pause flag; streaming is gated in streamAudio now
-      this.setMicPaused(false, 'llm-processing')
+      // LiveKit handles audio automatically, no manual mic management needed
     }
   }
 
@@ -2146,17 +2115,8 @@ export class InterviewOrchestrator extends EventEmitter {
       this.llm.setFollowUpDepth(this.stateMachine.getFollowUpDepth())
       this.llm.setMaxTheoreticalQuestions(this.stateMachine.getMaxTheoreticalQuestions())
 
-      // Only wait if speech is actually playing (usually not the case after evaluation)
-      if (this.speechGate.isSpeaking()) {
-        console.log('🎯 [Interview] Waiting for speech to complete...')
-        await Promise.race([
-          this.speechGate.wait(),
-          new Promise(resolve => setTimeout(resolve, 5000)) // 5s timeout (reduced from 10s)
-        ])
-        console.log('🎯 [Interview] Speech completed, proceeding with transition')
-      } else {
-        console.log('🎯 [Interview] No speech playing, skipping wait')
-      }
+      // LiveKit agent handles speech completion automatically
+      // No need to wait manually - agent events will notify us
 
       // Record feedback BEFORE speaking (consistent with other messages like questions, hints, clarifications)
       const currentQuestion = this.llm.getCurrentQuestion()
@@ -2339,7 +2299,7 @@ export class InterviewOrchestrator extends EventEmitter {
           console.log('🎯 [Interview] User currently speaking during stuck detection - deferring monitoring hint until next interval')
           return analysis
         }
-        this.setMicPaused(true, 'auto-hint-llm-processing')
+        // LiveKit handles audio automatically
         this.autoHintInProgress = true
         try {
           if (this.shouldSkipAutoResponse('monitoring_auto_hint')) {
@@ -2367,8 +2327,7 @@ export class InterviewOrchestrator extends EventEmitter {
           }
         } finally {
           this.autoHintInProgress = false
-          // Always clear auto-hint pause flag; streaming is gated in streamAudio now
-          this.setMicPaused(false, 'auto-hint-llm-processing')
+          // LiveKit handles audio automatically
         }
       }
 
@@ -2803,77 +2762,57 @@ export class InterviewOrchestrator extends EventEmitter {
     opts: SpeakOptions,
     context: SpeechContext = { kind: 'system', priority: 'auto', source: 'general' }
   ): Promise<SpeakResult> {
-    // Prevent interrupting security warnings with other auto-responses
-    if (this.speechGate.isSpeaking() && 
-        this.currentSpeechContext?.source === 'security_warning' && 
-        context.source !== 'security_warning') {
-      console.log('⏳ [Speech] Waiting for security warning to finish before speaking:', text.substring(0, 50))
-      try {
-        await this.speechGate.wait()
-      } catch (e) {
-        // Ignore error from previous speech, just proceed
-      }
-    }
-
     this.currentSpeechContext = context
     try {
       this.currentSpeakOptions = opts
       this.softStopRequested = false
 
       const isSecurityWarning = context.source === 'security_warning'
-      // Check if mic resume is already suppressed (for chained TTS calls)
-      const wasSuppressed = this.suppressAutoMicResume
 
-      // Pause mic for ALL speech (including security warnings) to prevent self-transcription
-      this.suppressAutoMicResume = true
-      this.setMicPaused(true, 'speech-batch')
       this.emit('speakingStarted')
 
       if (isSecurityWarning) {
-        console.log('🎯 [Security] speakWithPolicy for security warning - pausing mic to prevent self-transcription')
+        console.log('🎯 [Security] Speaking security warning')
       }
 
-      // Always send entire text as one TTS call to avoid delays between sentences
-      console.log(`🎯 [Speech] Speaking full text with policy:`, opts, 'context:', context)
-      await this.speechGate.speak(text)
-      await this.speechGate.wait()
-
-      const interrupted = this.speechGate.wasInterrupted()
+      // Use LiveKit agent to speak (handles TTS and echo cancellation automatically)
+      console.log(`🎯 [Speech] Speaking via LiveKit:`, text.substring(0, 50))
+      if (this.livekitAgent) {
+        // Pass allowInterruptions based on opts.interruptible
+        // If interruptible is false, pass allowInterruptions: false
+        // If interruptible is true, pass allowInterruptions: true (default)
+        const allowInterruptions = opts.interruptible !== false
+        // say() now waits for speech completion
+        await this.livekitAgent.say(text, { allowInterruptions })
+      } else {
+        console.warn('⚠️ [Speech] LiveKit agent not available, speech not played')
+      }
 
       // Play queued security warning if main speech completed successfully
-      if (this.pendingSecurityWarning && !interrupted && !this.softStopRequested) {
+      // Only check softStopRequested if interruptions are allowed
+      const interruptionsAllowed = opts.interruptible !== false
+      if (this.pendingSecurityWarning && (!this.softStopRequested || !interruptionsAllowed)) {
         const warning = this.pendingSecurityWarning
         this.pendingSecurityWarning = null
         console.log('🔊 [Security] Playing queued security warning:', warning.substring(0, 50))
         await this.speakSecurityWarning(warning)
       }
 
-      const softStopped = this.softStopRequested
-      const completed = !interrupted && !softStopped
-
-      // Only resume mic if this wasn't part of a chained sequence
-      if (!wasSuppressed) {
-        // Manually resume mic once at the end of batch (if not interrupted early)
-        setTimeout(() => {
-          this.setMicPaused(false, 'speech-batch')
-          console.log('🎯 [Interview] Mic resumed (batch complete)')
-        }, 100)
-        this.suppressAutoMicResume = false
-      } else {
-        console.log('🎯 [Interview] Mic resume still suppressed (chained TTS)')
-      }
-
+      // If interruptions are not allowed, ignore softStopRequested (speech completed)
+      // If interruptions are allowed, check softStopRequested
+      const completed = interruptionsAllowed ? !this.softStopRequested : true
+      const softStopped = interruptionsAllowed ? this.softStopRequested : false
+      
       this.emit('speakingCompleted')
       this.currentSpeakOptions = undefined
 
-      return { completed, softStopped, interrupted }
+      return { completed, softStopped, interrupted: false }
 
     } catch (error) {
       console.error('TTS error:', error)
       this.emit('ttsError', error)
       this.emit('speakingCompleted')
       this.currentSpeakOptions = undefined
-      this.suppressAutoMicResume = false
       return { completed: false, softStopped: false, interrupted: true }
     } finally {
       this.currentSpeechContext = null
@@ -2881,23 +2820,118 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private async speakQuestion(question: string): Promise<void> {
+    // Store current question text for potential retry
+    this.currentQuestionText = question
+    
+    // Determine if we should allow interruptions based on retry count
+    // After 2 interruptions, don't allow interruption on 3rd attempt
+    const maxRetries = 2
+    const allowInterruptions = this.questionInterruptionRetries < maxRetries
+    
+    console.log(`🎯 [Question] Speaking question (retry: ${this.questionInterruptionRetries}/${maxRetries}, allowInterruptions: ${allowInterruptions})`)
+    
     // Question stems use soft barge-in (must-deliver)
+    // If retry count >= maxRetries, set interruptible: false to prevent interruption
     const result = await this.speakWithPolicy(
       question,
       {
-        interruptible: false,
+        interruptible: allowInterruptions, // Allow interruptions only if retry count < maxRetries
         bargeInPolicy: 'soft'
       },
       { kind: 'prompt', priority: 'auto', source: 'theoretical_question' }
     )
 
-    // Only transition to waiting_for_answer if completed or soft-stopped
-    if (result.completed || result.softStopped) {
+    // Only transition to waiting_for_answer if question was fully completed
+    // Never transition if interrupted (soft-stopped)
+    if (result.completed && !result.softStopped) {
+      // Question was fully delivered, reset retry counter for next question
+      this.questionInterruptionRetries = 0
+      this.currentQuestionText = null
+      
       if (this.stateMachine.getState() === InterviewState.THEORETICAL_QUESTION) {
         await this.stateMachine.transition('question_asked')
       }
       // Start silence timer for automatic hints (40 seconds)
       this.stateMachine.startSilenceTimer(40000)
+    } else if (result.softStopped || result.interrupted) {
+      // Question was interrupted
+      this.questionInterruptionRetries++
+      console.log(`🎯 [Question] Question interrupted (retry count: ${this.questionInterruptionRetries}/${maxRetries})`)
+      
+      // If we haven't exceeded max retries, repeat the question
+      if (this.questionInterruptionRetries <= maxRetries) {
+        console.log(`🎯 [Question] Repeating question (attempt ${this.questionInterruptionRetries + 1})`)
+        // Wait a brief moment before repeating
+        await new Promise(resolve => setTimeout(resolve, 500))
+        // Recursively call speakQuestion to repeat
+        await this.speakQuestion(question)
+      } else {
+        // Max retries exceeded, reset counter and let it complete without interruption
+        console.log(`🎯 [Question] Max retries reached, will complete without allowing interruption`)
+        this.questionInterruptionRetries = 0
+        // Retry one more time with interruptions disabled
+        await this.speakQuestion(question)
+      }
+    }
+  }
+
+  /**
+   * Speak a follow-up question with retry logic (same as speakQuestion)
+   */
+  private async speakFollowUpQuestion(followUp: string): Promise<void> {
+    // Store current follow-up text for potential retry
+    this.currentQuestionText = followUp
+    
+    // Determine if we should allow interruptions based on retry count
+    // After 2 interruptions, don't allow interruption on 3rd attempt
+    const maxRetries = 2
+    const allowInterruptions = this.questionInterruptionRetries < maxRetries
+    
+    console.log(`🎯 [FollowUp] Speaking follow-up (retry: ${this.questionInterruptionRetries}/${maxRetries}, allowInterruptions: ${allowInterruptions})`)
+    
+    // Follow-up questions use hard barge-in
+    const result = await this.speakWithPolicy(
+      followUp,
+      {
+        interruptible: allowInterruptions, // Allow interruptions only if retry count < maxRetries
+        bargeInPolicy: 'hard'
+      },
+      { kind: 'prompt', priority: 'auto', source: 'followup_question' }
+    )
+    
+    console.log('🎯 [Interview] Follow-up speech result:', result)
+    
+    // Only transition if follow-up was fully completed (not interrupted)
+    if (result.completed && !result.softStopped && !result.interrupted) {
+      // Follow-up was fully delivered, reset retry counter
+      this.questionInterruptionRetries = 0
+      this.currentQuestionText = null
+      console.log('🎯 [Interview] Follow-up completed, transitioning to follow_up_asked')
+      await this.stateMachine.transition('follow_up_asked')
+      // Start silence timer for automatic hints on follow-up questions (40 seconds)
+      this.stateMachine.startSilenceTimer(40000)
+      console.log('🎯 [Interview] Silence timer started for follow-up question')
+    } else if (result.softStopped || result.interrupted) {
+      // Follow-up was interrupted
+      this.questionInterruptionRetries++
+      console.log(`🎯 [FollowUp] Follow-up interrupted (retry count: ${this.questionInterruptionRetries}/${maxRetries})`)
+      
+      // If we haven't exceeded max retries, repeat the follow-up
+      if (this.questionInterruptionRetries <= maxRetries) {
+        console.log(`🎯 [FollowUp] Repeating follow-up (attempt ${this.questionInterruptionRetries + 1})`)
+        // Wait a brief moment before repeating
+        await new Promise(resolve => setTimeout(resolve, 500))
+        // Recursively call to repeat follow-up
+        await this.speakFollowUpQuestion(followUp)
+      } else {
+        // Max retries exceeded, reset counter and let it complete without interruption
+        console.log(`🎯 [FollowUp] Max retries reached, will complete without allowing interruption`)
+        this.questionInterruptionRetries = 0
+        // Retry one more time with interruptions disabled
+        await this.speakFollowUpQuestion(followUp)
+      }
+    } else {
+      console.log('🎯 [Interview] Follow-up was interrupted, not transitioning')
     }
   }
 
@@ -2916,7 +2950,7 @@ export class InterviewOrchestrator extends EventEmitter {
       }
 
       // Queue if TTS is already speaking OR if another security warning is in progress
-      if (this.speechGate.isSpeaking() || this.isSecurityWarningInProgress) {
+      if (this.livekitAgent?.getIsSpeaking() || this.isSecurityWarningInProgress) {
         console.log('📝 [Security] Queuing warning TTS (speech active or warning in progress):', message.substring(0, 50))
         this.pendingSecurityWarning = message
         return
@@ -2983,10 +3017,10 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private async interruptAutoSpeech(reason: string): Promise<void> {
-    if (this.currentSpeechContext?.priority === 'auto' && this.speechGate?.isSpeaking()) {
+    if (this.currentSpeechContext?.priority === 'auto' && this.livekitAgent?.getIsSpeaking()) {
       console.log(`🎯 [Interview] Stopping auto speech due to ${reason}`)
       try {
-        await this.speechGate.stop()
+        await this.livekitAgent.stop()
       } catch (error) {
         console.warn('⚠️ [Interview] Failed to stop auto speech:', error)
       }
@@ -3083,7 +3117,7 @@ export class InterviewOrchestrator extends EventEmitter {
         console.log('🎯 [Interview] Silence detected - providing escalating hint level', hintLevel)
         
         // Pause mic immediately when we decide to provide hint (before any checks)
-        this.setMicPaused(true, 'auto-hint-llm-processing')
+        // LiveKit handles audio automatically
         this.autoHintInProgress = true
         try {
           // Increment hint count
@@ -3127,8 +3161,7 @@ export class InterviewOrchestrator extends EventEmitter {
           }
         } finally {
           this.autoHintInProgress = false
-          // Always clear auto-hint pause flag; streaming is gated in streamAudio now
-          this.setMicPaused(false, 'auto-hint-llm-processing')
+          // LiveKit handles audio automatically
         }
         
         // Restart the 2-minute timer
@@ -3194,7 +3227,7 @@ export class InterviewOrchestrator extends EventEmitter {
             const hintLevel = this.stateMachine.getHintLevel()
             console.log('🎯 [Interview] First hint event (silence) - providing automatic timeout hint at level:', hintLevel)
             // Pause mic immediately when we decide to provide hint (before LLM work)
-            this.setMicPaused(true, 'auto-hint-llm-processing')
+            // LiveKit handles audio automatically
             this.autoHintInProgress = true
             try {
               const hintText = await this.llm.generateTheoreticalHint(currentQuestion, hintLevel)
@@ -3234,10 +3267,7 @@ export class InterviewOrchestrator extends EventEmitter {
               }
             } finally {
               this.autoHintInProgress = false
-              // Resume mic if not speaking (speakWithPolicy will handle mic during TTS)
-              if (!this.speechGate.isSpeaking()) {
-                this.setMicPaused(false, 'auto-hint-llm-processing')
-              }
+              // LiveKit handles audio automatically
             }
           } else {
             // Second hint-related event: provide answer and move on (no second hint)
@@ -3292,8 +3322,7 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private async handleHintProvision(): Promise<void> {
-    // Pause mic immediately when hint provision starts (before any checks)
-    this.setMicPaused(true, 'auto-hint-llm-processing')
+    // LiveKit handles audio automatically
     this.autoHintInProgress = true
     try {
       const last = this.codeAnalysis.getObservations().slice(-1)[0]
@@ -3334,10 +3363,7 @@ export class InterviewOrchestrator extends EventEmitter {
       }
     } finally {
       this.autoHintInProgress = false
-      // Resume mic if not speaking (speakWithPolicy will handle mic during TTS)
-      if (!this.speechGate.isSpeaking()) {
-        this.setMicPaused(false, 'auto-hint-llm-processing')
-      }
+      // LiveKit handles audio automatically
     }
   }
 
@@ -3367,8 +3393,9 @@ export class InterviewOrchestrator extends EventEmitter {
       console.log('📊 [InterviewOrchestrator] Handling interview completion for session:', session.id)
       
       // Stop services
-      await this.stt.stopListening()
-      await this.tts.stopAudio()
+      if (this.livekitAgent) {
+        await this.livekitAgent.disconnect()
+      }
       
       // Sync conversation history from services one final time before creating payload
       this.syncConversationHistoryFromServices()
@@ -3700,8 +3727,7 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private cleanupListeners(): void {
-    this.stt?.removeAllListeners()
-    this.tts?.removeAllListeners()
+    this.livekitAgent?.removeAllListeners()
     this.llm?.removeAllListeners()
     this.codeAnalysis?.removeAllListeners()
     this.stateMachine.removeAllListeners()
@@ -3730,7 +3756,9 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   async pauseInterview(): Promise<void> {
-    await this.tts.stopAudio()
+    if (this.livekitAgent) {
+      await this.livekitAgent.stop()
+    }
     this.emit('interviewPaused')
   }
 
@@ -3744,92 +3772,10 @@ export class InterviewOrchestrator extends EventEmitter {
     }
   }
 
-  // Update STT service with new token
-  async updateSTTToken(token: string): Promise<void> {
-    try {
-      // Stop current STT service if running
-      if (this.stt.isListening()) {
-        await this.stt.stopListening()
-      }
+  // updateSTTToken removed - LiveKit uses room tokens, not STT tokens
 
-      // Create new STT service with token
-      this.stt = createSTTService({
-        provider: 'assemblyai',
-        token,
-        sampleRate: 16000,
-        language: 'en'
-      })
-
-      // Set up listeners for new service
-      this.setupSTTListeners()
-
-      console.log('🎤 [Main] STT service updated with new token')
-    } catch (error) {
-      console.error('Failed to update STT token:', error)
-      throw error
-    }
-  }
-
-    // Audio capture integration (renderer → main → STT)
-    streamAudio(audioChunk: Buffer): void {
-      const isSecurityWarningSpeech =
-        this.currentSpeechContext?.source === 'security_warning'
-      const isTtsSpeaking = this.speechGate?.isSpeaking?.() ?? false
-      const sttListening = this.stt?.isListening() ?? false
-
-      // Only log occasionally to avoid spam (every ~50 chunks = ~2.5 seconds)
-      if (Math.random() < 0.02) {
-        console.log(
-          '🎤 [Main] streamAudio:',
-          'micPaused =', this.micPaused,
-          'isSecurityWarningSpeech =', isSecurityWarningSpeech,
-          'isTtsSpeaking =', isTtsSpeaking,
-          'sttListening =', sttListening,
-          'sttExists =', !!this.stt
-        )
-      }
-
-      // CRITICAL FIX: Respect micPaused flag
-      // If the mic is paused (e.g. during TTS), we MUST NOT stream audio to STT
-      // This prevents self-transcription of TTS output
-      if (this.micPaused) {
-        if (Math.random() < 0.01) {
-          console.log('🎤 [Main] Mic is paused, dropping audio chunk')
-        }
-        return
-      }
-
-      // Optional suppression: only drop audio during active non-security TTS playback
-      if (isTtsSpeaking && !isSecurityWarningSpeech) {
-        if (Math.random() < 0.1) {
-          console.log('🎤 [Main] Dropping audio chunk during non-security TTS playback')
-        }
-        return
-      }
-
-      // Let STT's own VAD / turn detection decide what counts as speech
-      if (!sttListening) {
-        if (Math.random() < 0.1) {
-          console.log('🎤 [Main] STT is not listening, audio chunk ignored. isConnected:', this.stt?.isListening())
-        }
-        return
-      }
-
-      // Check if STT service exists before calling
-      if (!this.stt) {
-        if (Math.random() < 0.1) {
-          console.warn('🎤 [Main] STT service is null, cannot stream audio')
-        }
-        return
-      }
-
-      // Forward to STT service
-      try {
-        this.stt.streamAudio(audioChunk)
-      } catch (error) {
-        console.error('🎤 [Main] Error forwarding audio to STT:', error)
-      }
-    }
+    // Audio streaming removed - LiveKit handles audio directly in renderer
+    // No need for manual audio chunk forwarding
 
   // Receive vision security warnings from renderer
   updateVisionSecurityWarnings(warningStats: any): void {
@@ -3856,8 +3802,7 @@ export class InterviewOrchestrator extends EventEmitter {
     }
     
     // Stop all services
-    this.stt?.stopListening()
-    this.tts?.destroy()
+    this.livekitAgent?.disconnect()
     this.codeAnalysis?.reset()
     
     // Clean up event listeners
@@ -3869,7 +3814,6 @@ export class InterviewOrchestrator extends EventEmitter {
     
     // Clear any pending state
     this.softStopRequested = false
-    this.micPaused = false
     this.userSpeaking = false
     this.currentCode = ''
     this.manualResponseInFlight = null
@@ -3881,3 +3825,4 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
 }
+

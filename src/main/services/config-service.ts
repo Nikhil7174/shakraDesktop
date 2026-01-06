@@ -9,6 +9,15 @@ export interface AppConfig {
   assemblyaiApiKey: string
   openaiApiKey: string
   serverUrl: string
+  livekitUrl?: string
+  livekitApiKey?: string
+  livekitApiSecret?: string
+  // LiveKit Agent configuration
+  livekitSttProvider?: 'assemblyai' | 'openai' | 'whisper'
+  livekitSttApiKey?: string // For AssemblyAI, if different from OpenAI
+  livekitLlmModel?: string // e.g., 'gpt-4', 'gpt-3.5-turbo'
+  livekitTtsVoice?: string // e.g., 'alloy', 'echo', 'fable', etc.
+  livekitTtsModel?: string // e.g., 'tts-1', 'tts-1-hd'
   lastFetched?: number
   expiresAt?: number // When this config expires
 }
@@ -62,7 +71,7 @@ export class ConfigService {
     // Use provided server URL or fallback to default
     // For testing: use localhost:3001
     // For production: use https://crisp-server-n0r1.onrender.com
-    this.serverUrl = serverUrl || process.env.SERVER_URL || 'https://crisp-server-n0r1.onrender.com'
+    this.serverUrl = serverUrl || process.env.SERVER_URL || 'http://localhost:3001'
     this.encryptionKey = getEncryptionKey()
   }
 
@@ -190,6 +199,9 @@ export class ConfigService {
           assemblyaiApiKey: response.data.config.assemblyaiApiKey || '',
           openaiApiKey: response.data.config.openaiApiKey || '',
           serverUrl: response.data.config.serverUrl || this.serverUrl,
+          livekitUrl: response.data.config.livekitUrl || process.env.LIVEKIT_URL || 'wss://shakra-ypfk18zl.livekit.cloud',
+          livekitApiKey: response.data.config.livekitApiKey || process.env.LIVEKIT_API_KEY || 'API2jK4ts6atBpJ',
+          livekitApiSecret: response.data.config.livekitApiSecret || process.env.LIVEKIT_API_SECRET || 'VfnFJoWTXdcjw9iVmJ0wkmakNYkhCRR6XUokeHqA70V',
           lastFetched: now,
           expiresAt: now + (23 * 60 * 60 * 1000), // Expires in 23 hours
         }
@@ -266,6 +278,9 @@ export class ConfigService {
       assemblyaiApiKey: process.env.ASSEMBLYAI_API_KEY || '',
       openaiApiKey: process.env.OPENAI_API_KEY || '',
       serverUrl: process.env.SERVER_URL || this.serverUrl,
+      livekitUrl: process.env.LIVEKIT_URL || '',
+      livekitApiKey: process.env.LIVEKIT_API_KEY || '',
+      livekitApiSecret: process.env.LIVEKIT_API_SECRET || '',
     }
     
     this.config = envConfig
@@ -294,6 +309,9 @@ export class ConfigService {
       assemblyaiApiKey: process.env.ASSEMBLYAI_API_KEY || '',
       openaiApiKey: process.env.OPENAI_API_KEY || '',
       serverUrl: process.env.SERVER_URL || this.serverUrl,
+      livekitUrl: process.env.LIVEKIT_URL || '',
+      livekitApiKey: process.env.LIVEKIT_API_KEY || '',
+      livekitApiSecret: process.env.LIVEKIT_API_SECRET || '',
     }
     
     this.config = envConfig

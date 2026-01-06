@@ -10,6 +10,7 @@ interface QuestionDisplayProps {
   introMeta?: string
   isListening: boolean
   isSpeaking: boolean
+  isUserSpeaking?: boolean
   progress: { current: number, total: number }
   onVisionStatusChange?: (status: any) => void
   isHint?: boolean
@@ -23,6 +24,7 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
   introMeta = 'Ready to begin',
   isListening,
   isSpeaking,
+  isUserSpeaking = false,
   progress,
   onVisionStatusChange,
   isHint = false,
@@ -211,20 +213,26 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
         </div>
 
         {/* Candidate Video Window (Right Half) */}
-        <div className={`video-window candidate-video ${isListening ? 'speaking-active' : ''}`}>
+        <div className={`video-window candidate-video ${isUserSpeaking ? 'speaking-active' : ''}`}>
           <div className="video-header">
             <div className="video-header-info">
               <div className="video-name">You</div>
               <div className="video-meta">Candidate</div>
             </div>
             <div className="video-status">
-              {isListening && !isSpeaking && (
+              {isUserSpeaking && (
+                <div className="status-badge speaking-badge">
+                  <div className="status-dot"></div>
+                  <span>Speaking</span>
+                </div>
+              )}
+              {isListening && !isSpeaking && !isUserSpeaking && (
                 <div className="status-badge listening-badge">
                   <div className="status-dot"></div>
                   <span>{isIntroMode ? 'Ready' : 'Your turn'}</span>
                 </div>
               )}
-              {isSpeaking && (
+              {isSpeaking && !isUserSpeaking && (
                 <div className="status-badge waiting-badge">
                   <div className="status-dot"></div>
                   <span>AI speaking</span>

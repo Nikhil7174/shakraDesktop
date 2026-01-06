@@ -37,25 +37,23 @@ export class InterviewService implements Service {
     if (!this.orchestrator) return
 
     await this.orchestrator.initialize({
-      stt: {
-        provider: 'assemblyai',
-        apiKey: config.assemblyaiApiKey,
-        sampleRate: 16000,
-        language: 'en'
-      },
       llm: {
         serverUrl: config.serverUrl
       },
-      tts: {
-        provider: 'openai',
-        apiKey: config.openaiApiKey,
-        voice: 'alloy',
-        model: 'tts-1',
-        speed: 1.2
-      },
       codeAnalysis: {
         serverUrl: config.serverUrl
-      }
+      },
+      livekit: config.livekitUrl && config.livekitApiKey && config.livekitApiSecret ? {
+        url: config.livekitUrl,
+        apiKey: config.livekitApiKey,
+        apiSecret: config.livekitApiSecret,
+        openaiApiKey: config.openaiApiKey,
+        sttProvider: config.livekitSttProvider || 'openai',
+        sttApiKey: config.livekitSttApiKey,
+        llmModel: config.livekitLlmModel || 'gpt-4',
+        ttsVoice: config.livekitTtsVoice || 'alloy',
+        ttsModel: config.livekitTtsModel || 'tts-1',
+      } : undefined
     })
   }
 
@@ -160,6 +158,7 @@ export class InterviewService implements Service {
           this.windowService.getMainWindow()?.webContents.send('listening-state-change', true)
         } else if (payload.to === 'evaluating_answer' || 
                    payload.to === 'evaluating_approach' ||
+                   payload.to === 'intro' ||
                    payload.to === 'theoretical_question') {
           console.log('🎤 [Main] Setting listening to false for', payload.to, 'state')
           this.windowService.getMainWindow()?.webContents.send('listening-state-change', false)
@@ -167,6 +166,27 @@ export class InterviewService implements Service {
       } catch (e: unknown) {
         const err = e as Error
         console.error('Failed to send state-based listening change:', err.message)
+      }
+    })
+
+    // Forward user speaking state
+    orchestrator.on('userSpeakingStarted', () => {
+      try {
+        console.log('🎤 [Main] User started speaking - setting userSpeaking:true')
+        this.windowService.getMainWindow()?.webContents.send('user-speaking-state-change', true)
+      } catch (e: unknown) {
+        const err = e as Error
+        console.error('Failed to send user-speaking-state-change:', err.message)
+      }
+    })
+
+    orchestrator.on('userSpeakingEnded', () => {
+      try {
+        console.log('🎤 [Main] User stopped speaking - setting userSpeaking:false')
+        this.windowService.getMainWindow()?.webContents.send('user-speaking-state-change', false)
+      } catch (e: unknown) {
+        const err = e as Error
+        console.error('Failed to send user-speaking-state-change:', err.message)
       }
     })
 
@@ -220,13 +240,11 @@ export class InterviewService implements Service {
   }
 
   private setupIpcHandlers() {
+    // Audio chunk handling removed - LiveKit handles audio directly in renderer
+    // No need for manual audio forwarding
     ipcMain.on('audio-chunk', (_event, data: Uint8Array) => {
-      try {
-        this.orchestrator?.streamAudio(Buffer.from(data))
-      } catch (e: unknown) {
-        const err = e as Error
-        console.error('Failed to stream audio chunk:', err.message)
-      }
+      // LiveKit handles audio streaming automatically, this is kept for backwards compatibility
+      console.log('🎤 [Main] Audio chunk received (LiveKit handles this automatically)')
     })
 
     ipcMain.handle('check-unfinished-interview', async () => {
@@ -244,7 +262,7 @@ export class InterviewService implements Service {
     ipcMain.handle('clear-unfinished-interview', async () => {
       try {
         if (!this.orchestrator) return { success: true }
-        this.orchestrator.clearSession()
+        await this.orchestrator.clearSession()
         return { success: true }
       } catch (error: unknown) {
         const err = error as Error
@@ -356,58 +374,147 @@ export class InterviewService implements Service {
       }
     })
 
-    ipcMain.handle('get-stt-token', async () => {
-      // Logic from index.ts
-      const maxRetries = 3
-      const retryDelay = 2000 
-      
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-          const { AssemblyAI } = await import('assemblyai')
-          
-          const config = await this.configService.getConfig()
-          const apiKey = config.assemblyaiApiKey
-          if (!apiKey) {
-            console.error('🎤 [STT] ASSEMBLYAI_API_KEY is not set')
-            return { success: false, error: 'ASSEMBLYAI_API_KEY is not configured.' }
-          }
-          
-          const client = new AssemblyAI({ apiKey })
-          console.log(`🎤 [STT] Attempting to generate temporary token (attempt ${attempt}/${maxRetries})...`)
-          
-          const tokenPromise = client.streaming.createTemporaryToken({ expires_in_seconds: 300 })
-          const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Token generation timeout after 15 seconds')), 15000))
-          
-          const token = await Promise.race([tokenPromise, timeoutPromise]) as string
-          console.log('🎤 [STT] Successfully generated temporary token')
-          return { success: true, token }
-        } catch (error: unknown) {
-          const err = error as Error
-          const isNetworkError = err.message.includes('timeout') || err.message.includes('ECONNREFUSED')
-          
-          if (isNetworkError && attempt < maxRetries) {
-            console.warn(`🎤 [STT] Network error, retrying...`, err.message)
-            await new Promise(resolve => setTimeout(resolve, retryDelay * attempt))
-            continue
-          }
-          
-          console.error(`🎤 [STT] Failed to generate token:`, err.message)
-          return { success: false, error: err.message }
+    ipcMain.handle('get-livekit-token', async (_event, roomName: string, participantName: string = 'candidate') => {
+      try {
+        const { AccessToken } = await import('livekit-server-sdk')
+        const config = await this.configService.getConfig()
+        
+        // Extract only serializable values from config
+        const apiKey = (config.livekitApiKey || '').trim()
+        const apiSecret = (config.livekitApiSecret || '').trim()
+        const livekitUrl = (config.livekitUrl || '').trim()
+        
+        if (!apiKey || !apiSecret) {
+          console.error('🎤 [LiveKit] LiveKit API credentials not configured')
+          console.error('🎤 [LiveKit] API Key present:', !!apiKey, 'Secret present:', !!apiSecret)
+          return JSON.parse(JSON.stringify({ 
+            success: false, 
+            error: 'LiveKit API credentials not configured.' 
+          }))
         }
+        
+        // Validate API key format (LiveKit API keys typically start with specific prefixes)
+        if (apiKey.length < 10 || apiSecret.length < 10) {
+          console.error('🎤 [LiveKit] API credentials appear to be too short')
+          return JSON.parse(JSON.stringify({ 
+            success: false, 
+            error: 'LiveKit API credentials appear to be invalid (too short).' 
+          }))
+        }
+
+        // Ensure roomName and participantName are strings
+        const safeRoomName = String(roomName || `interview-${Date.now()}`)
+        const safeParticipantName = String(participantName || 'candidate')
+
+        const token = new AccessToken(apiKey, apiSecret, {
+          identity: safeParticipantName,
+        })
+
+        token.addGrant({
+          room: safeRoomName,
+          roomJoin: true,
+          canPublish: true,
+          canSubscribe: true,
+          canPublishData: true,
+        })
+
+        // toJwt() is async and returns a Promise
+        const jwt = await token.toJwt()
+        
+        // Validate token format (should be a JWT string)
+        if (!jwt || typeof jwt !== 'string') {
+          console.error('🎤 [LiveKit] Token generation failed - jwt type:', typeof jwt, 'value:', jwt)
+          throw new Error('Invalid token format generated')
+        }
+        
+        // Check JWT structure (should have 3 parts separated by dots)
+        const jwtString = String(jwt)
+        const jwtParts = jwtString.split('.')
+        if (jwtParts.length !== 3) {
+          console.error('🎤 [LiveKit] Invalid JWT structure - parts:', jwtParts.length, 'token preview:', jwtString.substring(0, 100))
+          throw new Error(`Invalid JWT structure: expected 3 parts, got ${jwtParts.length}`)
+        }
+        
+        // Ensure URL is properly formatted with wss:// protocol
+        let formattedUrl = String(livekitUrl || '')
+        // If no URL provided, use default
+        if (!formattedUrl) {
+          formattedUrl = 'wss://shakra-ypfk18zl.livekit.cloud'
+        } else {
+          // Ensure URL has wss:// protocol
+          if (!formattedUrl.startsWith('wss://') && !formattedUrl.startsWith('ws://')) {
+            formattedUrl = `wss://${formattedUrl.replace(/^(https?):\/\//, '')}`
+          } else if (formattedUrl.startsWith('https://')) {
+            formattedUrl = formattedUrl.replace('https://', 'wss://')
+          } else if (formattedUrl.startsWith('http://')) {
+            formattedUrl = formattedUrl.replace('http://', 'ws://')
+          }
+        }
+        
+        console.log('🎤 [LiveKit] Successfully generated room token for:', safeRoomName)
+        console.log('🎤 [LiveKit] Token length:', jwtString.length, 'URL:', formattedUrl)
+        console.log('🎤 [LiveKit] Token preview:', jwtString.substring(0, 50) + '...')
+        console.log('🎤 [LiveKit] API Key:', apiKey.substring(0, 10) + '...', 'Secret:', apiSecret.substring(0, 10) + '...')
+        
+        // Ensure all return values are serializable by using JSON.parse/stringify
+        const result = {
+          success: true,
+          token: String(jwt),
+          url: String(formattedUrl),
+          roomName: String(safeRoomName)
+        }
+        
+        // Double-check serializability
+        return JSON.parse(JSON.stringify(result))
+      } catch (error: unknown) {
+        const err = error as Error
+        const errorMessage = err?.message || String(error) || 'Unknown error'
+        console.error('🎤 [LiveKit] Failed to generate token:', errorMessage)
+        
+        // Ensure error response is serializable
+        return JSON.parse(JSON.stringify({ 
+          success: false, 
+          error: errorMessage 
+        }))
       }
-      return { success: false, error: 'Failed to generate STT token' }
+    })
+
+    // Keep old handler for backwards compatibility, but it now returns LiveKit token
+    ipcMain.handle('get-stt-token', async () => {
+      // For backwards compatibility, generate a LiveKit token with a default room name
+      const roomName = `interview-${Date.now()}`
+      try {
+        const { AccessToken } = await import('livekit-server-sdk')
+        const config = await this.configService.getConfig()
+        
+        if (!config.livekitApiKey || !config.livekitApiSecret) {
+          return { success: false, error: 'LiveKit API credentials not configured.' }
+        }
+
+        const token = new AccessToken(config.livekitApiKey, config.livekitApiSecret, {
+          identity: 'candidate',
+        })
+
+        token.addGrant({
+          room: roomName,
+          roomJoin: true,
+          canPublish: true,
+          canSubscribe: true,
+          canPublishData: true,
+        })
+
+        const jwt = token.toJwt()
+        return { success: true, token: jwt, url: config.livekitUrl }
+      } catch (error: unknown) {
+        const err = error as Error
+        return { success: false, error: err.message }
+      }
     })
 
     ipcMain.handle('update-stt-token', async (_event, token: string) => {
-      try {
-        if (!this.orchestrator) throw new Error('Interview orchestrator not initialized')
-        await this.orchestrator.updateSTTToken(token)
-        return { success: true }
-      } catch (error: unknown) {
-        const err = error as Error
-        console.error('Failed to update STT token:', err)
-        return { success: false, error: err.message }
-      }
+      // This is no longer needed with LiveKit, but keep for backwards compatibility
+      console.warn('🎤 [LiveKit] update-stt-token is deprecated, tokens are generated per-room')
+      return { success: true }
     })
 
     ipcMain.handle('request-audio-permissions', async () => {

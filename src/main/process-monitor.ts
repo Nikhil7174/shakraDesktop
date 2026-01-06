@@ -15,8 +15,8 @@ export class ProcessMonitor {
   // Blacklist of applications that should be blocked (comprehensive list of major user applications)
   private readonly blockedApps = [
     // Browsers (all major browsers)
-      'firefox', 'edge', 'opera', 'brave', 'safari', 'vivaldi', 'tor',
-     'msedge', 'iexplore', 'waterfox', 'pale moon', 'chrome' , 'chromium',
+      'edge', 'opera', 'brave', 'safari', 'vivaldi', 'tor',
+     'msedge', 'iexplore', 'waterfox', 'pale moon', , 'chromium',
     
     // AI/Chat applications and assistants
     'chatgpt', 'claude', 'copilot', 'gemini', 'bard', 'openai', 'anthropic',
@@ -61,7 +61,7 @@ export class ProcessMonitor {
     'continue ai', 'continue.dev', 'continue extension', 'continue chat',
     'blackbox ai', 'blackbox code', 'blackbox chat', 'blackbox assistant',
     'replit ghostwriter', 'replit ai', 'replit copilot', 'replit chat', 
-    'cursor ai', 'cursor chat', 'cursor copilot', 'cursor assistant', 'cursor',
+    'cursor ai', 'cursor chat', 'cursor copilot', 'cursor assistant',
     'ai pair programming', 'ai code completion', 'ai code review',
     'ai code generator', 'ai code assistant', 'ai programming',
     'ai coding', 'ai developer', 'ai dev tools', 'ai code tools',
