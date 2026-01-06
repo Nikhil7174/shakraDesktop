@@ -29,6 +29,7 @@ export interface CodingProblemHandlerDeps {
   currentIntervalHasSubstantialSpeech: () => boolean
   setCurrentIntervalHasSubstantialSpeech: (value: boolean) => void
   resetIntervalTracking: () => void
+  shouldSkipAutoResponse: (trigger: string) => boolean
 }
 
 export class CodingProblemHandler extends EventEmitter {
@@ -75,7 +76,7 @@ export class CodingProblemHandler extends EventEmitter {
     }
 
     if (intent.intent === 'skip_question') {
-      this.deps.emit('skipRequested', { problem, text })
+      this.emit('skipRequested', { problem, text })
       return
     }
 
@@ -239,7 +240,7 @@ export class CodingProblemHandler extends EventEmitter {
     }
 
     if (intent.intent === 'skip_question') {
-      this.deps.emit('skipRequested', { problem, text })
+      this.emit('skipRequested', { problem, text })
       return
     }
 
@@ -295,6 +296,10 @@ export class CodingProblemHandler extends EventEmitter {
 
     if (shouldProvideHint) {
       if (!this.stateMachine.canProvideCodingHint()) {
+        return analysis
+      }
+
+      if (this.deps.shouldSkipAutoResponse('monitoring_auto_hint')) {
         return analysis
       }
 

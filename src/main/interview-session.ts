@@ -184,7 +184,8 @@ export class InterviewEngine extends EventEmitter {
       resetIntervalTracking: () => {
         this.currentIntervalHasHintClarification = false
         this.currentIntervalHasSubstantialSpeech = false
-      }
+      },
+      shouldSkipAutoResponse: (trigger: string) => this.speechManager.shouldSkipAutoResponse(trigger)
     })
 
     this.hintClarificationHandler = new HintClarificationHandler({
@@ -202,7 +203,8 @@ export class InterviewEngine extends EventEmitter {
       setCurrentProblemId: (id: string | null) => deps.setCurrentProblemId(id),
       setState: (state: any) => deps.setState(state),
       getCurrentCodingProblem: () => deps.getCurrentCodingProblem(),
-      getCurrentSession: () => deps.getCurrentSession()
+      getCurrentSession: () => deps.getCurrentSession(),
+      handleEvaluation: (evaluation: Evaluation) => this.handleEvaluation(evaluation)
     })
 
     this.sessionManager = new SessionManager({
@@ -218,6 +220,7 @@ export class InterviewEngine extends EventEmitter {
       getAllEvaluations: () => deps.getAllEvaluations(),
       setAllEvaluations: (evaluations: Evaluation[]) => deps.setAllEvaluations(evaluations),
       getProblemConversationHistory: (problemId: string) => this.getProblemConversationHistory(problemId),
+      getCurrentProblemId: () => deps.getCurrentProblemId(),
       setCurrentProblemId: (id: string | null) => deps.setCurrentProblemId(id),
       setCurrentQuestionId: (id: string | null) => deps.setCurrentQuestionId(id),
       setCurrentQuestionIndex: (index: number) => deps.setCurrentQuestionIndex(index),
@@ -313,6 +316,10 @@ export class InterviewEngine extends EventEmitter {
     })
     this.codingHandler.on('monitoringClarificationRequested', ({ text, problem }: { text: string; problem: CodingProblem }) => {
       this.hintClarificationHandler.handleMonitoringClarificationRequest(text, problem)
+    })
+
+    this.codingHandler.on('skipRequested', ({ problem, text }: { problem: any, text: string }) => {
+      this.emit('skipRequested', { problem, text })
     })
 
     this.sessionManager.on('interviewCompleted', (session: InterviewSession) => {
@@ -412,23 +419,18 @@ export class InterviewEngine extends EventEmitter {
       throw new Error('No coding problem context')
     }
 
-    const analysis = await this.analyzeCode(codeData, problem)
-
     if (this.deps.userSpeaking()) {
-      return analysis
+      return await this.analyzeCode(codeData, problem)
     }
 
     this.deps.setAutoHintInProgress(true)
     try {
-      if (this.shouldSkipAutoResponse('monitoring_auto_hint')) {
-        return analysis
-      }
+      const analysis = await this.analyzeCode(codeData, problem)
+      this.resetIntervalTracking()
+      return analysis
     } finally {
       this.deps.setAutoHintInProgress(false)
     }
-
-    this.resetIntervalTracking()
-    return analysis
   }
 
   async handleHintProvision(): Promise<void> {

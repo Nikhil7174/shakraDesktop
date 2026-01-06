@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events'
-import { LLMService, Question } from '../services/llm-service'
-import { InterviewStateMachine } from '../services/state-machine'
+import { LLMService, Question, Evaluation } from '../services/llm-service'
+import { InterviewStateMachine, InterviewState } from '../services/state-machine'
 import { CodeAnalysisService, CodingProblem } from '../services/code-analysis-service'
 import { SpeakRequest } from '../interview-session'
 
@@ -20,6 +20,7 @@ export interface HintClarificationHandlerDeps {
   setState: (state: any) => Promise<void>
   getCurrentCodingProblem: () => CodingProblem | null
   getCurrentSession: () => any
+  handleEvaluation: (evaluation: Evaluation) => Promise<void>
 }
 
 export class HintClarificationHandler extends EventEmitter {
@@ -186,7 +187,7 @@ export class HintClarificationHandler extends EventEmitter {
   }
 
   async handleTheoreticalSkipResponse(response: any): Promise<void> {
-    if (response.text && (!response.evaluation || !response.evaluation.feedback)) {
+    if (response.text) {
       this.deps.emit('speakRequested', <SpeakRequest>{
         text: response.text,
         options: { interruptible: false, bargeInPolicy: 'soft' },
@@ -195,7 +196,7 @@ export class HintClarificationHandler extends EventEmitter {
     }
 
     if (response.evaluation) {
-      this.deps.emit('evaluation', response.evaluation)
+      await this.deps.handleEvaluation(response.evaluation)
     } else {
       this.deps.emit('skipEvaluation', response)
     }

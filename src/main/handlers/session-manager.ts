@@ -18,6 +18,7 @@ export interface SessionManagerDeps {
   getAllEvaluations: () => Evaluation[]
   setAllEvaluations: (evaluations: Evaluation[]) => void
   getProblemConversationHistory: (problemId: string) => ConversationMessage[]
+  getCurrentProblemId: () => string | null
   setCurrentProblemId: (id: string | null) => void
   setCurrentQuestionId: (id: string | null) => void
   setCurrentQuestionIndex: (index: number) => void
