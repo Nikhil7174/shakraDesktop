@@ -89,6 +89,31 @@ export interface InterviewSessionDeps {
   setMaxTheoreticalQuestions: (max: number) => void
   setCurrentQuestionIndex: (index: number) => void
   setCurrentProblem: (problem: CodingProblem) => void
+  getCurrentSpeechContext: () => SpeechContext | null
+  setCurrentSpeechContext: (context: SpeechContext | null) => void
+  setCurrentSpeakOptions: (opts: SpeakOptions | undefined) => void
+  softStopRequested: () => boolean
+  emitSpeakingStarted: () => void
+  emitSpeakingCompleted: () => void
+  emitTtsError: (error: any) => void
+  livekitAgentSay: (text: string, options: { allowInterruptions: boolean }) => Promise<void>
+  getLivekitAgentAvailable: () => boolean
+  startManualResponse: (kind: any, source: string) => void
+  finishManualResponse: (kind: any, source: string) => void
+  requestSkipConfirmation: () => Promise<boolean>
+  getPreviousCode: () => string
+  setState: (state: InterviewState) => Promise<void>
+  submitCodingSolution: (code: string, isTimeout: boolean) => Promise<any>
+  setUserSpeaking: (value: boolean) => void
+  getLiveTranscriptTimeout: () => NodeJS.Timeout | null
+  setLiveTranscriptTimeout: (timeout: NodeJS.Timeout | null) => void
+  clearLiveTranscriptTimeout: () => void
+  addConversationMessageToService: (role: 'user' | 'assistant' | 'system', text: string, metadata: any) => void
+  getPayloadSent: () => boolean
+  setPayloadSent: (value: boolean) => void
+  resetStateMachine: () => void
+  resetLLM: () => void
+  shouldProcessTranscript: (state: InterviewState) => boolean
 }
 
 export class InterviewEngine extends EventEmitter {
@@ -1126,16 +1151,6 @@ export class InterviewEngine extends EventEmitter {
     }
   }
 
-  async withManualResponse<T>(kind: any, source: string, handler: () => Promise<T>): Promise<T> {
-    await this.deps.interruptAutoSpeech(`manual ${kind} requested (${source})`)
-    this.startManualResponse(kind, source)
-    try {
-      return await handler()
-    } finally {
-      this.finishManualResponse(kind, source)
-    }
-  }
-
   async handleBargeIn(): Promise<void> {
     if (this.deps.getLivekitAgentIsSpeaking() && this.deps.userSpeaking()) {
       const speakOptions = this.deps.getCurrentSpeakOptions()
@@ -2010,6 +2025,270 @@ export class InterviewEngine extends EventEmitter {
       { kind: 'system', priority: 'auto', source: 'wrap_up' }
     )
     await this.stateMachine.transition('interview_complete')
+  }
+
+  async speakWithPolicy(
+    text: string,
+    opts: SpeakOptions,
+    context: SpeechContext = { kind: 'system', priority: 'auto', source: 'general' }
+  ): Promise<{ completed: boolean, softStopped: boolean, interrupted: boolean }> {
+    this.deps.setCurrentSpeechContext(context)
+    try {
+      this.deps.setCurrentSpeakOptions(opts)
+      this.deps.setSoftStopRequested(false)
+
+      this.deps.emitSpeakingStarted()
+
+      if (this.deps.getLivekitAgentAvailable()) {
+        const allowInterruptions = opts.interruptible !== false
+        await this.deps.livekitAgentSay(text, { allowInterruptions })
+      }
+
+      const interruptionsAllowed = opts.interruptible !== false
+      if (this.deps.pendingSecurityWarning() && (!this.deps.softStopRequested() || !interruptionsAllowed)) {
+        const warning = this.deps.pendingSecurityWarning()
+        this.deps.setPendingSecurityWarning(null)
+        await this.speakSecurityWarning(warning!)
+      }
+
+      const completed = interruptionsAllowed ? !this.deps.softStopRequested() : true
+      const softStopped = interruptionsAllowed ? this.deps.softStopRequested() : false
+
+      this.deps.emitSpeakingCompleted()
+      this.deps.setCurrentSpeakOptions(undefined)
+
+      return { completed, softStopped, interrupted: false }
+    } catch (error) {
+      this.deps.emitTtsError(error)
+      this.deps.emitSpeakingCompleted()
+      this.deps.setCurrentSpeakOptions(undefined)
+      return { completed: false, softStopped: false, interrupted: true }
+    } finally {
+      this.deps.setCurrentSpeechContext(null)
+    }
+  }
+
+  async onIntroStarted(): Promise<void> {
+    const introText = "Hello! Welcome to your technical interview. I'll be conducting your interview today. Lets start with some theoretical questions."
+    const result = await this.speakWithPolicy(introText, {
+      interruptible: true,
+      bargeInPolicy: 'hard'
+    })
+    if (result.completed) {
+      await this.stateMachine.transition('begin_questions')
+    }
+  }
+
+  async onCodingIntroStarted(): Promise<void> {
+    const session = this.deps.getCurrentSession()
+    if (!session) return
+
+    const hasCodingProblems = session.codingProblems && session.codingProblems.length > 0
+    if (!hasCodingProblems) {
+      await this.stateMachine.transition('no_coding_problems')
+      return
+    }
+
+    if (this.deps.hadTheoreticalQuestions()) {
+      const introText = "Great work on the theoretical questions! Now let's move to the coding section."
+      const result = await this.speakWithPolicy(introText, {
+        interruptible: false,
+        bargeInPolicy: 'soft'
+      })
+      if (result.completed || result.softStopped) {
+        await this.stateMachine.transition('coding_problem_presented')
+      }
+    } else {
+      const introText = "Welcome! Today we'll focus on coding problems. Let's begin."
+      const result = await this.speakWithPolicy(introText, {
+        interruptible: false,
+        bargeInPolicy: 'soft'
+      })
+      if (result.completed || result.softStopped) {
+        await this.stateMachine.transition('coding_problem_presented')
+      }
+    }
+  }
+
+  async onPresentCodingProblem(): Promise<CodingProblem | null> {
+    let problem = this.codeAnalysis.getCurrentProblem()
+    if (!problem) {
+      const session = this.deps.getCurrentSession()
+      if (session?.codingProblems && session.codingProblems.length > 0) {
+        const problemIndex = this.deps.getCurrentProblemId()
+          ? session.codingProblems.findIndex(p => p.id === this.deps.getCurrentProblemId())
+          : 0
+        problem = session.codingProblems[problemIndex >= 0 ? problemIndex : 0]
+      } else {
+        problem = this.deps.getCurrentCodingProblem()
+      }
+    }
+
+    if (!problem) {
+      await this.stateMachine.transition('no_coding_problems')
+      return null
+    }
+
+    if (this.deps.getCurrentProblemId() !== problem.id) {
+      this.deps.setCurrentProblemId(problem.id)
+    }
+
+    this.stateMachine.resetCodingCounters()
+    this.deps.setCurrentProblem(problem)
+
+    const intro = "Here's the coding problem. You can see the details on your screen. Before you start coding, please explain your approach to solving this problem. Also feel free to ask any clarifying questions if you need to understand the requirements better. While you work through it, please plan to note the time and space complexity of your final solution as well."
+    await this.speakWithPolicy(intro, {
+      interruptible: false,
+      bargeInPolicy: 'soft'
+    })
+
+    this.deps.syncConversationHistoryFromServices()
+    return problem
+  }
+
+  async interruptAutoSpeech(reason: string): Promise<void> {
+    const context = this.deps.getCurrentSpeechContext()
+    if (context?.priority === 'auto' && this.deps.getLivekitAgentIsSpeaking()) {
+      await this.deps.stopLivekitAgent()
+    }
+  }
+
+  async withManualResponse<T>(kind: any, source: string, handler: () => Promise<T>): Promise<T> {
+    await this.interruptAutoSpeech(`manual ${kind} requested (${source})`)
+    this.deps.startManualResponse(kind, source)
+    try {
+      return await handler()
+    } finally {
+      this.deps.finishManualResponse(kind, source)
+    }
+  }
+
+  async onSkipRequested(problem: any, text: string): Promise<void> {
+    const confirmed = await this.deps.requestSkipConfirmation()
+    if (!confirmed) {
+      return
+    }
+
+    await this.withManualResponse('system', 'skip_question', async () => {
+      const skipMessage = "Understood. Let's move on to the next problem."
+      this.codeAnalysis.addConversationMessage('assistant', skipMessage, {
+        type: 'feedback',
+        codingProblemId: problem.id,
+        section: 'coding'
+      } as any)
+      this.deps.syncConversationHistoryFromServices()
+
+      await this.speakWithPolicy(skipMessage, {
+        interruptible: false,
+        bargeInPolicy: 'soft'
+      }, { kind: 'system', priority: 'manual', source: 'skip_question' })
+
+      const currentCode = this.deps.currentCode() || this.deps.getPreviousCode() || '// Skipped by candidate'
+      const session = this.deps.getCurrentSession()
+      const codingProblems = session?.codingProblems || []
+      try {
+        await this.deps.submitCodingSolution(currentCode, false)
+      } catch (error) {
+        const currentProblemIndex = codingProblems.findIndex(p => p.id === problem.id)
+        const hasNextProblem = currentProblemIndex >= 0 && currentProblemIndex < codingProblems.length - 1
+
+        if (hasNextProblem) {
+          const nextProblem = codingProblems[currentProblemIndex + 1]
+          this.deps.setCurrentProblem(nextProblem)
+          this.deps.setCurrentProblemId(nextProblem.id)
+          await this.deps.setState(InterviewState.CODING_PROBLEM)
+        } else {
+          await this.deps.setState(InterviewState.WRAP_UP)
+        }
+      }
+    })
+  }
+
+  async onHintSpokenRequested(hintText: string): Promise<void> {
+    const result = await this.speakWithPolicy(hintText, {
+      interruptible: true,
+      bargeInPolicy: 'hard'
+    }, { kind: 'hint', priority: 'auto', source: 'monitoring_auto_hint' })
+    if (result.completed) {
+      await this.onHintSpokenCompleted(hintText)
+    }
+  }
+
+  async onClarificationSpokenRequested(clarificationText: string): Promise<void> {
+    const result = await this.speakWithPolicy(clarificationText, {
+      interruptible: true,
+      bargeInPolicy: 'hard'
+    })
+    if (result.completed) {
+      await this.onClarificationSpokenCompleted(clarificationText)
+    }
+  }
+
+  async onSolutionSubmitted(feedback: string, hasNextProblem: boolean): Promise<void> {
+    await this.speakWithPolicy(feedback, {
+      interruptible: false,
+      bargeInPolicy: 'soft'
+    })
+  }
+
+  async onWaitingForApproach(): Promise<void> {
+    this.stateMachine.startSilenceTimer(120000)
+  }
+
+  async onCodeMonitoringStarted(): Promise<void> {
+    this.stateMachine.startSilenceTimer(60000)
+  }
+
+  async onAskForApproach(): Promise<void> {
+    const problem = this.deps.getCurrentCodingProblem()
+    if (!problem) {
+      return
+    }
+    await this.stateMachine.transition('approach_asked')
+  }
+
+  markUserSpeakingActivity(): void {
+    this.deps.setUserSpeaking(true)
+    if (this.deps.getLiveTranscriptTimeout()) {
+      this.deps.clearLiveTranscriptTimeout()
+    }
+    const timeoutId = setTimeout(() => {
+      this.deps.setUserSpeaking(false)
+      this.deps.setLiveTranscriptTimeout(null)
+    }, 1500)
+    this.deps.setLiveTranscriptTimeout(timeoutId)
+  }
+
+  addConversationMessage(role: 'user' | 'assistant' | 'system', text: string, metadata: any): void {
+    this.deps.addConversationMessageToService(role, text, metadata)
+  }
+
+  async clearSession(): Promise<void> {
+    if (!this.deps.getPayloadSent() && (this.deps.getCodingProblemConversations().length > 0 || this.deps.getFullConversationHistory().length > 0)) {
+      this.deps.resetStateMachine()
+      this.deps.setCurrentProblemId(null)
+      this.deps.setCurrentQuestionId(null)
+      this.deps.resetLLM()
+      await this.deps.stopLivekitAgent()
+      return
+    }
+
+    this.deps.resetStateMachine()
+    this.deps.setCodingProblemConversations([])
+    this.deps.setAllEvaluations([])
+    this.deps.setFullConversationHistory([])
+    this.deps.setCurrentProblemId(null)
+    this.deps.setCurrentQuestionId(null)
+    this.deps.resetLLM()
+    this.deps.setPayloadSent(false)
+    await this.deps.stopLivekitAgent()
+  }
+
+  shouldProcessTranscriptState(state: InterviewState): boolean {
+    return state === InterviewState.WAITING_FOR_ANSWER || 
+           state === InterviewState.THEORETICAL_QUESTION ||
+           state === InterviewState.WAITING_FOR_APPROACH || 
+           state === InterviewState.MONITORING_CODE
   }
 }
 

@@ -5,7 +5,7 @@ import { CodeAnalysisService, createCodeAnalysisService, CodingProblem } from '.
 import { FinalEvaluationPayload, ConversationMessage } from '../shared/types'
 import { createFinalEvaluationPayload } from './utils/final-evaluation'
 import { InterviewAgent } from './services/livekit-agent'
-import { InterviewEngine, SpeakRequest } from './interview-session'
+import { InterviewEngine, SpeakRequest, SpeechContext } from './interview-session'
 
 // TransitionQueue: Serialize critical actions (concurrency = 1)
 class TransitionQueue {
@@ -33,12 +33,6 @@ interface SpeakResult {
 }
 
 type ResponseKind = 'hint' | 'clarification' | 'answer' | 'prompt' | 'system' | 'feedback'
-
-interface SpeechContext {
-  kind: ResponseKind
-  priority: 'manual' | 'auto'
-  source?: string
-}
 
 // Helper: Split text into sentences (currently unused, kept for potential future use)
 // function splitSentences(text: string): string[] {
@@ -144,33 +138,6 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   /**
-   * Centralized method to add messages to conversation history
-   * This maintains a single source of truth for all conversation messages
-   * @deprecated Currently unused - kept for future use
-   */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  private _addToConversationHistory(
-    role: 'user' | 'assistant' | 'system',
-    content: string,
-    metadata: ConversationMessage['metadata']
-  ): void {
-    const message: ConversationMessage = {
-      role,
-      content,
-      timestamp: Date.now(),
-      metadata: {
-        ...metadata,
-        questionId: metadata.questionId || this.currentQuestionId || undefined,
-        codingProblemId: metadata.codingProblemId || this.currentProblemId || undefined,
-        section: metadata.section || (this.currentProblemId ? 'coding' : 'theoretical')
-      }
-    }
-    
-    this.fullConversationHistory.push(message)
-    console.log(`💬 [ConversationHistory] Added ${role} message (${metadata.type || 'unknown'}), total: ${this.fullConversationHistory.length}`)
-  }
-
-  /**
    * Get full conversation history (chronological)
    */
   getFullConversationHistory(): ConversationMessage[] {
@@ -187,22 +154,9 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   /**
-   * Get conversation history for a specific question
-   */
-  getQuestionConversationHistory(questionId: string): ConversationMessage[] {
-    return this.fullConversationHistory.filter(
-      msg => msg.metadata.questionId === questionId
-    )
-  }
-
-  /**
    * Sync conversation history from services to centralized store
    * This ensures we capture all messages even if services reset their history
    */
-  private syncConversationHistoryFromServices(): void {
-    this.engine.syncConversationHistoryFromServices()
-  }
-
   async initialize(config: InterviewConfig): Promise<void> {
     try {
       // Initialize services
@@ -216,11 +170,7 @@ export class InterviewOrchestrator extends EventEmitter {
         getCurrentCodingProblem: () => this.getCurrentCodingProblem(),
         getConversationHistory: () => this.fullConversationHistory,
         addConversationMessage: (role, text, metadata) => {
-          if (metadata.section === 'coding') {
-            this.codeAnalysis.addConversationMessage(role, text, metadata)
-          } else {
-            this.llm.addConversationMessage(role, text, metadata)
-          }
+          this.engine.addConversationMessage(role, text, metadata)
         },
         syncConversationHistoryFromServices: () => {
           this.engine.syncConversationHistoryFromServices()
@@ -238,9 +188,9 @@ export class InterviewOrchestrator extends EventEmitter {
         currentCode: () => this.currentCode,
         setCurrentCode: (code) => { this.currentCode = code; },
         speakRequested: async (text, options, context) => {
-          return await this.speakWithPolicy(text, options, context)
+          return await this.engine.speakWithPolicy(text, options, context)
         },
-        interruptAutoSpeech: (reason) => this.interruptAutoSpeech(reason),
+        interruptAutoSpeech: (reason) => this.engine.interruptAutoSpeech(reason),
         isManualResponseActive: () => this.isManualResponseActive(),
         getCurrentSpeakOptions: () => this.currentSpeakOptions,
         setSoftStopRequested: (value) => { this.softStopRequested = value; },
@@ -295,7 +245,47 @@ export class InterviewOrchestrator extends EventEmitter {
         },
         setCurrentProblem: (problem) => {
           this.codeAnalysis.setCurrentProblem(problem)
-        }
+        },
+        getCurrentSpeechContext: () => this.currentSpeechContext,
+        setCurrentSpeechContext: (context) => { this.currentSpeechContext = context; },
+        setCurrentSpeakOptions: (opts) => { this.currentSpeakOptions = opts; },
+        softStopRequested: () => this.softStopRequested,
+        emitSpeakingStarted: () => { this.emit('speakingStarted'); },
+        emitSpeakingCompleted: () => { this.emit('speakingCompleted'); },
+        emitTtsError: (error) => { this.emit('ttsError', error); },
+        livekitAgentSay: async (text, options) => {
+          if (this.livekitAgent) {
+            await this.livekitAgent.say(text, options)
+          }
+        },
+        getLivekitAgentAvailable: () => !!this.livekitAgent,
+        startManualResponse: (kind, source) => { this.startManualResponse(kind, source); },
+        finishManualResponse: (kind, source) => { this.finishManualResponse(kind, source); },
+        requestSkipConfirmation: () => this.requestSkipConfirmation(),
+        getPreviousCode: () => this.stateMachine.getPreviousCode(),
+        setState: (state) => this.stateMachine.setState(state),
+        submitCodingSolution: (code, isTimeout) => this.submitCodingSolution(code, isTimeout),
+        setUserSpeaking: (value) => { this.userSpeaking = value; },
+        getLiveTranscriptTimeout: () => this.liveTranscriptTimeout,
+        setLiveTranscriptTimeout: (timeout) => { this.liveTranscriptTimeout = timeout; },
+        clearLiveTranscriptTimeout: () => {
+          if (this.liveTranscriptTimeout) {
+            clearTimeout(this.liveTranscriptTimeout)
+            this.liveTranscriptTimeout = null
+          }
+        },
+        addConversationMessageToService: (role, text, metadata) => {
+          if (metadata.section === 'coding') {
+            this.codeAnalysis.addConversationMessage(role, text, metadata)
+          } else {
+            this.llm.addConversationMessage(role, text, metadata)
+          }
+        },
+        getPayloadSent: () => this.payloadSent,
+        setPayloadSent: (value) => { this.payloadSent = value; },
+        resetStateMachine: () => { this.stateMachine.reset(); },
+        resetLLM: () => { this.llm.reset(); },
+        shouldProcessTranscript: (state) => this.engine.shouldProcessTranscriptState(state)
       })
 
       this.engine.on('evaluation', (evaluation: Evaluation) => {
@@ -307,75 +297,23 @@ export class InterviewOrchestrator extends EventEmitter {
       })
 
       this.engine.on('speakRequested', async (req: SpeakRequest) => {
-        await this.speakWithPolicy(req.text, req.options)
+        await this.engine.speakWithPolicy(req.text, req.options, req.context)
       })
 
       this.engine.on('hintSpokenRequested', async (hintText: string) => {
-        const result = await this.speakWithPolicy(hintText, {
-          interruptible: true,
-          bargeInPolicy: 'hard'
-        }, { kind: 'hint' as ResponseKind, priority: 'auto', source: 'monitoring_auto_hint' })
-        if (result.completed) {
-          await this.engine.onHintSpokenCompleted(hintText)
-        }
+        await this.engine.onHintSpokenRequested(hintText)
       })
 
       this.engine.on('clarificationSpokenRequested', async (clarificationText: string) => {
-        const result = await this.speakWithPolicy(clarificationText, {
-          interruptible: true,
-          bargeInPolicy: 'hard'
-        })
-        if (result.completed) {
-          await this.engine.onClarificationSpokenCompleted(clarificationText)
-        }
+        await this.engine.onClarificationSpokenRequested(clarificationText)
       })
 
       this.engine.on('skipRequested', async ({ problem, text }: { problem: any, text: string }) => {
-        const confirmed = await this.requestSkipConfirmation()
-        if (!confirmed) {
-          return
-        }
-
-        await this.withManualResponse('system', 'skip_question', async () => {
-          const skipMessage = "Understood. Let's move on to the next problem."
-          this.codeAnalysis.addConversationMessage('assistant', skipMessage, {
-            type: 'feedback',
-            codingProblemId: problem.id,
-            section: 'coding'
-          } as any)
-          this.syncConversationHistoryFromServices()
-
-          await this.speakWithPolicy(skipMessage, {
-            interruptible: false,
-            bargeInPolicy: 'soft'
-          }, { kind: 'system', priority: 'manual', source: 'skip_question' })
-
-          const currentCode = this.currentCode || this.stateMachine.getPreviousCode() || '// Skipped by candidate'
-          const codingProblems = this.currentSession?.codingProblems || []
-          try {
-            await this.submitCodingSolution(currentCode, false)
-          } catch (error) {
-            console.error('🎯 [Interview] Error during skip submission:', error)
-            const currentProblemIndex = codingProblems.findIndex(p => p.id === problem.id)
-            const hasNextProblem = currentProblemIndex >= 0 && currentProblemIndex < codingProblems.length - 1
-
-            if (hasNextProblem) {
-              const nextProblem = codingProblems[currentProblemIndex + 1]
-              this.codeAnalysis.setCurrentProblem(nextProblem)
-              this.currentProblemId = nextProblem.id
-              await this.stateMachine.setState(InterviewState.CODING_PROBLEM)
-            } else {
-              await this.stateMachine.setState(InterviewState.WRAP_UP)
-            }
-          }
-        })
+        await this.engine.onSkipRequested(problem, text)
       })
 
       this.engine.on('solutionSubmitted', async ({ feedback, hasNextProblem }: { feedback: string, hasNextProblem: boolean }) => {
-        await this.speakWithPolicy(feedback, {
-          interruptible: false,
-          bargeInPolicy: 'soft'
-        })
+        await this.engine.onSolutionSubmitted(feedback, hasNextProblem)
       })
 
       // Initialize TransitionQueue
@@ -446,18 +384,7 @@ export class InterviewOrchestrator extends EventEmitter {
     })
 
     this.stateMachine.on('introStarted', async () => {
-      const introText = "Hello! Welcome to your technical interview. I'll be conducting your interview today. Lets start with some theoretical questions."
-      // const introText = "Hello!"
-
-      // LiveKit handles audio automatically
-      const result = await this.speakWithPolicy(introText, {
-        interruptible: true,
-        bargeInPolicy: 'hard'
-      })
-      if (result.completed) {
-        // Transition to first question immediately
-        await this.stateMachine.transition('begin_questions')
-      }
+      await this.engine.onIntroStarted()
     })
 
     this.stateMachine.on('askQuestion', async (question: Question) => {
@@ -476,139 +403,26 @@ export class InterviewOrchestrator extends EventEmitter {
     })
 
     this.stateMachine.on('codingIntroStarted', async () => {
-      console.log('🎯 [Interview] Coding intro started - emitting state change to renderer')
-      
-      // Emit state change immediately so UI can show transition state
       this.emit('stateChanged', { 
         from: this.stateMachine.getState(), 
         to: InterviewState.CODING_INTRO 
       })
-      
-      // Debug: Log coding problems availability
-      console.log('🎯 [Interview] Debug - currentSession:', !!this.currentSession)
-      console.log('🎯 [Interview] Debug - codingProblems:', this.currentSession?.codingProblems)
-      console.log('🎯 [Interview] Debug - codingProblems length:', this.currentSession?.codingProblems?.length)
-      console.log('🎯 [Interview] Debug - codingProblems array:', JSON.stringify(this.currentSession?.codingProblems?.map(p => ({ id: p.id, title: p.title }))))
-      
-      // Check if we have coding problems BEFORE speaking
-      const hasCodingProblems = this.currentSession?.codingProblems && this.currentSession.codingProblems.length > 0
-      
-      if (!hasCodingProblems) {
-        console.error('❌ [Interview] No coding problems available! Session:', {
-          hasSession: !!this.currentSession,
-          codingProblemsCount: this.currentSession?.codingProblems?.length || 0,
-          codingProblems: this.currentSession?.codingProblems
-        })
-        console.log('🎯 [Interview] No coding problems, moving to wrap up')
-        await this.stateMachine.transition('no_coding_problems')
-        return
-      }
-      
-      // Only speak transition message if we actually had theoretical questions
-      if (this.hadTheoreticalQuestions) {
-        console.log('🎯 [Interview] Theoretical questions completed, transitioning to coding phase')
-        // Speak intro to coding section
-        const introText = "Great work on the theoretical questions! Now let's move to the coding section."
-        const result = await this.speakWithPolicy(introText, {
-          interruptible: false,
-          bargeInPolicy: 'soft'
-        })
-        
-        console.log(`🎯 [Interview] ${this.currentSession?.codingProblems?.length || 0} coding problem(s) available`)
-        // Only transition if intro completed
-        if (result.completed || result.softStopped) {
-          await this.stateMachine.transition('coding_problem_presented')
-        }
-      } else {
-        // Coding-only interview - speak welcome message here (centralized, no duplication)
-        console.log('🎯 [Interview] Coding-only interview, speaking welcome message')
-        const introText = "Welcome! Today we'll focus on coding problems. Let's begin."
-        const result = await this.speakWithPolicy(introText, {
-          interruptible: false,
-          bargeInPolicy: 'soft'
-        })
-        
-        // Only transition if intro completed
-        if (result.completed || result.softStopped) {
-          await this.stateMachine.transition('coding_problem_presented')
-        }
-      }
+      await this.engine.onCodingIntroStarted()
     })
 
     this.stateMachine.on('presentCodingProblem', async () => {
-      // Get the current problem - use codeAnalysis first (most up-to-date), then fallback to session
-      let problem = this.codeAnalysis.getCurrentProblem()
-      if (!problem) {
-        console.warn('⚠️ [Interview] Problem not found in codeAnalysis, trying session...')
-        // Get the first problem from session if codeAnalysis doesn't have it
-        // This can happen if setCurrentProblem wasn't called during initialization
-        if (this.currentSession?.codingProblems && this.currentSession.codingProblems.length > 0) {
-          // Use the problem at the current index, or the first one if no index is tracked
-          const problemIndex = this.currentProblemId 
-            ? this.currentSession.codingProblems.findIndex(p => p.id === this.currentProblemId)
-            : 0
-          problem = this.currentSession.codingProblems[problemIndex >= 0 ? problemIndex : 0]
-          console.log('✅ [Interview] Got problem from session:', problem?.id, problem?.title)
-        } else {
-          problem = this.getCurrentCodingProblem()
-        }
+      const problem = await this.engine.onPresentCodingProblem()
+      if (problem) {
+        this.emit('presentCodingProblem', problem)
       }
-      
-      console.log('🎯 [Interview] presentCodingProblem event triggered')
-      console.log('🎯 [Interview] Problem from codeAnalysis:', problem?.id, problem?.title)
-      console.log('🎯 [Interview] Current problem ID tracked:', this.currentProblemId)
-      console.log('🎯 [Interview] Session coding problems count:', this.currentSession?.codingProblems?.length)
-      
-      if (!problem) {
-        console.error('❌ [Interview] No coding problem found when presenting!')
-        console.error('❌ [Interview] CodeAnalysis problem:', this.codeAnalysis.getCurrentProblem()?.id)
-        console.error('❌ [Interview] Session problems:', this.currentSession?.codingProblems?.length)
-        console.error('❌ [Interview] Session problems array:', this.currentSession?.codingProblems)
-        console.error('❌ [Interview] Current problem ID:', this.currentProblemId)
-        
-        // If no problem found, transition to wrap up
-        console.error('❌ [Interview] Cannot proceed without coding problem, transitioning to wrap up')
-        await this.stateMachine.transition('no_coding_problems')
-        return
-      }
-      
-      // Ensure currentProblemId matches
-      if (this.currentProblemId !== problem.id) {
-        console.log('🎯 [Interview] Updating currentProblemId to match problem:', problem.id)
-        this.currentProblemId = problem.id
-      }
-      
-      // Do minimal setup first (must be done before speaking for proper tagging)
-      this.stateMachine.resetCodingCounters()
-      this.codeAnalysis.setCurrentProblem(problem)
-      
-      // Start TTS generation immediately (don't await - let it generate in background)
-      const intro = "Here's the coding problem. You can see the details on your screen. Before you start coding, please explain your approach to solving this problem. Also feel free to ask any clarifying questions if you need to understand the requirements better. While you work through it, please plan to note the time and space complexity of your final solution as well."
-      const speakPromise = this.speakWithPolicy(intro, {
-        interruptible: false,
-        bargeInPolicy: 'soft'
-      })
-      
-      // Emit to renderer immediately (timer starts right away)
-      this.emit('presentCodingProblem', problem)
-      console.log('🎯 [Interview] Emitted presentCodingProblem event to renderer with problem:', problem.id, problem.title)
-      
-      // Sync conversation history in parallel (non-blocking)
-      this.syncConversationHistoryFromServices()
-      
-      // Wait for speech to complete
-      await speakPromise
     })
 
     this.stateMachine.on('askForApproach', async () => {
-      console.log('🎯 [Interview] Asking for coding approach')
-      await this.askForCodingApproach()
+      await this.engine.onAskForApproach()
     })
 
     this.stateMachine.on('waitingForApproach', () => {
-      console.log('🎯 [Interview] Waiting for approach explanation')
-      // Start 2 minute silence timer for coding questions
-      this.stateMachine.startSilenceTimer(120000) // 120 seconds = 2 minutes
+      this.engine.onWaitingForApproach()
     })
 
     this.stateMachine.on('evaluatingApproach', () => {
@@ -616,9 +430,7 @@ export class InterviewOrchestrator extends EventEmitter {
     })
 
     this.stateMachine.on('codeMonitoringStarted', () => {
-      console.log('🎯 [Interview] Code monitoring started - can begin coding')
-      // Start 1-minute silence timer for code monitoring phase
-      this.stateMachine.startSilenceTimer(60000) // 60 seconds = 1 minute
+      this.engine.onCodeMonitoringStarted()
     })
 
     this.stateMachine.on('provideHint', () => {
@@ -669,14 +481,7 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private markUserSpeakingActivity(): void {
-    this.userSpeaking = true
-    if (this.liveTranscriptTimeout) {
-      clearTimeout(this.liveTranscriptTimeout)
-    }
-    this.liveTranscriptTimeout = setTimeout(() => {
-      this.userSpeaking = false
-      this.liveTranscriptTimeout = null
-    }, 1500)
+    this.engine.markUserSpeakingActivity()
   }
 
   private setupCodeAnalysisListeners(): void {
@@ -704,64 +509,14 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   async clearSession(): Promise<void> {
-    console.log('🎯 [Interview] Clearing session')
-    
-    // IMPORTANT: Don't clear conversations if payload hasn't been sent yet
-    // This prevents data loss if clearSession() is called prematurely
-    if (!this.payloadSent && (this.codingProblemConversations.length > 0 || this.fullConversationHistory.length > 0)) {
-      console.log('🎯 [Interview] ⚠️ Blocking session clear - payload not sent yet (coding:', this.codingProblemConversations.length, ', history:', this.fullConversationHistory.length, ')')
-      console.log('🎯 [Interview] Only clearing non-critical state, preserving conversations')
-      // Only clear non-critical state, preserve conversations
-      this.currentSession = null
-      this.stateMachine.reset()
-      this.currentProblemId = null
-      this.currentQuestionId = null
-      this.llm.reset()
-      // Stop any ongoing TTS
-      if (this.livekitAgent) {
-        await this.livekitAgent.stop()
-      }
-      return // Exit early, don't clear conversations
-    }
-    
-    // If payload has been sent, safe to clear everything
     this.currentSession = null
-    this.stateMachine.reset()
-    this.codingProblemConversations = []
-    this.allEvaluations = []
-    this.fullConversationHistory = []
-    this.currentProblemId = null
-    this.currentQuestionId = null
-    this.llm.reset()
-    this.payloadSent = false // Reset flag for next interview
-    // Stop any ongoing TTS
-    if (this.livekitAgent) {
-      await this.livekitAgent.stop()
-    }
-    console.log('🎯 [Interview] Session fully cleared (payload was sent)')
+    await this.engine.clearSession()
   }
   
-  /**
-   * Mark payload as sent - allows clearSession() to fully clear conversations
-   * This should be called from the renderer after successful submission
-   */
   markPayloadSent(): void {
-    console.log('🎯 [Interview] Marking payload as sent - conversations can now be cleared')
     this.payloadSent = true
   }
   
-  /**
-   * Clear conversation data after payload is successfully sent
-   * This should be called from the renderer after successful submission
-   * @deprecated Use markPayloadSent() instead - clearSession() will handle clearing
-   */
-  clearConversationData(): void {
-    console.log('🎯 [Interview] Clearing conversation data after payload sent')
-    this.payloadSent = true
-    this.codingProblemConversations = []
-    this.allEvaluations = []
-    this.fullConversationHistory = []
-  }
 
   async startInterview(session: InterviewSession & { resumeFromIndex?: number; skipIntro?: boolean }): Promise<void> {
     if (!this.isInitialized) {
@@ -787,8 +542,7 @@ export class InterviewOrchestrator extends EventEmitter {
     const currentState = this.stateMachine.getState()
     await this.engine.handleTranscriptBargeIn(text)
 
-    if (currentState === InterviewState.WAITING_FOR_ANSWER || currentState === InterviewState.THEORETICAL_QUESTION ||
-        currentState === InterviewState.WAITING_FOR_APPROACH || currentState === InterviewState.MONITORING_CODE) {
+    if (this.engine.shouldProcessTranscriptState(currentState)) {
       await this.engine.processTranscript(text, currentState)
     }
   }
@@ -837,68 +591,6 @@ export class InterviewOrchestrator extends EventEmitter {
     }
   }
 
-  private async speakWithPolicy(
-    text: string,
-    opts: SpeakOptions,
-    context: SpeechContext = { kind: 'system', priority: 'auto', source: 'general' }
-  ): Promise<SpeakResult> {
-    this.currentSpeechContext = context
-    try {
-      this.currentSpeakOptions = opts
-      this.softStopRequested = false
-
-      const isSecurityWarning = context.source === 'security_warning'
-
-      this.emit('speakingStarted')
-
-      if (isSecurityWarning) {
-        console.log('🎯 [Security] Speaking security warning')
-      }
-
-      // Use LiveKit agent to speak (handles TTS and echo cancellation automatically)
-      console.log(`🎯 [Speech] Speaking via LiveKit:`, text.substring(0, 50))
-      if (this.livekitAgent) {
-        // Pass allowInterruptions based on opts.interruptible
-        // If interruptible is false, pass allowInterruptions: false
-        // If interruptible is true, pass allowInterruptions: true (default)
-        const allowInterruptions = opts.interruptible !== false
-        // say() now waits for speech completion
-        await this.livekitAgent.say(text, { allowInterruptions })
-      } else {
-        console.warn('⚠️ [Speech] LiveKit agent not available, speech not played')
-      }
-
-      // Play queued security warning if main speech completed successfully
-      // Only check softStopRequested if interruptions are allowed
-      const interruptionsAllowed = opts.interruptible !== false
-      if (this.pendingSecurityWarning && (!this.softStopRequested || !interruptionsAllowed)) {
-        const warning = this.pendingSecurityWarning
-        this.pendingSecurityWarning = null
-        console.log('🔊 [Security] Playing queued security warning:', warning.substring(0, 50))
-        await this.speakSecurityWarning(warning)
-      }
-
-      // If interruptions are not allowed, ignore softStopRequested (speech completed)
-      // If interruptions are allowed, check softStopRequested
-      const completed = interruptionsAllowed ? !this.softStopRequested : true
-      const softStopped = interruptionsAllowed ? this.softStopRequested : false
-      
-      this.emit('speakingCompleted')
-      this.currentSpeakOptions = undefined
-
-      return { completed, softStopped, interrupted: false }
-
-    } catch (error) {
-      console.error('TTS error:', error)
-      this.emit('ttsError', error)
-      this.emit('speakingCompleted')
-      this.currentSpeakOptions = undefined
-      return { completed: false, softStopped: false, interrupted: true }
-    } finally {
-      this.currentSpeechContext = null
-    }
-  }
-
   private async speakQuestion(question: string): Promise<void> {
     await this.engine.speakQuestion(question)
   }
@@ -912,13 +604,7 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private async withManualResponse<T>(kind: ResponseKind, source: string, handler: () => Promise<T>): Promise<T> {
-    await this.interruptAutoSpeech(`manual ${kind} requested (${source})`)
-    this.startManualResponse(kind, source)
-    try {
-      return await handler()
-    } finally {
-      this.finishManualResponse(kind, source)
-    }
+    return await this.engine.withManualResponse(kind, source, handler)
   }
 
   private startManualResponse(kind: ResponseKind, source: string): void {
@@ -938,14 +624,7 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private async interruptAutoSpeech(reason: string): Promise<void> {
-    if (this.currentSpeechContext?.priority === 'auto' && this.livekitAgent?.getIsSpeaking()) {
-      console.log(`🎯 [Interview] Stopping auto speech due to ${reason}`)
-      try {
-        await this.livekitAgent.stop()
-      } catch (error) {
-        console.warn('⚠️ [Interview] Failed to stop auto speech:', error)
-      }
-    }
+    await this.engine.interruptAutoSpeech(reason)
   }
 
   private shouldSkipAutoResponse(trigger: string): boolean {
@@ -957,14 +636,7 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private async askForCodingApproach(): Promise<void> {
-    const problem = this.getCurrentCodingProblem()
-    if (!problem) {
-      console.log('🎯 [Interview] No coding problem to ask approach for')
-      return
-    }
-    
-    // Transition to waiting for approach (approach prompt was already spoken in speakCodingProblem)
-    await this.stateMachine.transition('approach_asked')
+    await this.engine.onAskForApproach()
   }
 
   private async handleHintProvision(): Promise<void> {
