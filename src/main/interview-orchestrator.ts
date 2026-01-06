@@ -32,7 +32,7 @@ interface SpeakResult {
   interrupted: boolean
 }
 
-type ResponseKind = 'hint' | 'clarification' | 'answer' | 'prompt' | 'system'
+type ResponseKind = 'hint' | 'clarification' | 'answer' | 'prompt' | 'system' | 'feedback'
 
 interface SpeechContext {
   kind: ResponseKind
@@ -343,7 +343,45 @@ export class InterviewOrchestrator extends EventEmitter {
       this.engine = new InterviewEngine({
         llm: this.llm,
         stateMachine: this.stateMachine,
-        codeAnalysis: this.codeAnalysis
+        codeAnalysis: this.codeAnalysis,
+        getCurrentCodingProblem: () => this.getCurrentCodingProblem(),
+        getConversationHistory: () => this.fullConversationHistory,
+        addConversationMessage: (role, text, metadata) => {
+          if (metadata.section === 'coding') {
+            this.codeAnalysis.addConversationMessage(role, text, metadata)
+          } else {
+            this.llm.addConversationMessage(role, text, metadata)
+          }
+        },
+        syncConversationHistoryFromServices: () => this.syncConversationHistoryFromServices(),
+        getCurrentSession: () => this.currentSession,
+        getFullConversationHistory: () => this.fullConversationHistory,
+        getCodingProblemConversations: () => this.codingProblemConversations,
+        getAllEvaluations: () => this.allEvaluations,
+        getProblemConversationHistory: (problemId) => this.getProblemConversationHistory(problemId),
+        userSpeaking: () => this.userSpeaking,
+        autoHintInProgress: () => this.autoHintInProgress,
+        setAutoHintInProgress: (value) => { this.autoHintInProgress = value; },
+        shouldSkipAutoResponse: (trigger) => this.shouldSkipAutoResponse(trigger),
+        withManualResponse: (kind, source, handler) => this.withManualResponse(kind, source, handler),
+        currentCode: () => this.currentCode,
+        setCurrentCode: (code) => { this.currentCode = code; },
+        speakRequested: async (text, options, context) => {
+          return await this.speakWithPolicy(text, options, context)
+        },
+        interruptAutoSpeech: (reason) => this.interruptAutoSpeech(reason),
+        isManualResponseActive: () => this.isManualResponseActive(),
+        getCurrentSpeakOptions: () => this.currentSpeakOptions,
+        setSoftStopRequested: (value) => { this.softStopRequested = value; },
+        stopLivekitAgent: async () => {
+          if (this.livekitAgent) {
+            await this.livekitAgent.stop()
+          }
+        },
+        getLivekitAgentIsSpeaking: () => this.livekitAgent?.getIsSpeaking() || false,
+        forceMoveToNextQuestion: async () => {
+          await this.engine.forceMoveToNextQuestion()
+        }
       })
 
       this.engine.on('evaluation', (evaluation: Evaluation) => {
@@ -362,7 +400,7 @@ export class InterviewOrchestrator extends EventEmitter {
         const result = await this.speakWithPolicy(hintText, {
           interruptible: true,
           bargeInPolicy: 'hard'
-        }, { kind: 'hint', priority: 'auto', source: 'monitoring_auto_hint' })
+        }, { kind: 'hint' as ResponseKind, priority: 'auto', source: 'monitoring_auto_hint' })
         if (result.completed) {
           await this.engine.onHintSpokenCompleted(hintText)
         }
@@ -909,65 +947,15 @@ export class InterviewOrchestrator extends EventEmitter {
 
   async handleTranscript(text: string): Promise<void> {
     if (!this.currentSession) {
-      console.log('🎯 [Interview] No active session, ignoring transcript')
       return
     }
 
     const currentState = this.stateMachine.getState()
-    console.log('🎯 [Interview] Received transcript:', text)
-    console.log('🎯 [Interview] Current state:', currentState)
-    console.log('🎯 [Interview] Transcript length:', text?.length || 0)
-    
-    // Skip empty or very short transcripts
-    if (!text || text.trim().length < 2) {
-      console.log('🎯 [Interview] ⚠️ Skipping empty/short transcript:', text)
-      return
-    }
+    await this.engine.handleTranscriptBargeIn(text)
 
-    // Ignore transcripts that arrive during auto-hint generation (they're likely from speech that started before mic was paused)
-    if (this.autoHintInProgress) {
-      console.log('🎯 [Interview] ⚠️ Ignoring transcript during auto-hint generation:', text)
-      return
-    }
-
-    try {
-      // Implement barge-in: stop TTS if candidate starts speaking
-      // LiveKit handles barge-in automatically via VAD, but we can still stop explicitly
-      // Only stop if interruptions are allowed AND user has been speaking for at least 2 seconds
-      // The agent's stop() method now handles the 2-second check internally
-      if (this.livekitAgent?.getIsSpeaking() && this.userSpeaking) {
-        console.log('🎯 [Interview] 🛑 Barge-in detected (user has been speaking)')
-        if (this.currentSpeakOptions) {
-          // Check if interruptions are allowed
-          if (this.currentSpeakOptions.interruptible === false) {
-            console.log('🎯 [Interview] Interruptions not allowed, ignoring barge-in')
-            // Don't stop, but still clear silence timer since user is speaking
-            this.stateMachine.clearSilenceTimer()
-          } else if (this.currentSpeakOptions.bargeInPolicy === 'soft') {
-            console.log('🎯 [Interview] Soft stop requested (finish current sentence)')
-            this.softStopRequested = true
-            this.stateMachine.clearSilenceTimer()
-          } else {
-            console.log('🎯 [Interview] Hard stop requested (stop immediately)')
-            // Agent's stop() method will check if user has been speaking for 2+ seconds
-            await this.livekitAgent.stop()
-            this.stateMachine.clearSilenceTimer()
-          }
-        } else {
-          // Default to hard stop if no options set (interruptions allowed by default)
-          // Agent's stop() method will check if user has been speaking for 2+ seconds
-          await this.livekitAgent.stop()
-          this.stateMachine.clearSilenceTimer()
-        }
-      }
-      
-      if (currentState === InterviewState.WAITING_FOR_ANSWER || currentState === InterviewState.THEORETICAL_QUESTION || 
-          currentState === InterviewState.WAITING_FOR_APPROACH || currentState === InterviewState.MONITORING_CODE) {
-        await this.engine.processTranscript(text, currentState)
-      } else {
-        console.log('🎯 [Interview] ⚠️ Not in listening state, ignoring transcript. Current state:', currentState)
-      }
-    } finally {
+    if (currentState === InterviewState.WAITING_FOR_ANSWER || currentState === InterviewState.THEORETICAL_QUESTION ||
+        currentState === InterviewState.WAITING_FOR_APPROACH || currentState === InterviewState.MONITORING_CODE) {
+      await this.engine.processTranscript(text, currentState)
     }
   }
 
@@ -978,36 +966,7 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   async analyzeCode(codeData: { code: string, problemId: string, timestamp: number }): Promise<any> {
-    if (!this.currentSession) {
-      throw new Error('No active interview session')
-    }
-
-    this.currentCode = codeData.code
-    this.engine.setCurrentCode(codeData.code)
-
-    const problem = this.codeAnalysis.getCurrentProblem() || this.currentSession?.codingProblems?.find(p => p.id === codeData.problemId) || null
-    if (!problem) {
-      throw new Error('No coding problem context')
-    }
-
-    const analysis = await this.engine.analyzeCode(codeData, problem)
-
-    if (this.userSpeaking) {
-      return analysis
-    }
-
-    this.autoHintInProgress = true
-    try {
-      if (this.shouldSkipAutoResponse('monitoring_auto_hint')) {
-        return analysis
-      }
-    } finally {
-      this.autoHintInProgress = false
-    }
-
-    this.engine.resetIntervalTracking()
-
-    return analysis
+    return await this.engine.analyzeCodeWithBusinessLogic(codeData)
   }
 
   async submitCodingSolution(
@@ -1508,289 +1467,14 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private shouldSkipAutoResponse(trigger: string): boolean {
-    if (this.isManualResponseActive()) {
-      console.log(`🎯 [Interview] Skipping auto response (${trigger}) - manual ${this.manualResponseInFlight?.kind} in progress`)
-      return true
-    }
-    return false
-  }
-
-  private getSilenceTimerDuration(state: InterviewState): number {
-    switch (state) {
-      case InterviewState.MONITORING_CODE:
-        return 60000
-      case InterviewState.THEORETICAL_QUESTION:
-      case InterviewState.WAITING_FOR_ANSWER:
-        return 40000
-      case InterviewState.WAITING_FOR_APPROACH:
-      default:
-        return 120000
-    }
+    return this.engine.shouldSkipAutoResponse(trigger)
   }
 
   private async handleSilenceTimeout(): Promise<void> {
-    const currentState = this.stateMachine.getState()
-    console.log('🎯 [Interview] Silence timeout (2 mins) detected in state:', currentState)
-    
-    if (this.isManualResponseActive()) {
-      const delay = this.getSilenceTimerDuration(currentState)
-      console.log('🎯 [Interview] Manual response active - deferring silence handler for', delay, 'ms')
-      this.stateMachine.startSilenceTimer(delay)
-      return
-    }
-    
-    // Handle silence timeout during coding approach waiting
-    if (currentState === InterviewState.WAITING_FOR_APPROACH) {
-      const approachSpoken = this.stateMachine.hasCodingApproachSpoken()
-      const approachPromptCount = this.stateMachine.getApproachPromptCount()
-      const codingHintCount = this.stateMachine.getCodingHintCount()
-      const moveOnPromptGiven = this.stateMachine.hasCodingMoveOnPromptGiven()
-      
-      console.log('🎯 [Interview] Approach status - spoken:', approachSpoken, 'prompts:', approachPromptCount, 'hints:', codingHintCount, 'move-on:', moveOnPromptGiven)
-      
-      // If approach already spoken, don't prompt - just monitor
-      if (approachSpoken) {
-        console.log('🎯 [Interview] Approach already spoken, just monitoring')
-        this.stateMachine.startSilenceTimer(120000) // Continue monitoring
-        return
-      }
-      
-      // First silence: Ask to explain approach (only once)
-      if (approachPromptCount === 0) {
-        this.stateMachine.incrementApproachPromptCount()
-        console.log('🎯 [Interview] First silence - prompting for approach (1 time only)')
-        
-        const reminder = "Please explain your approach to solving this problem, or feel free to ask any clarifying questions."
-        
-        // IMPORTANT: Record approach reminder in conversation history
-        const problem = this.getCurrentCodingProblem()
-        if (problem) {
-          this.codeAnalysis.addConversationMessage('assistant', reminder, {
-            type: 'feedback',
-            codingProblemId: problem.id,
-            section: 'coding'
-          } as any)
-          this.syncConversationHistoryFromServices()
-        }
-        
-        if (this.shouldSkipAutoResponse('approach_silence_prompt')) {
-          this.stateMachine.startSilenceTimer(120000)
-          return
-        }
-        
-        await this.speakWithPolicy(
-          reminder,
-          {
-            interruptible: true,
-            bargeInPolicy: 'hard'
-          },
-          { kind: 'prompt', priority: 'auto', source: 'approach_silence_prompt' }
-        )
-        // Restart the 2-minute timer
-        this.stateMachine.startSilenceTimer(120000)
-        return
-      }
-      
-      // Second/Third silence: Provide escalating hints (max 2)
-      if (codingHintCount < 2) {
-        const hintLevel = (codingHintCount + 1) as 1 | 2
-        console.log('🎯 [Interview] Silence detected - providing escalating hint level', hintLevel)
-        
-        // Pause mic immediately when we decide to provide hint (before any checks)
-        // LiveKit handles audio automatically
-        this.autoHintInProgress = true
-        try {
-          // Increment hint count
-          this.stateMachine.incrementCodingHintCount()
-          
-          // Provide escalating hint through code analysis service
-          const problem = this.getCurrentCodingProblem()
-          if (problem) {
-            // For approach phase, use approach hint (no code context)
-            // For monitoring phase, use regular hint (with code context)
-            const currentState = this.stateMachine.getState()
-            const isApproachPhase = currentState === InterviewState.WAITING_FOR_APPROACH
-            const hint = isApproachPhase 
-              ? await this.codeAnalysis.getApproachHint(problem, hintLevel)
-              : await this.codeAnalysis.getHint(problem, this.currentCode || this.stateMachine.getPreviousCode() || '', hintLevel)
-            if (this.shouldSkipAutoResponse('silence_hint')) {
-              this.stateMachine.startSilenceTimer(120000)
-              return
-            }
-            // Add automatic timeout hint to conversation history with metadata
-            // Note: addHint doesn't support metadata, so we'll add it directly
-            this.codeAnalysis.addConversationMessage('assistant', hint, {
-              type: 'hint',
-              hintLevel: hintLevel,
-              // Mark as automatic timeout hint (using any to allow additional metadata)
-              isAutomatic: true,
-              source: 'timeout'
-            } as any)
-            // Sync to centralized history
-            this.syncConversationHistoryFromServices()
-            
-            await this.speakWithPolicy(
-              hint,
-              {
-                interruptible: true,
-                bargeInPolicy: 'hard'
-              },
-              { kind: 'hint', priority: 'auto', source: 'approach_silence_hint' }
-            )
-            this.emit('hintProvided', hint)
-          }
-        } finally {
-          this.autoHintInProgress = false
-          // LiveKit handles audio automatically
-        }
-        
-        // Restart the 2-minute timer
-        this.stateMachine.startSilenceTimer(120000)
-        return
-      }
-      
-      // After 2 hints exhausted: Ask to move on (only once)
-      if (!moveOnPromptGiven) {
-        console.log('🎯 [Interview] Hints exhausted, asking if want to move on')
-        this.stateMachine.setCodingMoveOnPromptGiven(true)
-        
-        const moveOnPrompt = "Would you like to move on to the next question?"
-        
-        // IMPORTANT: Record move-on prompt in conversation history
-        const problem = this.getCurrentCodingProblem()
-        if (problem) {
-          this.codeAnalysis.addConversationMessage('assistant', moveOnPrompt, {
-            type: 'feedback',
-            codingProblemId: problem.id,
-            section: 'coding'
-          } as any)
-          this.syncConversationHistoryFromServices()
-        }
-        
-        if (this.shouldSkipAutoResponse('approach_move_on_prompt')) {
-          this.stateMachine.startSilenceTimer(120000)
-          return
-        }
-        
-        await this.speakWithPolicy(
-          moveOnPrompt,
-          {
-            interruptible: true,
-            bargeInPolicy: 'hard'
-          },
-          { kind: 'prompt', priority: 'auto', source: 'approach_move_on_prompt' }
-        )
-        this.stateMachine.startSilenceTimer(120000)
-        return
-      }
-      
-      // After move-on prompt: just wait silently until timer expires
-      console.log('🎯 [Interview] Move-on already prompted, waiting silently')
-      this.stateMachine.startSilenceTimer(120000) // Continue monitoring silently
-      return
-    }
-    
-    // Handle silence timeout during code monitoring
-    // Removed automatic hint cycle during code monitoring
-    
-    // Handle silence timeout for theoretical questions (existing logic)
-    if (currentState === InterviewState.THEORETICAL_QUESTION || currentState === InterviewState.WAITING_FOR_ANSWER) {
-      const currentQuestion = this.llm.getCurrentQuestion()
-      if (currentQuestion) {
-        // Use unified hint event counter for silence too
-        const hintEvents = this.stateMachine.incrementHintEventCount()
-        console.log('🎯 [Interview] Combined hint event count (silence):', hintEvents)
-        
-        try {
-          if (hintEvents === 1) {
-            // First silence: provide a hint (automatic timeout hint)
-            const hintLevel = this.stateMachine.getHintLevel()
-            console.log('🎯 [Interview] First hint event (silence) - providing automatic timeout hint at level:', hintLevel)
-            // Pause mic immediately when we decide to provide hint (before LLM work)
-            // LiveKit handles audio automatically
-            this.autoHintInProgress = true
-            try {
-              const hintText = await this.llm.generateTheoreticalHint(currentQuestion, hintLevel)
-            
-              if (this.shouldSkipAutoResponse('theoretical_silence_hint')) {
-                this.stateMachine.startSilenceTimer(40000)
-                return
-              }
-              
-              // IMPORTANT: Add automatic timeout hint to conversation history with metadata
-              this.llm.addConversationMessage('assistant', hintText, {
-                type: 'hint',
-                questionId: currentQuestion.id,
-                hintLevel: hintLevel,
-                section: 'theoretical',
-                // Mark as automatic timeout hint (using any to allow additional metadata)
-                isAutomatic: true,
-                source: 'timeout'
-              } as any)
-              // Sync to centralized history
-              this.syncConversationHistoryFromServices()
-              
-              const result = await this.speakWithPolicy(
-                hintText,
-                {
-                  interruptible: true,
-                  bargeInPolicy: 'hard'
-                },
-                { kind: 'hint', priority: 'auto', source: 'theoretical_silence_hint' }
-              )
-              if (result.completed) {
-                this.emit('hintProvided', hintText)
-                // Increment hint level for potential subsequent hint
-                this.stateMachine.incrementHintLevel()
-                // Restart timer for potential second silence
-                this.stateMachine.startSilenceTimer(40000)
-              }
-            } finally {
-              this.autoHintInProgress = false
-              // LiveKit handles audio automatically
-            }
-          } else {
-            // Second hint-related event: provide answer and move on (no second hint)
-            const answerText = currentQuestion.expectedAnswer || 'Here is the concise answer based on best practices.'
-            const finalPrompt = `Here's the answer: ${answerText}. Let's move to the next question.`
-            console.log('🎯 [Interview] Second hint event (silence) - providing answer and moving to next question')
-            
-            if (this.shouldSkipAutoResponse('theoretical_silence_answer')) {
-              this.stateMachine.startSilenceTimer(40000)
-              return
-            }
-            
-            // IMPORTANT: Record the answer in conversation history
-            this.llm.addConversationMessage('assistant', finalPrompt, {
-              type: 'answer',
-              questionId: currentQuestion.id,
-              section: 'theoretical',
-              hintLevel: 2
-            } as any)
-            // Sync to centralized history
-            this.syncConversationHistoryFromServices()
-            
-            await this.speakWithPolicy(
-              finalPrompt,
-              {
-                interruptible: false,
-                bargeInPolicy: 'soft'
-              },
-              { kind: 'answer', priority: 'auto', source: 'theoretical_silence_answer' }
-            )
-            // Do not restart silence timer; progress to next
-            await this.engine.forceMoveToNextQuestion()
-          }
-        } catch (error) {
-          console.error('Error providing automatic hint:', error)
-        }
-      }
-    }
+    await this.engine.handleSilenceTimeout()
   }
 
   private async askForCodingApproach(): Promise<void> {
-    // Approach prompt is now included in the presentCodingProblem handler, so just transition
-    // This method is kept for state machine compatibility but doesn't speak anything
     const problem = this.getCurrentCodingProblem()
     if (!problem) {
       console.log('🎯 [Interview] No coding problem to ask approach for')
@@ -1802,49 +1486,7 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private async handleHintProvision(): Promise<void> {
-    // LiveKit handles audio automatically
-    this.autoHintInProgress = true
-    try {
-      const last = this.codeAnalysis.getObservations().slice(-1)[0]
-      const problem = this.codeAnalysis.getCurrentProblem() || (this.currentSession?.codingProblems?.[0] ?? null)
-      // Only provide hints if stuck
-      if (last && problem && last.analysis.isStuck) {
-        if (this.shouldSkipAutoResponse('analysis_observation_hint')) {
-          return
-        }
-        console.log('🎯 [Interview] Providing hint - candidate is stuck')
-        const currentCode = this.currentCode || last.code || ''
-        const hintText = await this.codeAnalysis.getHint(problem, currentCode, 1) // Use level 1 hint
-        // Add automatic stuck detection hint to conversation history with metadata
-        // Note: addHint doesn't support metadata, so we'll add it directly
-        this.codeAnalysis.addConversationMessage('assistant', hintText, {
-          type: 'hint',
-          hintLevel: 1,
-          // Mark as automatic stuck detection hint (using any to allow additional metadata)
-          isAutomatic: true,
-          source: 'stuck_detection'
-        } as any)
-        // Sync to centralized history
-        this.syncConversationHistoryFromServices()
-        
-        // Coding hints are interruptible with hard stop
-        const result = await this.speakWithPolicy(
-          hintText,
-          {
-            interruptible: true,
-            bargeInPolicy: 'hard'
-          },
-          { kind: 'hint', priority: 'auto', source: 'analysis_observation_hint' }
-        )
-        if (result.completed) {
-          await this.stateMachine.transition('hint_provided')
-          this.emit('hintProvided', hintText)
-        }
-      }
-    } finally {
-      this.autoHintInProgress = false
-      // LiveKit handles audio automatically
-    }
+    await this.engine.handleHintProvision()
   }
 
   private async speakWrapUp(_data: any): Promise<void> {
@@ -1859,345 +1501,12 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   private async handleInterviewCompletion(): Promise<void> {
-    // Store session reference early to prevent null access
-    const session = this.currentSession
-    if (!session) {
-      console.error('❌ [InterviewOrchestrator] Cannot handle interview completion: currentSession is null')
-      return
+    if (this.livekitAgent) {
+      await this.livekitAgent.disconnect()
     }
-    
-    try {
-      session.endTime = new Date()
-      session.status = 'completed'
-      
-      console.log('📊 [InterviewOrchestrator] Handling interview completion for session:', session.id)
-      
-      // Stop services
-      if (this.livekitAgent) {
-        await this.livekitAgent.disconnect()
-      }
-      
-      // Sync conversation history from services one final time before creating payload
-      this.syncConversationHistoryFromServices()
-      
-      // Use centralized conversation history instead of aggregating from services
-      console.log('📊 [InterviewOrchestrator] Using centralized conversation history')
-      console.log('📊 [InterviewOrchestrator] Full conversation history length:', this.fullConversationHistory.length)
-      console.log('📊 [InterviewOrchestrator] Current coding conversations BEFORE check:', this.codingProblemConversations.length)
-      
-      // If conversations were cleared (shouldn't happen, but safeguard), restore from centralized history
-      if (this.codingProblemConversations.length === 0 && this.fullConversationHistory.length > 0) {
-        console.warn('⚠️ [InterviewOrchestrator] Conversations were cleared! Restoring from centralized history...')
-        // Get all unique problem IDs from centralized history
-        const problemIds = [...new Set(this.fullConversationHistory
-          .filter(m => m.metadata.codingProblemId)
-          .map(m => m.metadata.codingProblemId!))]
-        
-        console.log('📊 [InterviewOrchestrator] Found', problemIds.length, 'problems in centralized history:', problemIds)
-        
-        // Restore conversations for each problem
-        for (const problemId of problemIds) {
-          const problem = session.codingProblems?.find(p => p.id === problemId)
-          if (problem) {
-            const problemHistory = this.getProblemConversationHistory(problemId)
-            if (problemHistory.length > 0) {
-              const problemConversation = {
-                problemId,
-                problem,
-                conversation: problemHistory,
-                finalCode: undefined,
-                timeComplexity: undefined,
-                spaceComplexity: undefined,
-                codeAnalysisHistory: [],
-                submittedAt: new Date(),
-                evaluation: undefined
-              }
-              this.codingProblemConversations.push(problemConversation)
-              console.log('📊 [InterviewOrchestrator] Restored conversation for problem:', problemId, 'with', problemHistory.length, 'messages')
-            }
-          }
-        }
-      }
-      
-      // If evaluations were cleared (shouldn't happen, but safeguard), restore from centralized history
-      if (this.allEvaluations.length === 0 && this.fullConversationHistory.length > 0) {
-        console.warn('⚠️ [InterviewOrchestrator] Evaluations were cleared! Restoring from centralized history...')
-        
-        // Extract evaluations from conversation messages that have evaluation metadata
-        const theoreticalMessages = this.fullConversationHistory.filter(
-          m => m.metadata.section === 'theoretical' && m.metadata.evaluation
-        )
-        
-        console.log('📊 [InterviewOrchestrator] Found', theoreticalMessages.length, 'messages with evaluation metadata')
-        
-        // Reconstruct evaluations from conversation history
-        for (const msg of theoreticalMessages) {
-          if (msg.metadata.evaluation && msg.metadata.questionId) {
-            // Find the user's answer message that preceded this evaluation
-            // Look for the most recent user message with the same questionId before this evaluation
-            const questionId = msg.metadata.questionId
-            const evaluationTimestamp = msg.timestamp
-            
-            // Find user answer message for this question (should be before the evaluation)
-            const userAnswer = this.fullConversationHistory
-              .filter(m => 
-                m.metadata.questionId === questionId &&
-                m.role === 'user' &&
-                m.timestamp < evaluationTimestamp &&
-                (m.metadata.type === 'answer' || m.metadata.type === 'hint' || m.metadata.type === 'clarification')
-              )
-              .sort((a, b) => b.timestamp - a.timestamp)[0] // Get most recent before evaluation
-            
-            if (userAnswer && msg.metadata.evaluation) {
-              // Try to find follow-up question if needsFollowUp is true
-              let followUpQuestion: string | undefined = undefined
-              if (msg.metadata.evaluation.needsFollowUp) {
-                // Look for follow-up question message after this evaluation
-                const followUpMsg = this.fullConversationHistory
-                  .filter(m =>
-                    m.metadata.questionId === questionId &&
-                    m.role === 'assistant' &&
-                    m.timestamp > evaluationTimestamp &&
-                    m.metadata.type === 'followup'
-                  )
-                  .sort((a, b) => a.timestamp - b.timestamp)[0] // Get first follow-up after evaluation
-                
-                if (followUpMsg) {
-                  followUpQuestion = followUpMsg.content
-                }
-              }
-              
-              const evaluation: Evaluation = {
-                questionId: questionId,
-                candidateAnswer: userAnswer.content,
-                keyPointsCovered: msg.metadata.evaluation.keyPointsCovered || [],
-                score: msg.metadata.evaluation.score || 0,
-                needsFollowUp: msg.metadata.evaluation.needsFollowUp || false,
-                followUpQuestion: followUpQuestion,
-                feedback: msg.content // Use the evaluation message content as feedback
-              }
-              
-              // Check if this evaluation already exists (avoid duplicates)
-              const exists = this.allEvaluations.some(
-                e => e.questionId === evaluation.questionId && 
-                     e.candidateAnswer === evaluation.candidateAnswer &&
-                     Math.abs(e.score - evaluation.score) < 0.01
-              )
-              
-              if (!exists) {
-                this.allEvaluations.push(evaluation)
-                console.log('📊 [InterviewOrchestrator] Restored evaluation for question:', questionId, 'Score:', evaluation.score)
-              }
-            }
-          }
-        }
-        
-        console.log('📊 [InterviewOrchestrator] Restored', this.allEvaluations.length, 'evaluations from centralized history')
-      }
-      
-      this.codingProblemConversations.forEach((conv, idx) => {
-        console.log(`📊 [InterviewOrchestrator]   Existing conversation ${idx + 1}: Problem ${conv.problemId}, ${conv.conversation.length} messages`)
-      })
-      
-      // If there's a current coding problem that hasn't been stored yet, add it
-      const currentProblem = this.codeAnalysis.getCurrentProblem()
-      console.log('📊 [InterviewOrchestrator] Checking for unstored coding problem:', currentProblem?.id)
-      console.log('📊 [InterviewOrchestrator] Current coding conversations:', this.codingProblemConversations.length)
-      
-      if (currentProblem) {
-        const existingIndex = this.codingProblemConversations.findIndex(
-          c => c.problemId === currentProblem.id
-        )
-        console.log('📊 [InterviewOrchestrator] Existing index for problem', currentProblem.id, ':', existingIndex)
-        
-        if (existingIndex === -1) {
-          console.log('📊 [InterviewOrchestrator] Problem not found in conversations, storing it now')
-          const problemConversationHistory = this.getProblemConversationHistory(currentProblem.id)
-          console.log('📊 [InterviewOrchestrator] Problem conversation history from centralized store:', problemConversationHistory.length)
-          
-          const finalSubmission = this.codeAnalysis.getFinalSubmission()
-          const problemConversation = {
-            problemId: currentProblem.id,
-            problem: currentProblem,
-            conversation: problemConversationHistory, // Use centralized history
-            finalCode: finalSubmission.code,
-            timeComplexity: finalSubmission.timeComplexity,
-            spaceComplexity: finalSubmission.spaceComplexity,
-            codeAnalysisHistory: this.codeAnalysis.getObservations().map(obs => obs.analysis),
-            submittedAt: new Date(),
-            evaluation: undefined
-          }
-          this.codingProblemConversations.push(problemConversation)
-          console.log('📊 [InterviewOrchestrator] Stored missing problem conversation, total now:', this.codingProblemConversations.length)
-        } else {
-          console.log('📊 [InterviewOrchestrator] Problem already stored at index:', existingIndex)
-        }
-      } else {
-        console.log('📊 [InterviewOrchestrator] No current coding problem found')
-      }
-      
-      // Get theoretical conversations from centralized history
-      const theoreticalConversations = session.questions.map(q => 
-        this.getQuestionConversationHistory(q.id)
-      ).flat()
-      
-      // Use full centralized history for the payload (instead of aggregating from services)
-      console.log('📊 [InterviewOrchestrator] Creating final evaluation payload using centralized history...')
-      console.log('📊 [InterviewOrchestrator] Session ID:', session.id)
-      console.log('📊 [InterviewOrchestrator] Full centralized history:', this.fullConversationHistory.length, 'messages')
-      console.log('📊 [InterviewOrchestrator] Theoretical conversations:', theoreticalConversations.length, 'messages')
-      console.log('📊 [InterviewOrchestrator] Coding conversations count:', this.codingProblemConversations.length)
-      this.codingProblemConversations.forEach((conv, idx) => {
-        console.log(`📊 [InterviewOrchestrator]   Conversation ${idx + 1}: Problem ID ${conv.problemId}, ${conv.conversation.length} messages`)
-      })
-      console.log('📊 [InterviewOrchestrator] Evaluations count:', this.allEvaluations.length)
-      
-      // Use centralized history for final payload
-      // Pass the complete conversation history directly - the function will extract what it needs
-      const finalEvaluationPayload = createFinalEvaluationPayload(
-        session,
-        this.fullConversationHistory, // Complete conversation history (theoretical + coding)
-        this.codingProblemConversations, // Structured metadata per problem (finalCode, timeComplexity, etc.)
-        this.allEvaluations
-      )
-      
-      console.log('📊 [InterviewOrchestrator] Final evaluation payload created:')
-      console.log('📊 [InterviewOrchestrator] - Session ID:', finalEvaluationPayload.sessionId)
-      console.log('📊 [InterviewOrchestrator] - Candidate ID:', finalEvaluationPayload.candidateId)
-      console.log('📊 [InterviewOrchestrator] - Interview Link ID:', finalEvaluationPayload.interviewLinkId)
-      console.log('📊 [InterviewOrchestrator] - Full conversation history length:', finalEvaluationPayload.fullConversationHistory.length)
-      console.log('📊 [InterviewOrchestrator] - Theoretical questions:', finalEvaluationPayload.theoreticalSection.totalQuestions)
-      console.log('📊 [InterviewOrchestrator] - Coding problems:', finalEvaluationPayload.codingSection.totalProblems)
-      console.log('📊 [InterviewOrchestrator] - Total score:', finalEvaluationPayload.totalScore)
-      
-      // Log conversation history details
-      if (finalEvaluationPayload.fullConversationHistory.length > 0) {
-        console.log('📊 [InterviewOrchestrator] Full conversation history breakdown:')
-        finalEvaluationPayload.fullConversationHistory.forEach((msg, idx) => {
-          console.log(`  [${idx + 1}] ${msg.role} (${msg.metadata.type}) - ${msg.content.substring(0, 80)}...`)
-          console.log(`      Timestamp: ${new Date(msg.timestamp).toISOString()}`)
-          console.log(`      Section: ${msg.metadata.section || 'N/A'}, QuestionID: ${msg.metadata.questionId || 'N/A'}`)
-        })
-      } else {
-        console.warn('⚠️ [InterviewOrchestrator] Full conversation history is empty!')
-      }
-      
-      // Log theoretical section conversations
-      if (finalEvaluationPayload.theoreticalSection.conversations.length > 0) {
-        console.log('📊 [InterviewOrchestrator] Theoretical conversations:')
-        finalEvaluationPayload.theoreticalSection.conversations.forEach((conv, idx) => {
-          console.log(`  Question ${idx + 1} (${conv.questionId}): ${conv.conversation.length} messages`)
-        })
-      }
-      
-      // Log coding section conversations
-      if (finalEvaluationPayload.codingSection.conversations.length > 0) {
-        console.log('📊 [InterviewOrchestrator] Coding conversations:')
-        finalEvaluationPayload.codingSection.conversations.forEach((conv, idx) => {
-          console.log(`  Problem ${idx + 1} (${conv.problemId}): ${conv.conversation.length} messages`)
-          console.log(`    Final code: ${conv.finalCode ? 'Yes' : 'No'}, Code length: ${conv.finalCode?.length || 0}`)
-        })
-      }
-      
-      // Log FULL conversation history in chronological order (use orchestrator's history directly)
-      console.log('\n📝 ========== FULL CONVERSATION HISTORY ==========')
-      console.log(`📝 Total messages: ${this.fullConversationHistory.length}`)
-      console.log('📝 Conversation timeline:\n')
-      
-      this.fullConversationHistory.forEach((msg, idx) => {
-        const time = new Date(msg.timestamp).toISOString()
-        const roleIcon = msg.role === 'user' ? '👤' : msg.role === 'assistant' ? '🤖' : '⚙️'
-        const typeLabel = msg.metadata.type.toUpperCase()
-        const section = msg.metadata.section ? `[${msg.metadata.section}]` : ''
-        const questionId = msg.metadata.questionId ? `Q:${msg.metadata.questionId}` : ''
-        const problemId = msg.metadata.codingProblemId ? `P:${msg.metadata.codingProblemId}` : ''
-        
-        console.log(`${idx + 1}. ${roleIcon} [${typeLabel}] ${section} ${questionId} ${problemId}`)
-        console.log(`   Time: ${time}`)
-        console.log(`   Content: ${msg.content}`)
-        
-        // Log code submission details if present
-        if (msg.metadata.type === 'code_submission') {
-          const metadata = msg.metadata as any
-          if (metadata.code) {
-            console.log(`   Code:\n\`\`\`\n${metadata.code}\n\`\`\``)
-          }
-          
-          // Get TC/SC from message metadata first
-          let timeComplexity = metadata.timeComplexity
-          let spaceComplexity = metadata.spaceComplexity
-          
-          // If missing from metadata, try to get from stored conversation
-          if ((!timeComplexity || !spaceComplexity) && msg.metadata.codingProblemId) {
-            const storedConversation = this.codingProblemConversations.find(
-              conv => conv.problemId === msg.metadata.codingProblemId
-            )
-            if (storedConversation) {
-              if (!timeComplexity && storedConversation.timeComplexity) {
-                timeComplexity = storedConversation.timeComplexity
-                console.log(`   🔧 [Log] Retrieved Time Complexity from stored conversation: ${timeComplexity}`)
-              }
-              if (!spaceComplexity && storedConversation.spaceComplexity) {
-                spaceComplexity = storedConversation.spaceComplexity
-                console.log(`   🔧 [Log] Retrieved Space Complexity from stored conversation: ${spaceComplexity}`)
-              }
-            }
-          }
-          
-          if (timeComplexity) {
-            console.log(`   Time Complexity: ${timeComplexity}`)
-          }
-          if (spaceComplexity) {
-            console.log(`   Space Complexity: ${spaceComplexity}`)
-          }
-        }
-        
-        // Log additional metadata if present
-        if (msg.metadata.evaluation) {
-          console.log(`   Evaluation: Score=${msg.metadata.evaluation.score}, KeyPoints=${msg.metadata.evaluation.keyPointsCovered?.length || 0}`)
-        }
-        if (msg.metadata.hintLevel) {
-          console.log(`   Hint Level: ${msg.metadata.hintLevel}`)
-        }
-        // Log automatic hint source if present
-        if ((msg.metadata as any).isAutomatic) {
-          console.log(`   Source: ${(msg.metadata as any).source || 'automatic'} (auto timeout hint)`)
-        }
-        console.log('')
-      })
-      
-      console.log('📝 ========== END CONVERSATION HISTORY ==========\n')
-      
-      // Store payload in session for access
-      ;(session as any).finalEvaluationPayload = finalEvaluationPayload
-      
-      // Emit both the session and the payload
-      console.log('📊 [InterviewOrchestrator] Emitting interviewCompleted event')
-      this.emit('interviewCompleted', session)
-      
-      console.log('📊 [InterviewOrchestrator] Emitting finalEvaluationReady event with payload')
-      this.emit('finalEvaluationReady', finalEvaluationPayload)
-      console.log('✅ [InterviewOrchestrator] Final evaluation payload emitted successfully')
-      
-      this.cleanupListeners()
-      
-      // IMPORTANT: Don't clear session here - it clears codingProblemConversations
-      // The session will be cleared after the payload is successfully sent to the server
-      // Clearing here would cause the first problem's conversation to be lost
-      console.log('📊 [InterviewOrchestrator] Session data preserved until payload is sent')
-      // Only clear non-critical state, keep conversations
-      this.currentSession = null
-      this.stateMachine.reset()
-      this.llm.reset()
-      // Keep codingProblemConversations, allEvaluations, and fullConversationHistory
-      // They will be cleared after successful payload submission
-    } catch (error) {
-      console.error('❌ [InterviewOrchestrator] Error in handleInterviewCompletion:', error)
-      console.error('❌ [InterviewOrchestrator] Error stack:', error instanceof Error ? error.stack : String(error))
-      throw error
-    }
+    await this.engine.handleInterviewCompletion()
   }
-  
+
   // Get final evaluation payload (can be called after completion)
   getFinalEvaluationPayload(): FinalEvaluationPayload | null {
     if (this.currentSession && (this.currentSession as any).finalEvaluationPayload) {

@@ -12,11 +12,12 @@ export interface SpeakOptions {
 }
 
 export type SpeechContext =
-  | { kind: 'prompt'; priority: 'auto' | 'manual'; source: 'theoretical_question' | 'follow_up' }
+  | { kind: 'prompt'; priority: 'auto' | 'manual'; source: 'theoretical_question' | 'follow_up' | string }
   | { kind: 'hint'; priority: 'auto' | 'manual'; source: string }
   | { kind: 'clarification'; priority: 'auto' | 'manual'; source: string }
   | { kind: 'feedback'; priority: 'auto' | 'manual'; source: string }
   | { kind: 'system'; priority: 'auto' | 'manual'; source: string }
+  | { kind: 'answer'; priority: 'auto' | 'manual'; source: string }
 
 export interface SpeakRequest {
   text: string
@@ -28,12 +29,37 @@ export interface InterviewSessionDeps {
   llm: LLMService
   stateMachine: InterviewStateMachine
   codeAnalysis: CodeAnalysisService
+  getCurrentCodingProblem: () => CodingProblem | null
+  getConversationHistory: () => ConversationMessage[]
+  addConversationMessage: (role: 'user' | 'assistant' | 'system', text: string, metadata: any) => void
+  syncConversationHistoryFromServices: () => void
+  getCurrentSession: () => any
+  getFullConversationHistory: () => ConversationMessage[]
+  getCodingProblemConversations: () => any[]
+  getAllEvaluations: () => Evaluation[]
+  getProblemConversationHistory: (problemId: string) => ConversationMessage[]
+  userSpeaking: () => boolean
+  autoHintInProgress: () => boolean
+  setAutoHintInProgress: (value: boolean) => void
+  shouldSkipAutoResponse: (trigger: string) => boolean
+  withManualResponse: <T>(kind: any, source: string, handler: () => Promise<T>) => Promise<T>
+  currentCode: () => string
+  setCurrentCode: (code: string) => void
+  speakRequested: (text: string, options: SpeakOptions, context: SpeechContext) => Promise<any>
+  interruptAutoSpeech: (reason: string) => Promise<void>
+  isManualResponseActive: () => boolean
+  getCurrentSpeakOptions: () => SpeakOptions | undefined
+  setSoftStopRequested: (value: boolean) => void
+  stopLivekitAgent: () => Promise<void>
+  getLivekitAgentIsSpeaking: () => boolean
+  forceMoveToNextQuestion: () => Promise<void>
 }
 
 export class InterviewEngine extends EventEmitter {
   private llm: LLMService
   private stateMachine: InterviewStateMachine
   private codeAnalysis: CodeAnalysisService
+  private deps: InterviewSessionDeps
 
   private fullConversationHistory: ConversationMessage[] = []
   private allEvaluations: Evaluation[] = []
@@ -42,12 +68,14 @@ export class InterviewEngine extends EventEmitter {
   private currentCode: string = ''
   private currentIntervalHasHintClarification: boolean = false
   private currentIntervalHasSubstantialSpeech: boolean = false
+  private manualResponseInFlight: { kind: any; source: string; startedAt: number } | null = null
 
   constructor(deps: InterviewSessionDeps) {
     super()
     this.llm = deps.llm
     this.stateMachine = deps.stateMachine
     this.codeAnalysis = deps.codeAnalysis
+    this.deps = deps
   }
 
   async handleEvaluation(evaluation: Evaluation): Promise<void> {
@@ -1036,6 +1064,465 @@ export class InterviewEngine extends EventEmitter {
       this.fullConversationHistory = history
       this.fullConversationHistory.sort((a, b) => a.timestamp - b.timestamp)
     } catch {
+    }
+  }
+
+  getSilenceTimerDuration(state: InterviewState): number {
+    switch (state) {
+      case InterviewState.MONITORING_CODE:
+        return 60000
+      case InterviewState.THEORETICAL_QUESTION:
+      case InterviewState.WAITING_FOR_ANSWER:
+        return 40000
+      case InterviewState.WAITING_FOR_APPROACH:
+      default:
+        return 120000
+    }
+  }
+
+  shouldSkipAutoResponse(trigger: string): boolean {
+    if (this.deps.isManualResponseActive()) {
+      return true
+    }
+    return false
+  }
+
+  private startManualResponse(kind: any, source: string): void {
+    this.manualResponseInFlight = { kind, source, startedAt: Date.now() }
+  }
+
+  private finishManualResponse(kind: any, source: string): void {
+    if (this.manualResponseInFlight && this.manualResponseInFlight.kind === kind && this.manualResponseInFlight.source === source) {
+      this.manualResponseInFlight = null
+    }
+  }
+
+  async withManualResponse<T>(kind: any, source: string, handler: () => Promise<T>): Promise<T> {
+    await this.deps.interruptAutoSpeech(`manual ${kind} requested (${source})`)
+    this.startManualResponse(kind, source)
+    try {
+      return await handler()
+    } finally {
+      this.finishManualResponse(kind, source)
+    }
+  }
+
+  async handleBargeIn(): Promise<void> {
+    if (this.deps.getLivekitAgentIsSpeaking() && this.deps.userSpeaking()) {
+      const speakOptions = this.deps.getCurrentSpeakOptions()
+      if (speakOptions) {
+        if (speakOptions.interruptible === false) {
+          this.stateMachine.clearSilenceTimer()
+        } else if (speakOptions.bargeInPolicy === 'soft') {
+          this.deps.setSoftStopRequested(true)
+          this.stateMachine.clearSilenceTimer()
+        } else {
+          await this.deps.stopLivekitAgent()
+          this.stateMachine.clearSilenceTimer()
+        }
+      } else {
+        await this.deps.stopLivekitAgent()
+        this.stateMachine.clearSilenceTimer()
+      }
+    }
+  }
+
+  async handleTranscriptBargeIn(text: string): Promise<void> {
+    if (!text || text.trim().length < 2) {
+      return
+    }
+
+    if (this.deps.autoHintInProgress()) {
+      return
+    }
+
+    await this.handleBargeIn()
+  }
+
+  async analyzeCodeWithBusinessLogic(codeData: { code: string, problemId: string, timestamp: number }): Promise<any> {
+    const session = this.deps.getCurrentSession()
+    if (!session) {
+      throw new Error('No active interview session')
+    }
+
+    this.deps.setCurrentCode(codeData.code)
+    this.setCurrentCode(codeData.code)
+
+    const problem = this.codeAnalysis.getCurrentProblem() || session?.codingProblems?.find((p: CodingProblem) => p.id === codeData.problemId) || null
+    if (!problem) {
+      throw new Error('No coding problem context')
+    }
+
+    const analysis = await this.analyzeCode(codeData, problem)
+
+    if (this.deps.userSpeaking()) {
+      return analysis
+    }
+
+    this.deps.setAutoHintInProgress(true)
+    try {
+      if (this.shouldSkipAutoResponse('monitoring_auto_hint')) {
+        return analysis
+      }
+    } finally {
+      this.deps.setAutoHintInProgress(false)
+    }
+
+    this.resetIntervalTracking()
+    return analysis
+  }
+
+  async handleHintProvision(): Promise<void> {
+    this.deps.setAutoHintInProgress(true)
+    try {
+      const last = this.codeAnalysis.getObservations().slice(-1)[0]
+      const session = this.deps.getCurrentSession()
+      const problem = this.codeAnalysis.getCurrentProblem() || (session?.codingProblems?.[0] ?? null)
+      if (last && problem && last.analysis.isStuck) {
+        if (this.shouldSkipAutoResponse('analysis_observation_hint')) {
+          return
+        }
+        const currentCode = this.deps.currentCode() || last.code || ''
+        const hintText = await this.codeAnalysis.getHint(problem, currentCode, 1)
+        this.codeAnalysis.addConversationMessage('assistant', hintText, {
+          type: 'hint',
+          hintLevel: 1,
+          isAutomatic: true,
+          source: 'stuck_detection'
+        } as any)
+        this.deps.syncConversationHistoryFromServices()
+
+        const result = await this.deps.speakRequested(
+          hintText,
+          { interruptible: true, bargeInPolicy: 'hard' },
+          { kind: 'hint', priority: 'auto', source: 'analysis_observation_hint' }
+        )
+        if (result.completed) {
+          await this.stateMachine.transition('hint_provided')
+          this.emit('hintProvided', hintText)
+        }
+      }
+    } finally {
+      this.deps.setAutoHintInProgress(false)
+    }
+  }
+
+  async handleSilenceTimeout(): Promise<void> {
+    const currentState = this.stateMachine.getState()
+
+    if (this.deps.isManualResponseActive()) {
+      const delay = this.getSilenceTimerDuration(currentState)
+      this.stateMachine.startSilenceTimer(delay)
+      return
+    }
+
+    if (currentState === InterviewState.WAITING_FOR_APPROACH) {
+      const approachSpoken = this.stateMachine.hasCodingApproachSpoken()
+      const approachPromptCount = this.stateMachine.getApproachPromptCount()
+      const codingHintCount = this.stateMachine.getCodingHintCount()
+      const moveOnPromptGiven = this.stateMachine.hasCodingMoveOnPromptGiven()
+
+      if (approachSpoken) {
+        this.stateMachine.startSilenceTimer(120000)
+        return
+      }
+
+      if (approachPromptCount === 0) {
+        this.stateMachine.incrementApproachPromptCount()
+        const reminder = "Please explain your approach to solving this problem, or feel free to ask any clarifying questions."
+        const problem = this.deps.getCurrentCodingProblem()
+        if (problem) {
+          this.codeAnalysis.addConversationMessage('assistant', reminder, {
+            type: 'feedback',
+            codingProblemId: problem.id,
+            section: 'coding'
+          } as any)
+          this.deps.syncConversationHistoryFromServices()
+        }
+
+        if (this.shouldSkipAutoResponse('approach_silence_prompt')) {
+          this.stateMachine.startSilenceTimer(120000)
+          return
+        }
+
+        await this.deps.speakRequested(
+          reminder,
+          { interruptible: true, bargeInPolicy: 'hard' },
+          { kind: 'prompt', priority: 'auto', source: 'approach_silence_prompt' }
+        )
+        this.stateMachine.startSilenceTimer(120000)
+        return
+      }
+
+      if (codingHintCount < 2) {
+        const hintLevel = (codingHintCount + 1) as 1 | 2
+        this.deps.setAutoHintInProgress(true)
+        try {
+          this.stateMachine.incrementCodingHintCount()
+          const problem = this.deps.getCurrentCodingProblem()
+          if (problem) {
+            const currentState = this.stateMachine.getState()
+            const isApproachPhase = currentState === InterviewState.WAITING_FOR_APPROACH
+            const hint = isApproachPhase
+              ? await this.codeAnalysis.getApproachHint(problem, hintLevel)
+              : await this.codeAnalysis.getHint(problem, this.deps.currentCode() || this.stateMachine.getPreviousCode() || '', hintLevel)
+            if (this.shouldSkipAutoResponse('silence_hint')) {
+              this.stateMachine.startSilenceTimer(120000)
+              return
+            }
+            this.codeAnalysis.addConversationMessage('assistant', hint, {
+              type: 'hint',
+              hintLevel: hintLevel,
+              isAutomatic: true,
+              source: 'timeout'
+            } as any)
+            this.deps.syncConversationHistoryFromServices()
+
+            await this.deps.speakRequested(
+              hint,
+              { interruptible: true, bargeInPolicy: 'hard' },
+              { kind: 'hint', priority: 'auto', source: 'approach_silence_hint' }
+            )
+            this.emit('hintProvided', hint)
+          }
+        } finally {
+          this.deps.setAutoHintInProgress(false)
+        }
+
+        this.stateMachine.startSilenceTimer(120000)
+        return
+      }
+
+      if (!moveOnPromptGiven) {
+        this.stateMachine.setCodingMoveOnPromptGiven(true)
+        const moveOnPrompt = "Would you like to move on to the next question?"
+        const problem = this.deps.getCurrentCodingProblem()
+        if (problem) {
+          this.codeAnalysis.addConversationMessage('assistant', moveOnPrompt, {
+            type: 'feedback',
+            codingProblemId: problem.id,
+            section: 'coding'
+          } as any)
+          this.deps.syncConversationHistoryFromServices()
+        }
+
+        if (this.shouldSkipAutoResponse('approach_move_on_prompt')) {
+          this.stateMachine.startSilenceTimer(120000)
+          return
+        }
+
+        await this.deps.speakRequested(
+          moveOnPrompt,
+          { interruptible: true, bargeInPolicy: 'hard' },
+          { kind: 'prompt', priority: 'auto', source: 'approach_move_on_prompt' }
+        )
+        this.stateMachine.startSilenceTimer(120000)
+        return
+      }
+
+      this.stateMachine.startSilenceTimer(120000)
+      return
+    }
+
+    if (currentState === InterviewState.THEORETICAL_QUESTION || currentState === InterviewState.WAITING_FOR_ANSWER) {
+      const currentQuestion = this.llm.getCurrentQuestion()
+      if (currentQuestion) {
+        const hintEvents = this.stateMachine.incrementHintEventCount()
+
+        try {
+          if (hintEvents === 1) {
+            const hintLevel = this.stateMachine.getHintLevel()
+            this.deps.setAutoHintInProgress(true)
+            try {
+              const hintText = await this.llm.generateTheoreticalHint(currentQuestion, hintLevel)
+
+              if (this.shouldSkipAutoResponse('theoretical_silence_hint')) {
+                this.stateMachine.startSilenceTimer(40000)
+                return
+              }
+
+              this.llm.addConversationMessage('assistant', hintText, {
+                type: 'hint',
+                questionId: currentQuestion.id,
+                hintLevel: hintLevel,
+                section: 'theoretical',
+                isAutomatic: true,
+                source: 'timeout'
+              } as any)
+              this.deps.syncConversationHistoryFromServices()
+
+              const result = await this.deps.speakRequested(
+                hintText,
+                { interruptible: true, bargeInPolicy: 'hard' },
+                { kind: 'hint', priority: 'auto', source: 'theoretical_silence_hint' }
+              )
+              if (result.completed) {
+                this.emit('hintProvided', hintText)
+                this.stateMachine.incrementHintLevel()
+                this.stateMachine.startSilenceTimer(40000)
+              }
+            } finally {
+              this.deps.setAutoHintInProgress(false)
+            }
+          } else {
+            const answerText = currentQuestion.expectedAnswer || 'Here is the concise answer based on best practices.'
+            const finalPrompt = `Here's the answer: ${answerText}. Let's move to the next question.`
+
+            if (this.shouldSkipAutoResponse('theoretical_silence_answer')) {
+              this.stateMachine.startSilenceTimer(40000)
+              return
+            }
+
+            this.llm.addConversationMessage('assistant', finalPrompt, {
+              type: 'answer',
+              questionId: currentQuestion.id,
+              section: 'theoretical',
+              hintLevel: 2
+            } as any)
+            this.deps.syncConversationHistoryFromServices()
+
+            await this.deps.speakRequested(
+              finalPrompt,
+              { interruptible: false, bargeInPolicy: 'soft' },
+              { kind: 'answer', priority: 'auto', source: 'theoretical_silence_answer' }
+            )
+            await this.deps.forceMoveToNextQuestion()
+          }
+        } catch (error) {
+        }
+      }
+    }
+  }
+
+  async handleInterviewCompletion(): Promise<void> {
+    const session = this.deps.getCurrentSession()
+    if (!session) {
+      return
+    }
+
+    try {
+      session.endTime = new Date()
+      session.status = 'completed'
+
+      this.deps.syncConversationHistoryFromServices()
+
+      const fullHistory = this.deps.getFullConversationHistory()
+      const codingConversations = this.deps.getCodingProblemConversations()
+      const allEvaluations = this.deps.getAllEvaluations()
+
+      if (codingConversations.length === 0 && fullHistory.length > 0) {
+        const problemIds = [...new Set(fullHistory
+          .filter(m => m.metadata.codingProblemId)
+          .map(m => m.metadata.codingProblemId!))]
+
+        for (const problemId of problemIds) {
+          const problem = session.codingProblems?.find((p: CodingProblem) => p.id === problemId)
+          if (problem) {
+            const problemHistory = this.deps.getProblemConversationHistory(problemId)
+            if (problemHistory.length > 0) {
+              const problemConversation = {
+                problemId,
+                problem,
+                conversation: problemHistory,
+                finalCode: undefined,
+                timeComplexity: undefined,
+                spaceComplexity: undefined,
+                codeAnalysisHistory: [],
+                submittedAt: new Date(),
+                evaluation: undefined
+              }
+              codingConversations.push(problemConversation)
+            }
+          }
+        }
+      }
+
+      if (allEvaluations.length === 0 && fullHistory.length > 0) {
+        const theoreticalMessages = fullHistory.filter(
+          m => m.metadata.section === 'theoretical' && m.metadata.evaluation
+        )
+
+        for (const msg of theoreticalMessages) {
+          if (msg.metadata.evaluation && msg.metadata.questionId) {
+            const questionId = msg.metadata.questionId
+            const evaluationTimestamp = msg.timestamp
+
+            const userAnswer = fullHistory
+              .filter(m =>
+                m.metadata.questionId === questionId &&
+                m.role === 'user' &&
+                m.timestamp < evaluationTimestamp &&
+                (m.metadata.type === 'answer' || m.metadata.type === 'hint' || m.metadata.type === 'clarification')
+              )
+              .sort((a, b) => b.timestamp - a.timestamp)[0]
+
+            if (userAnswer && msg.metadata.evaluation) {
+              let followUpQuestion: string | undefined = undefined
+              if (msg.metadata.evaluation.needsFollowUp) {
+                const followUpMsg = fullHistory
+                  .filter(m =>
+                    m.metadata.questionId === questionId &&
+                    m.role === 'assistant' &&
+                    m.timestamp > evaluationTimestamp &&
+                    m.metadata.type === 'followup'
+                  )
+                  .sort((a, b) => a.timestamp - b.timestamp)[0]
+
+                if (followUpMsg) {
+                  followUpQuestion = followUpMsg.content
+                }
+              }
+
+              const evaluation: Evaluation = {
+                questionId: questionId,
+                candidateAnswer: userAnswer.content,
+                keyPointsCovered: msg.metadata.evaluation.keyPointsCovered || [],
+                score: msg.metadata.evaluation.score || 0,
+                needsFollowUp: msg.metadata.evaluation.needsFollowUp || false,
+                followUpQuestion: followUpQuestion,
+                feedback: msg.content
+              }
+
+              const exists = allEvaluations.some(
+                e => e.questionId === evaluation.questionId &&
+                     e.candidateAnswer === evaluation.candidateAnswer &&
+                     Math.abs(e.score - evaluation.score) < 0.01
+              )
+
+              if (!exists) {
+                allEvaluations.push(evaluation)
+              }
+            }
+          }
+        }
+      }
+
+      const currentProblem = this.codeAnalysis.getCurrentProblem()
+      if (currentProblem) {
+        const existingIndex = codingConversations.findIndex(
+          (c: any) => c.problemId === currentProblem.id
+        )
+
+        if (existingIndex === -1) {
+          const problemHistory = this.deps.getProblemConversationHistory(currentProblem.id)
+          const finalSubmission = this.codeAnalysis.getFinalSubmission()
+          const problemConversation = {
+            problemId: currentProblem.id,
+            problem: currentProblem,
+            conversation: problemHistory,
+            finalCode: finalSubmission.code,
+            timeComplexity: finalSubmission.timeComplexity,
+            spaceComplexity: finalSubmission.spaceComplexity,
+            codeAnalysisHistory: this.codeAnalysis.getObservations().map(obs => obs.analysis),
+            submittedAt: new Date(),
+            evaluation: undefined
+          }
+          codingConversations.push(problemConversation)
+        }
+      }
+
+      this.emit('interviewCompleted', session)
+    } catch (error) {
     }
   }
 }
