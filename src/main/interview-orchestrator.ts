@@ -5,6 +5,7 @@ import { CodeAnalysisService, createCodeAnalysisService, CodingProblem } from '.
 import { FinalEvaluationPayload, ConversationMessage } from '../shared/types'
 import { createFinalEvaluationPayload } from './utils/final-evaluation'
 import { InterviewAgent } from './services/livekit-agent'
+import { InterviewEngine, SpeakRequest } from './interview-session'
 
 // TransitionQueue: Serialize critical actions (concurrency = 1)
 class TransitionQueue {
@@ -77,6 +78,8 @@ export class InterviewOrchestrator extends EventEmitter {
   private llm!: LLMService
   private stateMachine: InterviewStateMachine
   private codeAnalysis!: CodeAnalysisService
+  // Business-only engine (evaluation, question flow, etc.)
+  private engine!: InterviewEngine
   private currentSession: InterviewSession | null = null
   private isInitialized = false
   private transitionQueue!: TransitionQueue
@@ -336,6 +339,24 @@ export class InterviewOrchestrator extends EventEmitter {
       // Initialize services
       this.llm = createLLMService(config.llm.serverUrl)
       this.codeAnalysis = createCodeAnalysisService(config.codeAnalysis.serverUrl)
+
+      this.engine = new InterviewEngine({
+        llm: this.llm,
+        stateMachine: this.stateMachine,
+        codeAnalysis: this.codeAnalysis
+      })
+
+      this.engine.on('evaluation', (evaluation: Evaluation) => {
+        this.emit('evaluation', evaluation)
+      })
+
+      this.engine.on('progressUpdate', (progress) => {
+        this.emit('progressUpdate', progress)
+      })
+
+      this.engine.on('speakRequested', async (req: SpeakRequest) => {
+        await this.speakWithPolicy(req.text, req.options)
+      })
 
       // Initialize TransitionQueue
       this.transitionQueue = new TransitionQueue()
@@ -2093,124 +2114,9 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   async handleEvaluation(evaluation: Evaluation): Promise<void> {
-    // Enqueue evaluation handling to ensure sequentiality
+    // Enqueue evaluation handling to ensure sequentiality (business handled in InterviewSession)
     return this.transitionQueue.enqueue(async () => {
-      console.log('🎯 [Interview] Processing evaluation in queue')
-      // Ensure we are in evaluating state before applying evaluation-driven transitions
-      const currentStateBeforeEval = this.stateMachine.getState()
-      if (currentStateBeforeEval === InterviewState.WAITING_FOR_ANSWER) {
-        await this.stateMachine.transition('candidate_finished_speaking')
-      }
-      
-      // Track evaluation for final payload
-      this.allEvaluations.push(evaluation)
-      
-      // Add evaluation to state machine
-      this.stateMachine.addEvaluation(evaluation)
-      
-      // Emit evaluation event
-      this.emit('evaluation', evaluation)
-
-      // Update LLM service with current state
-      this.llm.setFollowUpDepth(this.stateMachine.getFollowUpDepth())
-      this.llm.setMaxTheoreticalQuestions(this.stateMachine.getMaxTheoreticalQuestions())
-
-      // LiveKit agent handles speech completion automatically
-      // No need to wait manually - agent events will notify us
-
-      // Record feedback BEFORE speaking (consistent with other messages like questions, hints, clarifications)
-      const currentQuestion = this.llm.getCurrentQuestion()
-      if (currentQuestion) {
-        if (evaluation.feedback && evaluation.feedback.trim().length > 0) {
-          // Only speak feedback if there's no follow-up question
-          if (!evaluation.followUpQuestion) {
-            // Record the feedback that will be spoken (evaluation.feedback, not responseText)
-            this.llm.addConversationMessage('assistant', evaluation.feedback, {
-              type: 'feedback',
-              questionId: currentQuestion.id,
-              section: 'theoretical',
-              evaluation: {
-                score: evaluation.score,
-                keyPointsCovered: evaluation.keyPointsCovered,
-                needsFollowUp: evaluation.needsFollowUp
-              }
-            } as any)
-            this.syncConversationHistoryFromServices()
-            
-            console.log('🎯 [Interview] 💬 Speaking feedback:', evaluation.feedback.substring(0, 50) + '...')
-            await this.speakWithPolicy(evaluation.feedback, {
-              interruptible: true,
-              bargeInPolicy: 'hard'
-            })
-          } else {
-            // Record the transition message that would have been spoken
-            this.llm.addConversationMessage('assistant', "Let me ask a follow-up question about that.", {
-              type: 'feedback',
-              questionId: currentQuestion.id,
-              section: 'theoretical',
-              evaluation: {
-                score: evaluation.score,
-                keyPointsCovered: evaluation.keyPointsCovered,
-                needsFollowUp: evaluation.needsFollowUp
-              }
-            } as any)
-            this.syncConversationHistoryFromServices()
-            
-            console.log('🎯 [Interview] ⏭️ Skipping feedback because follow-up question is present')
-          }
-        }
-      }
-
-      // Decide next action based on new criteria
-      console.log('🎯 [Interview] Evaluation decision:', {
-        needsFollowUp: evaluation.needsFollowUp,
-        canAskFollowUp: this.stateMachine.canAskFollowUp(),
-        followUpDepth: this.stateMachine.getFollowUpDepth(),
-        totalTheoretical: this.stateMachine.getTotalTheoreticalQuestions(),
-        maxTheoretical: this.stateMachine.getMaxTheoreticalQuestions(),
-        hasReachedLimit: this.stateMachine.hasReachedTheoreticalLimit()
-      })
-      
-      if (evaluation.needsFollowUp && this.stateMachine.canAskFollowUp()) {
-        // Increment total questions (follow-up depth will be incremented when question is asked)
-        this.stateMachine.incrementTotalTheoreticalQuestions()
-        
-        console.log('🎯 [Interview] Transitioning to needs_follow_up')
-        await this.stateMachine.transition('needs_follow_up')
-      } else {
-        // Check if we just finished a follow-up (followUpDepth > 0)
-        const currentFollowUpDepth = this.stateMachine.getFollowUpDepth()
-        
-        // Reset follow-up depth for next question
-        this.stateMachine.resetFollowUpDepth()
-        this.llm.resetFollowUpDepth()
-        
-        // First, check if there are more theoretical questions available
-        // Use currentQuestionIndex directly (don't add 1) to check if we've completed all questions
-        const currentIndex = this.stateMachine.getCurrentQuestionIndex()
-        const totalQuestions = this.stateMachine.getQuestions().length
-        const hasMoreQuestions = currentIndex < totalQuestions - 1
-        
-        if (!hasMoreQuestions) {
-          // No more questions in the array, move to coding regardless of limit
-          console.log('🎯 [Interview] No more theoretical questions available, transitioning to all_questions_done')
-          await this.stateMachine.transition('all_questions_done')
-        } else if (this.stateMachine.hasReachedTheoreticalLimit()) {
-          // Still have questions, but reached theoretical limit (too many follow-ups), move to coding
-          console.log('🎯 [Interview] Reached theoretical limit, transitioning to all_questions_done')
-          await this.stateMachine.transition('all_questions_done')
-        } else {
-          // More questions available and under limit, move to next question
-          console.log('🎯 [Interview] Moving to next_question (was in follow-up:', currentFollowUpDepth > 0, ')')
-          // Increment question index in both state machine and LLM service before transitioning
-          this.stateMachine.moveToNextQuestion()
-          this.llm.moveToNextQuestion()
-          // Emit progress update when moving to next question
-          const progress = this.stateMachine.getProgress()
-          this.emit('progressUpdate', progress)
-          await this.stateMachine.transition('next_question')
-        }
-      }
+      await this.engine.handleEvaluation(evaluation)
     })
   }
 
