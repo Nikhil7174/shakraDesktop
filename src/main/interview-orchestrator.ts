@@ -147,9 +147,7 @@ export class InterviewOrchestrator extends EventEmitter {
    * Get conversation history for a specific problem
    */
   getProblemConversationHistory(problemId: string): ConversationMessage[] {
-    return this.fullConversationHistory.filter(
-      msg => msg.metadata.codingProblemId === problemId
-    )
+    return this.engine.getProblemConversationHistory(problemId)
   }
 
   /**
@@ -178,7 +176,8 @@ export class InterviewOrchestrator extends EventEmitter {
         getFullConversationHistory: () => this.fullConversationHistory,
         getCodingProblemConversations: () => this.codingProblemConversations,
         getAllEvaluations: () => this.allEvaluations,
-        getProblemConversationHistory: (problemId) => this.getProblemConversationHistory(problemId),
+        getProblemConversationHistory: (problemId) => this.engine.getProblemConversationHistory(problemId),
+        getFullConversationHistoryForFiltering: () => this.fullConversationHistory,
         userSpeaking: () => this.userSpeaking,
         autoHintInProgress: () => this.autoHintInProgress,
         setAutoHintInProgress: (value) => { this.autoHintInProgress = value; },
@@ -282,9 +281,6 @@ export class InterviewOrchestrator extends EventEmitter {
         getStateMachineState: () => this.stateMachine.getState(),
         onQuestionAsked: (questionId) => {
           this.currentQuestionId = questionId
-        },
-        onFollowUpAsked: () => {
-          this.questionInterruptionRetries = 0
         },
         setCurrentSession: (session) => {
           this.currentSession = session
@@ -399,7 +395,6 @@ export class InterviewOrchestrator extends EventEmitter {
     this.stateMachine.on('askFollowUp', async (followUp: string) => {
       await this.engine.onAskFollowUp(followUp)
       this.emit('askFollowUp', followUp)
-      this.currentQuestionText = followUp
       await this.speakFollowUpQuestion(followUp)
     })
 

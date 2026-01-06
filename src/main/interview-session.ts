@@ -50,6 +50,7 @@ export interface InterviewSessionDeps {
   getCodingProblemConversations: () => any[]
   getAllEvaluations: () => Evaluation[]
   getProblemConversationHistory: (problemId: string) => ConversationMessage[]
+  getFullConversationHistoryForFiltering: () => ConversationMessage[]
   userSpeaking: () => boolean
   autoHintInProgress: () => boolean
   setAutoHintInProgress: (value: boolean) => void
@@ -114,7 +115,6 @@ export interface InterviewSessionDeps {
   getStateMachineProgress: () => { current: number; total: number }
   getStateMachineState: () => InterviewState
   onQuestionAsked: (questionId: string) => void
-  onFollowUpAsked: () => void
   setCurrentSession: (session: InterviewSession) => void
 }
 
@@ -618,7 +618,8 @@ export class InterviewEngine extends EventEmitter {
     this.llm.incrementFollowUpDepth()
 
     this.currentQuestionText = followUp
-    this.deps.onFollowUpAsked()
+    this.deps.setQuestionInterruptionRetries(0)
+    this.deps.setCurrentQuestionText(followUp)
     this.emit('followUpAsked', followUp)
   }
 
@@ -2299,6 +2300,12 @@ export class InterviewEngine extends EventEmitter {
            state === InterviewState.THEORETICAL_QUESTION ||
            state === InterviewState.WAITING_FOR_APPROACH || 
            state === InterviewState.MONITORING_CODE
+  }
+
+  getProblemConversationHistory(problemId: string): ConversationMessage[] {
+    return this.deps.getFullConversationHistoryForFiltering().filter(
+      msg => msg.metadata.codingProblemId === problemId
+    )
   }
 
   getSessionInfo(): { sessionId: string; questionsAnswered: number; totalQuestions: number; lastActivity: string; state: string } | null {
