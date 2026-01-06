@@ -138,6 +138,201 @@ export class InterviewEngine extends EventEmitter {
       await this.handleHintRequest(text)
       return
     }
+
+    if (intent.intent === 'clarification_request') {
+      await this.handleClarificationRequest(text)
+      return
+    }
+
+    if (intent.intent === 'skip_question') {
+      await this.handleSkipRequest(text)
+      return
+    }
+
+    await this.handleAnswer(text, intent, state)
+  }
+
+  private async handleAnswer(text: string, intent: any, state: InterviewState): Promise<void> {
+    const followUpDepth = this.stateMachine.getFollowUpDepth()
+    const actualState = this.stateMachine.getState()
+    let response: any
+
+    if (followUpDepth > 0 || actualState === InterviewState.FOLLOW_UP) {
+      const currentEvaluation = this.stateMachine.getCurrentEvaluation()
+      const originalQuestion = this.llm.getCurrentQuestion()
+
+      if (currentEvaluation && originalQuestion) {
+        this.llm.addConversationMessage('user', text, {
+          type: 'answer',
+          questionId: originalQuestion.id,
+          section: 'theoretical'
+        })
+        this.syncConversationHistoryFromServices()
+
+        response = await this.llm.evaluateFollowUpAnswer(
+          originalQuestion,
+          currentEvaluation.candidateAnswer,
+          currentEvaluation.followUpQuestion || '',
+          text,
+          followUpDepth
+        )
+      } else {
+        response = await this.llm.processTranscript(text, intent)
+      }
+    } else {
+      response = await this.llm.processTranscript(text, intent)
+    }
+
+    await this.handleResponseAction(response, text, state)
+  }
+
+  private async handleResponseAction(response: any, originalText: string, state: InterviewState): Promise<void> {
+    if (response.action === 'speak' && response.text) {
+      await this.handleSpeakResponse(response, originalText, state)
+    } else if (response.action === 'hint' && response.text) {
+      await this.handleHintResponse(response)
+    } else if (response.action === 'clarification' && response.text) {
+      await this.handleClarificationResponse(response)
+    } else if (response.action === 'skip') {
+      await this.handleSkipResponse(response)
+    } else if (response.action === 'evaluate' && response.evaluation) {
+      await this.handleEvaluation(response.evaluation)
+    }
+  }
+
+  private async handleSpeakResponse(response: any, originalText: string, state: InterviewState): Promise<void> {
+    this.emit('speakRequested', <SpeakRequest>{
+      text: response.text,
+      options: { interruptible: true, bargeInPolicy: 'hard' },
+      context: { kind: 'system', priority: 'auto', source: 'llm_response' }
+    })
+
+    const chitChatCount = this.stateMachine.incrementNormalConversationCount()
+
+    if (chitChatCount === 2) {
+      const nudge = "Let's focus on the question. Please share your answer. You can also ask for a hint, or say 'I don't know' if you're unsure."
+      const currentQuestion = this.llm.getCurrentQuestion()
+      if (currentQuestion) {
+        this.llm.addConversationMessage('assistant', nudge, {
+          type: 'feedback',
+          questionId: currentQuestion.id,
+          section: 'theoretical'
+        } as any)
+        this.syncConversationHistoryFromServices()
+      }
+
+      this.emit('speakRequested', <SpeakRequest>{
+        text: nudge,
+        options: { interruptible: true, bargeInPolicy: 'hard' },
+        context: { kind: 'system', priority: 'auto', source: 'chit_chat_nudge' }
+      })
+      this.stateMachine.startSilenceTimer(40000)
+      return
+    }
+
+    if (chitChatCount >= 3) {
+      const currentQuestion = this.llm.getCurrentQuestion()
+      if (currentQuestion) {
+        const answerText = currentQuestion.expectedAnswer || 'Let me provide a concise answer based on best practices.'
+        const finalPrompt = `Here's a concise answer: ${answerText}. Let's move to the next question.`
+
+        this.llm.addConversationMessage('assistant', finalPrompt, {
+          type: 'answer',
+          questionId: currentQuestion.id,
+          section: 'theoretical'
+        } as any)
+        this.syncConversationHistoryFromServices()
+
+        this.emit('speakRequested', <SpeakRequest>{
+          text: finalPrompt,
+          options: { interruptible: false, bargeInPolicy: 'soft' },
+          context: { kind: 'system', priority: 'auto', source: 'chit_chat_limit' }
+        })
+
+        await this.forceMoveToNextQuestion()
+      }
+      return
+    }
+
+    const lowerText = response.text.toLowerCase()
+    const isPositiveAck = lowerText.includes('correct') ||
+      lowerText.includes('good job') ||
+      lowerText.includes('well done') ||
+      lowerText.includes('excellent') ||
+      lowerText.includes('great') ||
+      (lowerText.includes('right') && !lowerText.includes('not right'))
+
+    if (isPositiveAck && state === InterviewState.WAITING_FOR_ANSWER) {
+      const currentQuestion = this.llm.getCurrentQuestion()
+      if (currentQuestion) {
+        const basicEvaluation: Evaluation = {
+          questionId: currentQuestion.id,
+          candidateAnswer: originalText,
+          keyPointsCovered: [],
+          score: 70,
+          needsFollowUp: false,
+          followUpQuestion: undefined,
+          feedback: response.text
+        }
+        await this.handleEvaluation(basicEvaluation)
+      }
+    }
+  }
+
+  private async handleHintResponse(response: any): Promise<void> {
+    await this.stateMachine.transition('hint_requested')
+    this.emit('hintSpokenRequested', response.text)
+  }
+
+  private async handleClarificationResponse(response: any): Promise<void> {
+    await this.stateMachine.transition('clarification_requested')
+    this.emit('clarificationSpokenRequested', response.text)
+  }
+
+  private async handleSkipRequest(text: string): Promise<void> {
+    const currentQuestion = this.llm.getCurrentQuestion()
+    if (!currentQuestion) {
+      return
+    }
+
+    this.llm.addConversationMessage('user', text, {
+      type: 'skip',
+      questionId: currentQuestion.id,
+      section: 'theoretical'
+    } as any)
+    this.syncConversationHistoryFromServices()
+
+    const response = await this.llm.handleSkipQuestion()
+    await this.handleSkipResponse(response)
+  }
+
+  private async handleSkipResponse(response: any): Promise<void> {
+    if (response.text && (!response.evaluation || !response.evaluation.feedback)) {
+      this.emit('speakRequested', <SpeakRequest>{
+        text: response.text,
+        options: { interruptible: false, bargeInPolicy: 'soft' },
+        context: { kind: 'system', priority: 'auto', source: 'skip_question' }
+      })
+    }
+
+    if (response.evaluation) {
+      await this.handleEvaluation(response.evaluation)
+    } else {
+      const currentQuestion = this.llm.getCurrentQuestion()
+      if (currentQuestion) {
+        const skipEvaluation: Evaluation = {
+          questionId: currentQuestion.id,
+          candidateAnswer: "User requested to skip this question",
+          keyPointsCovered: [],
+          score: 0,
+          needsFollowUp: false,
+          feedback: response.text || "Alright, let's move to the next question."
+        }
+        await this.handleEvaluation(skipEvaluation)
+      } else {
+        await this.forceMoveToNextQuestion()
+      }
+    }
   }
 
   private async handleHintRequest(text: string): Promise<void> {
@@ -214,7 +409,117 @@ export class InterviewEngine extends EventEmitter {
     this.stateMachine.startSilenceTimer(40000)
   }
 
-  private async forceMoveToNextQuestion(): Promise<void> {
+  private async handleClarificationRequest(text: string): Promise<void> {
+    const currentQuestion = this.llm.getCurrentQuestion()
+    if (!currentQuestion) {
+      return
+    }
+
+    this.llm.addConversationMessage('user', text, {
+      type: 'clarification',
+      questionId: currentQuestion.id,
+      section: 'theoretical'
+    })
+    this.syncConversationHistoryFromServices()
+
+    const clarifyCount = this.stateMachine.incrementClarificationRequestCount()
+    const questionForClarification = this.llm.getCurrentQuestion()
+    if (!questionForClarification) {
+      return
+    }
+
+    if (clarifyCount === 1) {
+      await this.stateMachine.transition('clarification_requested')
+      const response = await this.llm.handleClarificationRequest()
+      if (response && response.text) {
+        this.llm.addConversationMessage('assistant', response.text, {
+          type: 'clarification',
+          questionId: questionForClarification.id,
+          section: 'theoretical'
+        })
+        this.syncConversationHistoryFromServices()
+
+        this.emit('clarificationSpokenRequested', response.text)
+      }
+    } else {
+      const followUpDepth = this.stateMachine.getFollowUpDepth()
+      const currentEvaluation = this.stateMachine.getCurrentEvaluation()
+      const isFollowUp = followUpDepth > 0
+
+      let answerText: string
+      let finalPrompt: string
+
+      if (isFollowUp && currentEvaluation?.followUpQuestion) {
+        answerText = currentEvaluation.followUpQuestion
+        finalPrompt = `Since you've asked for clarification twice, here's what I was asking: ${answerText}. This was a follow up question to your previous answer. Let's move to the next question.`
+      } else {
+        answerText = questionForClarification.expectedAnswer || 'Here is the concise answer based on best practices.'
+        finalPrompt = `Here's the answer: ${answerText}. Let's move to the next question.`
+      }
+
+      this.llm.addConversationMessage('assistant', finalPrompt, {
+        type: 'answer',
+        questionId: questionForClarification.id,
+        section: 'theoretical'
+      } as any)
+      this.syncConversationHistoryFromServices()
+
+      this.emit('speakRequested', <SpeakRequest>{
+        text: finalPrompt,
+        options: { interruptible: false, bargeInPolicy: 'soft' },
+        context: { kind: 'system', priority: 'auto', source: 'clarification_escalation' }
+      })
+
+      await this.forceMoveToNextQuestion()
+    }
+  }
+
+  async onClarificationSpokenCompleted(clarificationText: string): Promise<void> {
+    await this.stateMachine.transition('clarification_provided')
+    this.stateMachine.startSilenceTimer(40000)
+  }
+
+  async onAskQuestion(question: Question): Promise<void> {
+    this.currentQuestionId = question.id
+    this.currentQuestionText = question.question
+
+    this.llm.addConversationMessage('assistant', question.question, {
+      type: 'question',
+      questionId: question.id,
+      section: 'theoretical'
+    })
+    this.syncConversationHistoryFromServices()
+
+    const progress = this.stateMachine.getProgress()
+    this.emit('progressUpdate', progress)
+    this.emit('questionAsked', question)
+  }
+
+  async onAskFollowUp(followUp: string): Promise<void> {
+    const currentQuestion = this.llm.getCurrentQuestion()
+    if (currentQuestion) {
+      this.llm.addConversationMessage('assistant', followUp, {
+        type: 'followup',
+        questionId: currentQuestion.id,
+        section: 'theoretical'
+      })
+      this.syncConversationHistoryFromServices()
+    }
+
+    this.stateMachine.resetHintEventCount()
+    this.stateMachine.resetClarificationRequestCount()
+    this.stateMachine.resetHintLevel()
+    this.stateMachine.resetNormalConversationCount()
+    this.stateMachine.resetSilenceTimeoutCount()
+
+    this.stateMachine.incrementFollowUpDepth()
+    this.llm.incrementFollowUpDepth()
+
+    this.currentQuestionText = followUp
+    this.emit('followUpAsked', followUp)
+  }
+
+  async forceMoveToNextQuestion(): Promise<void> {
     const currentState = this.stateMachine.getState()
     if (currentState === InterviewState.WAITING_FOR_ANSWER) {
       await this.stateMachine.transition('candidate_finished_speaking')

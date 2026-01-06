@@ -368,6 +368,16 @@ export class InterviewOrchestrator extends EventEmitter {
         }
       })
 
+      this.engine.on('clarificationSpokenRequested', async (clarificationText: string) => {
+        const result = await this.speakWithPolicy(clarificationText, {
+          interruptible: true,
+          bargeInPolicy: 'hard'
+        })
+        if (result.completed) {
+          await this.engine.onClarificationSpokenCompleted(clarificationText)
+        }
+      })
+
       // Initialize TransitionQueue
       this.transitionQueue = new TransitionQueue()
 
@@ -428,29 +438,11 @@ export class InterviewOrchestrator extends EventEmitter {
     }
   }
 
-  private updateListeningState(state: InterviewState): void {
-    // With LiveKit, VAD handles listening automatically
-    // This method is kept for state tracking but doesn't need to manage mic state
-    const shouldListen = 
-      state === InterviewState.WAITING_FOR_ANSWER ||
-      state === InterviewState.WAITING_FOR_APPROACH ||
-      state === InterviewState.INTRO ||
-      state === InterviewState.HANDLING_THEORETICAL_HINT ||
-      state === InterviewState.HANDLING_CLARIFICATION ||
-      state === InterviewState.MONITORING_CODE ||
-      state === InterviewState.CODING_PROBLEM ||
-      state === InterviewState.FOLLOW_UP
-
-    console.log(`🎤 [Main] Listening state: ${shouldListen} for ${state} state`)
-    // LiveKit agent handles VAD automatically, no manual mic management needed
-  }
 
   private setupStateMachineListeners(): void {
     // Re-emit state changes so main process can forward to renderer
     this.stateMachine.on('stateChanged', (payload: any) => {
       this.emit('stateChanged', payload)
-      // Automatically update listening state based on interview state
-      this.updateListeningState(payload.to)
     })
 
     this.stateMachine.on('introStarted', async () => {
@@ -469,62 +461,17 @@ export class InterviewOrchestrator extends EventEmitter {
     })
 
     this.stateMachine.on('askQuestion', async (question: Question) => {
-      this.emit('askQuestion', question)
-      // Emit progress update when asking a NEW question (not follow-up)
-      const progress = this.stateMachine.getProgress()
-      this.emit('progressUpdate', progress)
-      
-      // IMPORTANT: Add question to LLM conversation history
-      this.llm.addConversationMessage('assistant', question.question, {
-        type: 'question',
-        questionId: question.id,
-        section: 'theoretical'
-      })
-      // Update current question ID
+      await this.engine.onAskQuestion(question)
       this.currentQuestionId = question.id
-      // Sync to centralized history
-      this.syncConversationHistoryFromServices()
-      
+      this.emit('askQuestion', question)
       await this.speakQuestion(question.question)
     })
 
     this.stateMachine.on('askFollowUp', async (followUp: string) => {
+      await this.engine.onAskFollowUp(followUp)
       this.emit('askFollowUp', followUp)
-      console.log('🎯 [Interview] Speaking follow-up question:', followUp.substring(0, 50))
-      
-      // IMPORTANT: Add follow-up question to LLM conversation history
-      const currentQuestion = this.llm.getCurrentQuestion()
-      if (currentQuestion) {
-        // Add follow-up question as assistant message with type 'followup'
-        this.llm.addConversationMessage('assistant', followUp, {
-          type: 'followup',
-          questionId: currentQuestion.id,
-          section: 'theoretical'
-        })
-        console.log('🎯 [Interview] Added follow-up question to conversation history for question:', currentQuestion.id)
-        // Sync to centralized history
-        this.syncConversationHistoryFromServices()
-      }
-      
-      // Reset hint and clarification counts for the follow-up question
-      // Follow-up questions should start fresh with their own counts
-      this.stateMachine.resetHintEventCount()
-      this.stateMachine.resetClarificationRequestCount()
-      this.stateMachine.resetHintLevel()
-      this.stateMachine.resetNormalConversationCount()
-      this.stateMachine.resetSilenceTimeoutCount()
-      console.log('🎯 [Interview] Reset hint/clarification counts for follow-up question')
-      
-      // Increment follow-up depth when asking follow-up question
-      this.stateMachine.incrementFollowUpDepth()
-      this.llm.incrementFollowUpDepth()
-      console.log('🎯 [Interview] Follow-up depth incremented to:', this.stateMachine.getFollowUpDepth())
-      
-      // Reset interruption retry counter for follow-up question
       this.questionInterruptionRetries = 0
       this.currentQuestionText = followUp
-      
-      // Call helper method to handle follow-up with retry logic
       await this.speakFollowUpQuestion(followUp)
     })
 
@@ -705,10 +652,7 @@ export class InterviewOrchestrator extends EventEmitter {
   private setupServiceListeners(): void {
     this.setupLLMListeners()
     this.setupCodeAnalysisListeners()
-    // STT/TTS listeners removed - LiveKit agent handles these
   }
-
-  // STT listeners removed - LiveKit agent handles transcription events
 
   private setupLLMListeners(): void {
     // LLM listeners
@@ -724,8 +668,6 @@ export class InterviewOrchestrator extends EventEmitter {
     })
   }
 
-  // TTS listeners removed - LiveKit agent handles TTS events
-
   private markUserSpeakingActivity(): void {
     this.userSpeaking = true
     if (this.liveTranscriptTimeout) {
@@ -736,8 +678,6 @@ export class InterviewOrchestrator extends EventEmitter {
       this.liveTranscriptTimeout = null
     }, 1500)
   }
-
-  // Mic management removed - LiveKit handles echo cancellation automatically
 
   private setupCodeAnalysisListeners(): void {
     // Code analysis listeners
@@ -871,10 +811,6 @@ export class InterviewOrchestrator extends EventEmitter {
         }
       }
 
-      // Start audio capture
-      await this.startAudioCapture()
-
-      // LiveKit agent handles audio/STT automatically when connected
 
       // Check if we have theoretical questions
       const hasTheoreticalQuestions = session.questions && session.questions.length > 0
@@ -922,11 +858,6 @@ export class InterviewOrchestrator extends EventEmitter {
     }
   }
 
-  private async startAudioCapture(): Promise<void> {
-    // This would integrate with system audio capture
-    // For now, we'll emit events that the renderer can handle
-    this.emit('audioCaptureRequired')
-  }
 
   async handleTranscript(text: string): Promise<void> {
     if (!this.currentSession) {
@@ -983,330 +914,7 @@ export class InterviewOrchestrator extends EventEmitter {
       }
       
       if (currentState === InterviewState.WAITING_FOR_ANSWER || currentState === InterviewState.THEORETICAL_QUESTION) {
-        const followUpDepth = this.stateMachine.getFollowUpDepth()
-        const intent = await this.llm.detectIntent(text)
-        
-        if (intent.intent === 'hint_request') {
-          await this.engine.processTranscript(text, currentState)
-          return
-        }
-        
-        let response: any
-        
-        if (intent.intent === 'clarification_request') {
-        console.log('🎯 [Interview] ❓ Handling clarification request')
-        
-        // IMPORTANT: Add user's clarification request to conversation history FIRST
-        const currentQuestion = this.llm.getCurrentQuestion()
-        if (currentQuestion) {
-          this.llm.addConversationMessage('user', text, {
-            type: 'clarification',
-            questionId: currentQuestion.id,
-            section: 'theoretical'
-          })
-          this.syncConversationHistoryFromServices()
-        }
-        
-        const clarifyCount = this.stateMachine.incrementClarificationRequestCount()
-        console.log('🎯 [Interview] Clarification request count:', clarifyCount)
-
-        if (clarifyCount === 1) {
-          // First time: provide clarification and restart silence timer
-          await this.stateMachine.transition('clarification_requested')
-          response = await this.llm.handleClarificationRequest()
-          if (response && response.text) {
-            const result = await this.speakWithPolicy(response.text, {
-              interruptible: true,
-              bargeInPolicy: 'hard'
-            })
-            if (result.completed) {
-              await this.stateMachine.transition('clarification_provided')
-              this.stateMachine.startSilenceTimer(40000)
-            }
-          }
-          return
-        }
-
-        // Second or more: provide answer and move to next
-        // If in follow-up mode, provide answer to follow-up; otherwise answer to original
-        const questionForAnswer = this.llm.getCurrentQuestion()
-        const currentEvaluation = this.stateMachine.getCurrentEvaluation()
-        const isFollowUp = followUpDepth > 0
-        
-        if (questionForAnswer) {
-          let answerText: string
-          let finalPrompt: string
-          
-          if (isFollowUp && currentEvaluation?.followUpQuestion) {
-            // In follow-up: explain what the follow-up was asking about
-            answerText = currentEvaluation.followUpQuestion
-            finalPrompt = `Since you've asked for clarification twice, here's what I was asking: ${answerText}. This was a follow up question to your previous answer. Let's move to the next question.`
-          } else {
-            // Original question: provide the expected answer
-            answerText = questionForAnswer.expectedAnswer || 'Here is the concise answer based on best practices.'
-            finalPrompt = `Here's the answer: ${answerText}. Let's move to the next question.`
-          }
-          
-          console.log('🎯 [Interview] Second clarification (isFollowUp:', isFollowUp, ') - speaking answer:', finalPrompt.substring(0, 100))
-          
-          // IMPORTANT: Record the answer in conversation history
-          this.llm.addConversationMessage('assistant', finalPrompt, {
-            type: 'answer',
-            questionId: questionForAnswer.id,
-            section: 'theoretical'
-          } as any)
-          // Sync to centralized history
-          this.syncConversationHistoryFromServices()
-          
-          await this.speakWithPolicy(finalPrompt, {
-            interruptible: false,
-            bargeInPolicy: 'soft'
-          })
-          await this.forceMoveToNextQuestion()
-        }
-        return
-      }
-      
-      // Check if we're in follow-up mode by looking at state or follow-up depth
-      const actualState = this.stateMachine.getState()
-      if (followUpDepth > 0 || actualState === InterviewState.FOLLOW_UP) {
-        // We're evaluating a follow-up answer - use special follow-up evaluation
-        console.log('🎯 [Interview] Evaluating follow-up answer with full context')
-        const currentEvaluation = this.stateMachine.getCurrentEvaluation()
-        const originalQuestion = this.llm.getCurrentQuestion()
-        
-        console.log('🎯 [Interview] Follow-up context:', {
-          currentEvaluation: currentEvaluation ? 'present' : 'missing',
-          originalQuestion: originalQuestion ? 'present' : 'missing',
-          followUpQuestion: currentEvaluation?.followUpQuestion || 'missing'
-        })
-        
-        if (currentEvaluation && originalQuestion) {
-          // IMPORTANT: Add user's follow-up answer to conversation history FIRST
-          // This ensures the follow-up answer is captured before evaluation
-          this.llm.addConversationMessage('user', text, {
-            type: 'answer',
-            questionId: originalQuestion.id,
-            section: 'theoretical'
-          })
-          console.log('🎯 [Interview] Added follow-up answer to conversation history for question:', originalQuestion.id)
-          // Sync to centralized history
-          this.syncConversationHistoryFromServices()
-          
-          response = await this.llm.evaluateFollowUpAnswer(
-            originalQuestion,
-            currentEvaluation.candidateAnswer,
-            currentEvaluation.followUpQuestion || '',
-            text,
-            followUpDepth
-          )
-        } else {
-          // Fallback to regular processing if context is missing
-          console.log('🎯 [Interview] Missing context, falling back to regular evaluation')
-          // Pass detected intent to avoid duplicate detection
-          response = await this.llm.processTranscript(text, intent)
-        }
-      } else {
-        // Regular answer evaluation
-        console.log('🎯 [Interview] Regular answer evaluation')
-        // Pass detected intent to avoid duplicate detection
-        response = await this.llm.processTranscript(text, intent)
-      }
-      
-      console.log('🎯 [Interview] LLM response:', response)
-      
-      if (response.action === 'speak' && response.text) {
-        console.log('🎯 [Interview] 🗣️ Speaking LLM response:', response.text)
-        await this.speakWithPolicy(response.text, {
-          interruptible: true,
-          bargeInPolicy: 'hard'
-        })
-
-        // Treat generic 'speak' responses during theoretical phase as normal conversation
-        const chitChatCount = this.stateMachine.incrementNormalConversationCount()
-        console.log('🎯 [Interview] Chit-chat count for current question:', chitChatCount)
-
-        if (chitChatCount === 2) {
-          const nudge = "Let's focus on the question. Please share your answer. You can also ask for a hint, or say 'I don't know' if you're unsure."
-          
-          // IMPORTANT: Record nudge in conversation history
-          const currentQuestion = this.llm.getCurrentQuestion()
-          if (currentQuestion) {
-            this.llm.addConversationMessage('assistant', nudge, {
-              type: 'feedback',
-              questionId: currentQuestion.id,
-              section: 'theoretical'
-            } as any)
-            this.syncConversationHistoryFromServices()
-          }
-          
-          await this.speakWithPolicy(nudge, {
-            interruptible: true,
-            bargeInPolicy: 'hard'
-          })
-          // Restart silence timer after nudge
-          this.stateMachine.startSilenceTimer(40000)
-          return
-        }
-
-        if (chitChatCount >= 3) {
-          console.log('🎯 [Interview] Chit-chat limit reached, providing answer and moving to next question')
-          const currentQuestion = this.llm.getCurrentQuestion()
-          if (currentQuestion) {
-            const answerText = currentQuestion.expectedAnswer || 'Let me provide a concise answer based on best practices.'
-            const finalPrompt = `Here's a concise answer: ${answerText}. Let's move to the next question.`
-            
-            // IMPORTANT: Record the answer in conversation history
-            this.llm.addConversationMessage('assistant', finalPrompt, {
-              type: 'answer',
-              questionId: currentQuestion.id,
-              section: 'theoretical'
-            } as any)
-            this.syncConversationHistoryFromServices()
-            
-            await this.speakWithPolicy(finalPrompt, {
-              interruptible: false,
-              bargeInPolicy: 'soft'
-            })
-
-            // Force progression to next question (bypass evaluation)
-            await this.forceMoveToNextQuestion()
-            return
-          }
-        }
-        
-        // Check if this is a positive acknowledgement after clarification/hint
-        // If so, we should create an evaluation and move to next question
-        const lowerText = response.text.toLowerCase()
-        const isPositiveAck = lowerText.includes('correct') || 
-                             lowerText.includes('good job') || 
-                             lowerText.includes('well done') ||
-                             lowerText.includes('excellent') ||
-                             lowerText.includes('great') ||
-                             (lowerText.includes('right') && !lowerText.includes('not right'))
-        
-        if (isPositiveAck && currentState === InterviewState.WAITING_FOR_ANSWER) {
-          console.log('🎯 [Interview] Detected positive acknowledgement, creating evaluation to progress')
-          const currentQuestion = this.llm.getCurrentQuestion()
-          
-          if (currentQuestion) {
-            // Create a basic evaluation to allow progression
-            const basicEvaluation: Evaluation = {
-              questionId: currentQuestion.id,
-              candidateAnswer: text,
-              keyPointsCovered: [],
-              score: 70, // Default passing score
-              needsFollowUp: false,
-              followUpQuestion: undefined,
-              feedback: response.text
-            }
-            
-            console.log('🎯 [Interview] Created basic evaluation for progression')
-            await this.handleEvaluation(basicEvaluation)
-          }
-        }
-      } else if (response.action === 'hint' && response.text) {
-        console.log('🎯 [Interview] 💡 Providing hint:', response.text)
-        
-        // If we're in a coding problem context, add hint to codeAnalysis conversation history
-        const currentProblem = this.getCurrentCodingProblem()
-        if (currentProblem) {
-          // IMPORTANT: Add user's hint request to conversation history FIRST
-          // The user's request text is the 'text' parameter from handleTranscript
-          // We need to add it here before adding the hint response
-          // Note: 'text' is available in the handleTranscript scope, so we can use it
-          this.codeAnalysis.addHintRequest(text) // This adds the user's request as a user message with type 'hint'
-          console.log('🎯 [Interview] Added user hint request to conversation history')
-          
-          console.log('🎯 [Interview] Adding hint to coding problem conversation history')
-          // Determine hint level (default to 1 if not specified)
-          const hintLevel = (response as any).hintLevel || 1
-          
-          // Add hint response to conversation history
-          this.codeAnalysis.addHint(response.text, hintLevel as 1 | 2)
-          // Sync to centralized history
-          this.syncConversationHistoryFromServices()
-        }
-        
-        // First transition to hint handling state
-        await this.stateMachine.transition('hint_requested')
-        
-        const result = await this.speakWithPolicy(response.text, {
-          interruptible: true,
-          bargeInPolicy: 'hard'
-        })
-        // Only transition back to waiting if completed
-        if (result.completed) {
-          await this.stateMachine.transition('hint_provided')
-        }
-      } else if (response.action === 'clarification' && response.text) {
-        console.log('🎯 [Interview] ❓ Providing clarification:', response.text)
-        
-        // If we're in a coding problem context, add clarification to codeAnalysis conversation history
-        const currentProblem = this.getCurrentCodingProblem()
-        if (currentProblem) {
-          console.log('🎯 [Interview] Adding clarification to coding problem conversation history')
-          this.codeAnalysis.addClarification(response.text)
-          // Sync to centralized history
-          this.syncConversationHistoryFromServices()
-        }
-        
-        // First transition to clarification handling state
-        await this.stateMachine.transition('clarification_requested')
-        
-        const result = await this.speakWithPolicy(response.text, {
-          interruptible: true,
-          bargeInPolicy: 'hard'
-        })
-        // Only transition back to waiting if completed
-        if (result.completed) {
-          await this.stateMachine.transition('clarification_provided')
-        }
-      } else if (response.action === 'skip') {
-        console.log('🎯 [Interview] ⏭️ Skipping question')
-        
-        // If there's text to speak, speak it first (if not included in evaluation feedback)
-        // If evaluation is present, handleEvaluation will speak the feedback
-        if (response.text && (!response.evaluation || !response.evaluation.feedback)) {
-          const speakResult = await this.speakWithPolicy(response.text, {
-            interruptible: false,
-            bargeInPolicy: 'soft'
-          })
-          
-          // Only proceed if speech completed
-          if (!speakResult.completed && !speakResult.softStopped) {
-            console.log('🎯 [Interview] Skip message not completed, waiting...')
-            return
-          }
-        }
-        
-        // Handle evaluation if present (records score 0 and transitions)
-        if (response.evaluation) {
-          console.log('🎯 [Interview] Handling skip evaluation:', response.evaluation)
-          await this.handleEvaluation(response.evaluation)
-        } else {
-          // Fallback if no evaluation provided - create one and handle it
-          console.log('🎯 [Interview] No evaluation provided for skip, creating default evaluation')
-          const currentQuestion = this.llm.getCurrentQuestion()
-          if (currentQuestion) {
-            const skipEvaluation: Evaluation = {
-              questionId: currentQuestion.id,
-              candidateAnswer: "User requested to skip this question",
-              keyPointsCovered: [],
-              score: 0,
-              needsFollowUp: false,
-              feedback: response.text || "Alright, let's move to the next question."
-            }
-            await this.handleEvaluation(skipEvaluation)
-          } else {
-            // Last resort: force move to next question
-            await this.forceMoveToNextQuestion()
-          }
-        }
-      } else if (response.action === 'evaluate' && response.evaluation) {
-        console.log('🎯 [Interview] 📊 Handling evaluation:', response.evaluation)
-        await this.handleEvaluation(response.evaluation)
-      }
+        await this.engine.processTranscript(text, currentState)
     } else if (currentState === InterviewState.WAITING_FOR_APPROACH) {
       // Candidate is providing their approach
       console.log('🎯 [Interview] 💭 Processing approach explanation:', text)
@@ -2016,7 +1624,6 @@ export class InterviewOrchestrator extends EventEmitter {
       console.log('🎯 [Interview] ⚠️ Not in listening state, ignoring transcript. Current state:', currentState)
     }
     } finally {
-      // LiveKit handles audio automatically, no manual mic management needed
     }
   }
 
@@ -2028,40 +1635,6 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   // Force progression to the next question without a normal evaluation
-  private async forceMoveToNextQuestion(): Promise<void> {
-    // Ensure consistent state transitions
-    const currentState = this.stateMachine.getState()
-    if (currentState === InterviewState.WAITING_FOR_ANSWER) {
-      await this.stateMachine.transition('candidate_finished_speaking')
-    }
-
-    // Reset per-question counters/depth
-    this.stateMachine.resetFollowUpDepth()
-    this.llm.resetFollowUpDepth()
-
-    // First, check if there are more theoretical questions available
-    const progress = this.llm.getProgress()
-    const hasMoreQuestions = progress.current < progress.total
-    
-    if (!hasMoreQuestions) {
-      // No more questions in the array, move to coding regardless of limit
-      console.log('🎯 [Interview] No more theoretical questions available, transitioning to all_questions_done')
-      await this.stateMachine.transition('all_questions_done')
-      return
-    }
-
-    // Check if reached theoretical limit (for preventing too many follow-ups)
-    if (this.stateMachine.hasReachedTheoreticalLimit()) {
-      console.log('🎯 [Interview] Reached theoretical limit, transitioning to all_questions_done')
-      await this.stateMachine.transition('all_questions_done')
-      return
-    }
-
-    // More questions available and under limit, move to next question
-    this.stateMachine.moveToNextQuestion()
-    this.llm.moveToNextQuestion()
-    await this.stateMachine.transition('next_question')
-  }
 
   async analyzeCode(codeData: { code: string, problemId: string, timestamp: number }): Promise<any> {
     if (!this.currentSession) {
@@ -3112,7 +2685,7 @@ export class InterviewOrchestrator extends EventEmitter {
               { kind: 'answer', priority: 'auto', source: 'theoretical_silence_answer' }
             )
             // Do not restart silence timer; progress to next
-            await this.forceMoveToNextQuestion()
+            await this.engine.forceMoveToNextQuestion()
           }
         } catch (error) {
           console.error('Error providing automatic hint:', error)
@@ -3585,7 +3158,6 @@ export class InterviewOrchestrator extends EventEmitter {
     }
   }
 
-  // updateSTTToken removed - LiveKit uses room tokens, not STT tokens
 
     // Audio streaming removed - LiveKit handles audio directly in renderer
     // No need for manual audio chunk forwarding

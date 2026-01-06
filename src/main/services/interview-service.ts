@@ -229,14 +229,6 @@ export class InterviewService implements Service {
       }
     })
 
-    orchestrator.on('audioCaptureRequired', () => {
-      try {
-        this.windowService.getMainWindow()?.webContents.send('audio-capture-required')
-      } catch (e: unknown) {
-        const err = e as Error
-        console.error('Failed to send audio-capture-required:', err.message)
-      }
-    })
   }
 
   private setupIpcHandlers() {
