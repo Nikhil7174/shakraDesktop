@@ -85,7 +85,6 @@ export class InterviewOrchestrator extends EventEmitter {
   private liveTranscriptTimeout: NodeJS.Timeout | null = null
   private hadTheoreticalQuestions = false // Track if session had theoretical questions
   private currentCode: string = '' // Store latest code from editor for manual hint requests
-  private manualResponseInFlight: { kind: ResponseKind; source: string; startedAt: number } | null = null
   private currentSpeechContext: SpeechContext | null = null
   // Track hint/clarification requests and user speech for auto-hint conditions (reset every 60s interval)
   private currentIntervalHasHintClarification: boolean = false // Track if any hint/clarification requested in current 60s interval
@@ -183,15 +182,14 @@ export class InterviewOrchestrator extends EventEmitter {
         userSpeaking: () => this.userSpeaking,
         autoHintInProgress: () => this.autoHintInProgress,
         setAutoHintInProgress: (value) => { this.autoHintInProgress = value; },
-        shouldSkipAutoResponse: (trigger) => this.shouldSkipAutoResponse(trigger),
-        withManualResponse: (kind, source, handler) => this.withManualResponse(kind, source, handler),
+        shouldSkipAutoResponse: (trigger) => this.engine.shouldSkipAutoResponse(trigger),
+        withManualResponse: (kind, source, handler) => this.engine.withManualResponse(kind, source, handler),
         currentCode: () => this.currentCode,
         setCurrentCode: (code) => { this.currentCode = code; },
         speakRequested: async (text, options, context) => {
           return await this.engine.speakWithPolicy(text, options, context)
         },
         interruptAutoSpeech: (reason) => this.engine.interruptAutoSpeech(reason),
-        isManualResponseActive: () => this.isManualResponseActive(),
         getCurrentSpeakOptions: () => this.currentSpeakOptions,
         setSoftStopRequested: (value) => { this.softStopRequested = value; },
         stopLivekitAgent: async () => {
@@ -259,8 +257,6 @@ export class InterviewOrchestrator extends EventEmitter {
           }
         },
         getLivekitAgentAvailable: () => !!this.livekitAgent,
-        startManualResponse: (kind, source) => { this.startManualResponse(kind, source); },
-        finishManualResponse: (kind, source) => { this.finishManualResponse(kind, source); },
         requestSkipConfirmation: () => this.requestSkipConfirmation(),
         getPreviousCode: () => this.stateMachine.getPreviousCode(),
         setState: (state) => this.stateMachine.setState(state),
@@ -275,17 +271,24 @@ export class InterviewOrchestrator extends EventEmitter {
           }
         },
         addConversationMessageToService: (role, text, metadata) => {
-          if (metadata.section === 'coding') {
-            this.codeAnalysis.addConversationMessage(role, text, metadata)
-          } else {
-            this.llm.addConversationMessage(role, text, metadata)
-          }
+          this.engine.addConversationMessage(role, text, metadata)
         },
         getPayloadSent: () => this.payloadSent,
         setPayloadSent: (value) => { this.payloadSent = value; },
         resetStateMachine: () => { this.stateMachine.reset(); },
         resetLLM: () => { this.llm.reset(); },
-        shouldProcessTranscript: (state) => this.engine.shouldProcessTranscriptState(state)
+        shouldProcessTranscript: (state) => this.engine.shouldProcessTranscriptState(state),
+        getStateMachineProgress: () => this.stateMachine.getProgress(),
+        getStateMachineState: () => this.stateMachine.getState(),
+        onQuestionAsked: (questionId) => {
+          this.currentQuestionId = questionId
+        },
+        onFollowUpAsked: () => {
+          this.questionInterruptionRetries = 0
+        },
+        setCurrentSession: (session) => {
+          this.currentSession = session
+        }
       })
 
       this.engine.on('evaluation', (evaluation: Evaluation) => {
@@ -389,7 +392,6 @@ export class InterviewOrchestrator extends EventEmitter {
 
     this.stateMachine.on('askQuestion', async (question: Question) => {
       await this.engine.onAskQuestion(question)
-      this.currentQuestionId = question.id
       this.emit('askQuestion', question)
       await this.speakQuestion(question.question)
     })
@@ -397,7 +399,6 @@ export class InterviewOrchestrator extends EventEmitter {
     this.stateMachine.on('askFollowUp', async (followUp: string) => {
       await this.engine.onAskFollowUp(followUp)
       this.emit('askFollowUp', followUp)
-      this.questionInterruptionRetries = 0
       this.currentQuestionText = followUp
       await this.speakFollowUpQuestion(followUp)
     })
@@ -492,20 +493,7 @@ export class InterviewOrchestrator extends EventEmitter {
   }
 
   getSessionInfo(): { sessionId: string; questionsAnswered: number; totalQuestions: number; lastActivity: string; state: string } | null {
-    if (!this.currentSession) {
-      return null
-    }
-
-    const progress = this.stateMachine.getProgress()
-    const state = this.stateMachine.getState()
-
-    return {
-      sessionId: this.currentSession.sessionId || this.currentSession.id,
-      questionsAnswered: progress.current - 1, // current is 1-indexed
-      totalQuestions: progress.total,
-      lastActivity: new Date().toISOString(),
-      state
-    }
+    return this.engine.getSessionInfo()
   }
 
   async clearSession(): Promise<void> {
@@ -524,13 +512,7 @@ export class InterviewOrchestrator extends EventEmitter {
     }
 
     this.payloadSent = false
-    const sessionWithStartTime: InterviewSession = {
-      ...session,
-      startTime: session.startTime || new Date(),
-      status: session.status || 'in_progress'
-    }
-    this.currentSession = sessionWithStartTime
-    await this.engine.startInterview(sessionWithStartTime)
+    await this.engine.startInterview(session)
   }
 
 
@@ -603,25 +585,6 @@ export class InterviewOrchestrator extends EventEmitter {
     await this.engine.speakSecurityWarning(message)
   }
 
-  private async withManualResponse<T>(kind: ResponseKind, source: string, handler: () => Promise<T>): Promise<T> {
-    return await this.engine.withManualResponse(kind, source, handler)
-  }
-
-  private startManualResponse(kind: ResponseKind, source: string): void {
-    this.manualResponseInFlight = { kind, source, startedAt: Date.now() }
-    console.log(`🎯 [Interview] Manual ${kind} response started (${source})`)
-  }
-
-  private finishManualResponse(kind: ResponseKind, source: string): void {
-    if (this.manualResponseInFlight && this.manualResponseInFlight.kind === kind && this.manualResponseInFlight.source === source) {
-      console.log(`🎯 [Interview] Manual ${kind} response finished (${source})`)
-      this.manualResponseInFlight = null
-    }
-  }
-
-  private isManualResponseActive(): boolean {
-    return !!this.manualResponseInFlight
-  }
 
   private async interruptAutoSpeech(reason: string): Promise<void> {
     await this.engine.interruptAutoSpeech(reason)
@@ -751,7 +714,6 @@ export class InterviewOrchestrator extends EventEmitter {
     this.softStopRequested = false
     this.userSpeaking = false
     this.currentCode = ''
-    this.manualResponseInFlight = null
     this.currentSpeechContext = null
     this.pendingSecurityWarning = null
     this.isSecurityWarningInProgress = false

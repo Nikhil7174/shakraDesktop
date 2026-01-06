@@ -59,7 +59,6 @@ export interface InterviewSessionDeps {
   setCurrentCode: (code: string) => void
   speakRequested: (text: string, options: SpeakOptions, context: SpeechContext) => Promise<any>
   interruptAutoSpeech: (reason: string) => Promise<void>
-  isManualResponseActive: () => boolean
   getCurrentSpeakOptions: () => SpeakOptions | undefined
   setSoftStopRequested: (value: boolean) => void
   stopLivekitAgent: () => Promise<void>
@@ -98,8 +97,6 @@ export interface InterviewSessionDeps {
   emitTtsError: (error: any) => void
   livekitAgentSay: (text: string, options: { allowInterruptions: boolean }) => Promise<void>
   getLivekitAgentAvailable: () => boolean
-  startManualResponse: (kind: any, source: string) => void
-  finishManualResponse: (kind: any, source: string) => void
   requestSkipConfirmation: () => Promise<boolean>
   getPreviousCode: () => string
   setState: (state: InterviewState) => Promise<void>
@@ -114,6 +111,11 @@ export interface InterviewSessionDeps {
   resetStateMachine: () => void
   resetLLM: () => void
   shouldProcessTranscript: (state: InterviewState) => boolean
+  getStateMachineProgress: () => { current: number; total: number }
+  getStateMachineState: () => InterviewState
+  onQuestionAsked: (questionId: string) => void
+  onFollowUpAsked: () => void
+  setCurrentSession: (session: InterviewSession) => void
 }
 
 export class InterviewEngine extends EventEmitter {
@@ -616,6 +618,7 @@ export class InterviewEngine extends EventEmitter {
     this.llm.incrementFollowUpDepth()
 
     this.currentQuestionText = followUp
+    this.deps.onFollowUpAsked()
     this.emit('followUpAsked', followUp)
   }
 
@@ -1135,10 +1138,7 @@ export class InterviewEngine extends EventEmitter {
   }
 
   shouldSkipAutoResponse(trigger: string): boolean {
-    if (this.deps.isManualResponseActive()) {
-      return true
-    }
-    return false
+    return !!this.manualResponseInFlight
   }
 
   private startManualResponse(kind: any, source: string): void {
@@ -1150,6 +1150,11 @@ export class InterviewEngine extends EventEmitter {
       this.manualResponseInFlight = null
     }
   }
+
+  private isManualResponseActive(): boolean {
+    return !!this.manualResponseInFlight
+  }
+
 
   async handleBargeIn(): Promise<void> {
     if (this.deps.getLivekitAgentIsSpeaking() && this.deps.userSpeaking()) {
@@ -1254,7 +1259,7 @@ export class InterviewEngine extends EventEmitter {
   async handleSilenceTimeout(): Promise<void> {
     const currentState = this.stateMachine.getState()
 
-    if (this.deps.isManualResponseActive()) {
+    if (this.isManualResponseActive()) {
       const delay = this.getSilenceTimerDuration(currentState)
       this.stateMachine.startSilenceTimer(delay)
       return
@@ -1834,6 +1839,7 @@ export class InterviewEngine extends EventEmitter {
       status: session.status || 'in_progress'
     }
 
+    this.deps.setCurrentSession(sessionWithStartTime)
     this.deps.setQuestions(session.questions)
     this.stateMachine.setQuestions(session.questions, session.maxTheoreticalQuestions || 10)
     this.deps.setMaxTheoreticalQuestions(session.maxTheoreticalQuestions || 10)
@@ -2155,11 +2161,11 @@ export class InterviewEngine extends EventEmitter {
 
   async withManualResponse<T>(kind: any, source: string, handler: () => Promise<T>): Promise<T> {
     await this.interruptAutoSpeech(`manual ${kind} requested (${source})`)
-    this.deps.startManualResponse(kind, source)
+    this.startManualResponse(kind, source)
     try {
       return await handler()
     } finally {
-      this.deps.finishManualResponse(kind, source)
+      this.finishManualResponse(kind, source)
     }
   }
 
@@ -2260,7 +2266,11 @@ export class InterviewEngine extends EventEmitter {
   }
 
   addConversationMessage(role: 'user' | 'assistant' | 'system', text: string, metadata: any): void {
-    this.deps.addConversationMessageToService(role, text, metadata)
+    if (metadata.section === 'coding') {
+      this.codeAnalysis.addConversationMessage(role, text, metadata)
+    } else {
+      this.llm.addConversationMessage(role, text, metadata)
+    }
   }
 
   async clearSession(): Promise<void> {
@@ -2290,6 +2300,25 @@ export class InterviewEngine extends EventEmitter {
            state === InterviewState.WAITING_FOR_APPROACH || 
            state === InterviewState.MONITORING_CODE
   }
+
+  getSessionInfo(): { sessionId: string; questionsAnswered: number; totalQuestions: number; lastActivity: string; state: string } | null {
+    const session = this.deps.getCurrentSession()
+    if (!session) {
+      return null
+    }
+
+    const progress = this.deps.getStateMachineProgress()
+    const state = this.deps.getStateMachineState()
+
+    return {
+      sessionId: (session as any).sessionId || session.id,
+      questionsAnswered: progress.current - 1,
+      totalQuestions: progress.total,
+      lastActivity: new Date().toISOString(),
+      state
+    }
+  }
+
 }
 
 
