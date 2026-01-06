@@ -358,6 +358,16 @@ export class InterviewOrchestrator extends EventEmitter {
         await this.speakWithPolicy(req.text, req.options)
       })
 
+      this.engine.on('hintSpokenRequested', async (hintText: string) => {
+        const result = await this.speakWithPolicy(hintText, {
+          interruptible: true,
+          bargeInPolicy: 'hard'
+        }, { kind: 'hint', priority: 'auto', source: 'monitoring_auto_hint' })
+        if (result.completed) {
+          await this.engine.onHintSpokenCompleted(hintText)
+        }
+      })
+
       // Initialize TransitionQueue
       this.transitionQueue = new TransitionQueue()
 
@@ -973,121 +983,17 @@ export class InterviewOrchestrator extends EventEmitter {
       }
       
       if (currentState === InterviewState.WAITING_FOR_ANSWER || currentState === InterviewState.THEORETICAL_QUESTION) {
-      console.log('🎯 [Interview] ✅ Processing transcript with LLM:', text)
-      // Clear silence timer since candidate is speaking
-      this.stateMachine.clearSilenceTimer()
-      
-      // Check if we're in follow-up mode
-      const followUpDepth = this.stateMachine.getFollowUpDepth()
-      const currentState = this.stateMachine.getState()
-      console.log('🎯 [Interview] Follow-up depth:', followUpDepth, 'State:', currentState)
-      
-      let response: any
-      
-      // First, detect intent to check if this is a hint/clarification request
-      console.log('🎯 [Interview] Detecting intent for transcript:', text)
-      const intent = await this.llm.detectIntent(text)
-      console.log('🎯 [Interview] Detected intent:', intent)
-      
-      // Handle hint requests with unified escalation (combined with silence timeouts)
-      if (intent.intent === 'hint_request') {
-        console.log('🎯 [Interview] ✨ Handling hint request')
+        const followUpDepth = this.stateMachine.getFollowUpDepth()
+        const intent = await this.llm.detectIntent(text)
         
-        // IMPORTANT: Add user's hint request to conversation history FIRST
-        const currentQuestion = this.llm.getCurrentQuestion()
-        if (currentQuestion) {
-          this.llm.addConversationMessage('user', text, {
-            type: 'hint',
-            questionId: currentQuestion.id,
-            section: 'theoretical'
-          })
-          this.syncConversationHistoryFromServices()
-        }
-        
-        const hintEvents = this.stateMachine.incrementHintEventCount()
-        console.log('🎯 [Interview] Combined hint event count:', hintEvents)
-
-        const questionForHint = this.llm.getCurrentQuestion()
-        if (!questionForHint) {
+        if (intent.intent === 'hint_request') {
+          await this.engine.processTranscript(text, currentState)
           return
         }
-
-        if (hintEvents === 1) {
-          // First hint: provide hint at current level and restart silence timer
-          await this.stateMachine.transition('hint_requested')
-          const hintLevel = this.stateMachine.getHintLevel()
-          console.log('🎯 [Interview] Providing hint at level:', hintLevel)
-          // Use generateTheoreticalHint to respect hint level (same as silence timeout)
-          const hintText = await this.llm.generateTheoreticalHint(questionForHint, hintLevel)
-          
-          // IMPORTANT: Add hint response to LLM conversation history
-          this.llm.addConversationMessage('assistant', hintText, {
-            type: 'hint',
-            questionId: questionForHint.id,
-            hintLevel: hintLevel as 1 | 2,
-            section: 'theoretical'
-          })
-          // Sync to centralized history
-          this.syncConversationHistoryFromServices()
-          
-          const result = await this.speakWithPolicy(
-            hintText,
-            {
-              interruptible: true,
-              bargeInPolicy: 'hard'
-            },
-            { kind: 'hint', priority: 'auto', source: 'monitoring_auto_hint' }
-          )
-          if (result.completed) {
-            await this.stateMachine.transition('hint_provided')
-            this.emit('hintProvided', hintText)
-            // Increase hint level for subsequent escalation
-            this.stateMachine.incrementHintLevel()
-            this.stateMachine.startSilenceTimer(40000)
-          }
-          return
-        }
-
-        // Second or more: provide answer and move to next question (no second hint)
-        // If in follow-up mode, provide answer to follow-up; otherwise answer to original
-        const currentEvaluation = this.stateMachine.getCurrentEvaluation()
-        const isFollowUp = followUpDepth > 0
         
-        let answerText: string
-        let answerContext: string
+        let response: any
         
-        if (isFollowUp && currentEvaluation?.followUpQuestion) {
-          // In follow-up: explain what the follow-up was asking about
-          answerText = currentEvaluation.followUpQuestion
-          answerContext = `Since you've asked for help twice, here's what I was asking: ${answerText}. This was a follow up question to your previous answer. Let's move to the next question.`
-        } else {
-          // Original question: provide the expected answer
-          answerText = questionForHint.expectedAnswer || 'Here is the concise answer based on best practices.'
-          answerContext = `Here's the answer: ${answerText}. Let's move to the next question.`
-        }
-        
-        console.log('🎯 [Interview] Second hint event - providing answer (isFollowUp:', isFollowUp, ')')
-        
-        // IMPORTANT: Record the answer in conversation history
-        this.llm.addConversationMessage('assistant', answerContext, {
-          type: 'answer',
-          questionId: questionForHint.id,
-          section: 'theoretical',
-          hintLevel: 2 // Second hint escalation
-        } as any)
-        // Sync to centralized history
-        this.syncConversationHistoryFromServices()
-        
-        await this.speakWithPolicy(answerContext, {
-          interruptible: false,
-          bargeInPolicy: 'soft'
-        })
-        await this.forceMoveToNextQuestion()
-        return
-      }
-      
-      // Handle clarification requests with escalation
-      if (intent.intent === 'clarification_request') {
+        if (intent.intent === 'clarification_request') {
         console.log('🎯 [Interview] ❓ Handling clarification request')
         
         // IMPORTANT: Add user's clarification request to conversation history FIRST
@@ -1162,7 +1068,8 @@ export class InterviewOrchestrator extends EventEmitter {
       }
       
       // Check if we're in follow-up mode by looking at state or follow-up depth
-      if (followUpDepth > 0 || currentState === InterviewState.FOLLOW_UP) {
+      const actualState = this.stateMachine.getState()
+      if (followUpDepth > 0 || actualState === InterviewState.FOLLOW_UP) {
         // We're evaluating a follow-up answer - use special follow-up evaluation
         console.log('🎯 [Interview] Evaluating follow-up answer with full context')
         const currentEvaluation = this.stateMachine.getCurrentEvaluation()

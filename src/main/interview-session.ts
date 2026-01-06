@@ -125,6 +125,122 @@ export class InterviewEngine extends EventEmitter {
     }
   }
 
+  async processTranscript(text: string, state: InterviewState): Promise<void> {
+    if (state !== InterviewState.WAITING_FOR_ANSWER && state !== InterviewState.THEORETICAL_QUESTION) {
+      return
+    }
+
+    this.stateMachine.clearSilenceTimer()
+
+    const intent = await this.llm.detectIntent(text)
+
+    if (intent.intent === 'hint_request') {
+      await this.handleHintRequest(text)
+      return
+    }
+  }
+
+  private async handleHintRequest(text: string): Promise<void> {
+    const currentQuestion = this.llm.getCurrentQuestion()
+    if (!currentQuestion) {
+      return
+    }
+
+    this.llm.addConversationMessage('user', text, {
+      type: 'hint',
+      questionId: currentQuestion.id,
+      section: 'theoretical'
+    })
+    this.syncConversationHistoryFromServices()
+
+    const hintEvents = this.stateMachine.incrementHintEventCount()
+    const questionForHint = this.llm.getCurrentQuestion()
+    if (!questionForHint) {
+      return
+    }
+
+    if (hintEvents === 1) {
+      await this.stateMachine.transition('hint_requested')
+      const hintLevel = this.stateMachine.getHintLevel()
+      const hintText = await this.llm.generateTheoreticalHint(questionForHint, hintLevel)
+
+      this.llm.addConversationMessage('assistant', hintText, {
+        type: 'hint',
+        questionId: questionForHint.id,
+        hintLevel: hintLevel as 1 | 2,
+        section: 'theoretical'
+      })
+      this.syncConversationHistoryFromServices()
+
+      this.emit('hintSpokenRequested', hintText)
+    } else {
+      const followUpDepth = this.stateMachine.getFollowUpDepth()
+      const currentEvaluation = this.stateMachine.getCurrentEvaluation()
+      const isFollowUp = followUpDepth > 0
+
+      let answerText: string
+      let answerContext: string
+
+      if (isFollowUp && currentEvaluation?.followUpQuestion) {
+        answerText = currentEvaluation.followUpQuestion
+        answerContext = `Since you've asked for help twice, here's what I was asking: ${answerText}. This was a follow up question to your previous answer. Let's move to the next question.`
+      } else {
+        answerText = questionForHint.expectedAnswer || 'Here is the concise answer based on best practices.'
+        answerContext = `Here's the answer: ${answerText}. Let's move to the next question.`
+      }
+
+      this.llm.addConversationMessage('assistant', answerContext, {
+        type: 'answer',
+        questionId: questionForHint.id,
+        section: 'theoretical',
+        hintLevel: 2
+      } as any)
+      this.syncConversationHistoryFromServices()
+
+      this.emit('speakRequested', <SpeakRequest>{
+        text: answerContext,
+        options: { interruptible: false, bargeInPolicy: 'soft' },
+        context: { kind: 'system', priority: 'auto', source: 'hint_escalation' }
+      })
+
+      await this.forceMoveToNextQuestion()
+    }
+  }
+
+  async onHintSpokenCompleted(hintText: string): Promise<void> {
+    await this.stateMachine.transition('hint_provided')
+    this.emit('hintProvided', hintText)
+    this.stateMachine.incrementHintLevel()
+    this.stateMachine.startSilenceTimer(40000)
+  }
+
+  private async forceMoveToNextQuestion(): Promise<void> {
+    const currentState = this.stateMachine.getState()
+    if (currentState === InterviewState.WAITING_FOR_ANSWER) {
+      await this.stateMachine.transition('candidate_finished_speaking')
+    }
+
+    this.stateMachine.resetFollowUpDepth()
+    this.llm.resetFollowUpDepth()
+
+    const progress = this.llm.getProgress()
+    const hasMoreQuestions = progress.current < progress.total
+
+    if (!hasMoreQuestions) {
+      await this.stateMachine.transition('all_questions_done')
+      return
+    }
+
+    if (this.stateMachine.hasReachedTheoreticalLimit()) {
+      await this.stateMachine.transition('all_questions_done')
+      return
+    }
+
+    this.stateMachine.moveToNextQuestion()
+    this.llm.moveToNextQuestion()
+    await this.stateMachine.transition('next_question')
+  }
+
   private syncConversationHistoryFromServices(): void {
     try {
       const history = this.llm.getConversationHistory()
