@@ -4,6 +4,18 @@ import { InterviewStateMachine, InterviewState } from './services/state-machine'
 import { CodeAnalysisService, CodingProblem } from './services/code-analysis-service'
 import type { ConversationMessage } from '../shared/types'
 
+export interface InterviewSession {
+  id: string
+  sessionId?: string
+  candidateId: string
+  questions: Question[]
+  codingProblems: CodingProblem[]
+  startTime: Date
+  endTime?: Date
+  status: 'scheduled' | 'in_progress' | 'completed'
+  maxTheoreticalQuestions?: number
+}
+
 export type BargeInPolicy = 'hard' | 'soft'
 
 export interface SpeakOptions {
@@ -53,6 +65,30 @@ export interface InterviewSessionDeps {
   stopLivekitAgent: () => Promise<void>
   getLivekitAgentIsSpeaking: () => boolean
   forceMoveToNextQuestion: () => Promise<void>
+  questionInterruptionRetries: () => number
+  setQuestionInterruptionRetries: (count: number) => void
+  currentQuestionText: () => string | null
+  setCurrentQuestionText: (text: string | null) => void
+  setCurrentProblemId: (id: string | null) => void
+  setCurrentQuestionId: (id: string | null) => void
+  setCodingProblemConversations: (conversations: any[]) => void
+  setAllEvaluations: (evaluations: Evaluation[]) => void
+  setFullConversationHistory: (history: ConversationMessage[]) => void
+  getCurrentProblemId: () => string | null
+  getCurrentQuestionId: () => string | null
+  hadTheoreticalQuestions: () => boolean
+  setHadTheoreticalQuestions: (value: boolean) => void
+  pendingSecurityWarning: () => string | null
+  setPendingSecurityWarning: (message: string | null) => void
+  isSecurityWarningInProgress: () => boolean
+  setIsSecurityWarningInProgress: (value: boolean) => void
+  livekitAgentDisconnect: () => Promise<void>
+  livekitAgentStart: (roomName: string, agentName: string) => Promise<void>
+  setQuestions: (questions: Question[]) => void
+  setCodingProblems: (problems: CodingProblem[]) => void
+  setMaxTheoreticalQuestions: (max: number) => void
+  setCurrentQuestionIndex: (index: number) => void
+  setCurrentProblem: (problem: CodingProblem) => void
 }
 
 export class InterviewEngine extends EventEmitter {
@@ -69,6 +105,7 @@ export class InterviewEngine extends EventEmitter {
   private currentIntervalHasHintClarification: boolean = false
   private currentIntervalHasSubstantialSpeech: boolean = false
   private manualResponseInFlight: { kind: any; source: string; startedAt: number } | null = null
+  private questionInterruptionRetries: number = 0
 
   constructor(deps: InterviewSessionDeps) {
     super()
@@ -1058,14 +1095,6 @@ export class InterviewEngine extends EventEmitter {
     }
   }
 
-  private syncConversationHistoryFromServices(): void {
-    try {
-      const history = this.llm.getConversationHistory()
-      this.fullConversationHistory = history
-      this.fullConversationHistory.sort((a, b) => a.timestamp - b.timestamp)
-    } catch {
-    }
-  }
 
   getSilenceTimerDuration(state: InterviewState): number {
     switch (state) {
@@ -1524,6 +1553,463 @@ export class InterviewEngine extends EventEmitter {
       this.emit('interviewCompleted', session)
     } catch (error) {
     }
+  }
+
+  async speakQuestion(question: string): Promise<void> {
+    this.deps.setCurrentQuestionText(question)
+    const maxRetries = 2
+    const currentRetries = this.deps.questionInterruptionRetries()
+    const allowInterruptions = currentRetries < maxRetries
+
+    const result = await this.deps.speakRequested(
+      question,
+      {
+        interruptible: allowInterruptions,
+        bargeInPolicy: 'soft'
+      },
+      { kind: 'prompt', priority: 'auto', source: 'theoretical_question' }
+    )
+
+    if (result.completed && !result.softStopped) {
+      this.deps.setQuestionInterruptionRetries(0)
+      this.deps.setCurrentQuestionText(null)
+      if (this.stateMachine.getState() === InterviewState.THEORETICAL_QUESTION) {
+        await this.stateMachine.transition('question_asked')
+      }
+      this.stateMachine.startSilenceTimer(40000)
+    } else if (result.softStopped || result.interrupted) {
+      const newRetries = currentRetries + 1
+      this.deps.setQuestionInterruptionRetries(newRetries)
+      if (newRetries <= maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, 500))
+        await this.speakQuestion(question)
+      } else {
+        this.deps.setQuestionInterruptionRetries(0)
+        await this.speakQuestion(question)
+      }
+    }
+  }
+
+  async speakFollowUpQuestion(followUp: string): Promise<void> {
+    this.deps.setCurrentQuestionText(followUp)
+    const maxRetries = 2
+    const currentRetries = this.deps.questionInterruptionRetries()
+    const allowInterruptions = currentRetries < maxRetries
+
+    const result = await this.deps.speakRequested(
+      followUp,
+      {
+        interruptible: allowInterruptions,
+        bargeInPolicy: 'hard'
+      },
+      { kind: 'prompt', priority: 'auto', source: 'followup_question' }
+    )
+
+    if (result.completed && !result.softStopped && !result.interrupted) {
+      this.deps.setQuestionInterruptionRetries(0)
+      this.deps.setCurrentQuestionText(null)
+      await this.stateMachine.transition('follow_up_asked')
+      this.stateMachine.startSilenceTimer(40000)
+    } else if (result.softStopped || result.interrupted) {
+      const newRetries = currentRetries + 1
+      this.deps.setQuestionInterruptionRetries(newRetries)
+      if (newRetries <= maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, 500))
+        await this.speakFollowUpQuestion(followUp)
+      } else {
+        this.deps.setQuestionInterruptionRetries(0)
+        await this.speakFollowUpQuestion(followUp)
+      }
+    }
+  }
+
+  async submitCodingSolutionWithBusinessLogic(
+    code: string,
+    isTimeout: boolean = false,
+    timeComplexity?: string,
+    spaceComplexity?: string
+  ): Promise<{ success: boolean, feedback: string, hasNextProblem: boolean }> {
+    const session = this.deps.getCurrentSession()
+    if (!session) {
+      throw new Error('No active interview session')
+    }
+
+    const currentState = this.stateMachine.getState()
+    const problem = this.codeAnalysis.getCurrentProblem()
+    if (!problem) {
+      throw new Error('No current coding problem')
+    }
+
+    const codingProblems = session.codingProblems || []
+    const result = await this.submitCodingSolution(
+      code,
+      problem,
+      codingProblems,
+      isTimeout,
+      timeComplexity,
+      spaceComplexity
+    )
+
+    const analysis = this.codeAnalysis.getObservations().slice(-1)[0]?.analysis || { progress: 0, approach: 'incomplete', issues: [], codeQuality: 'poor' }
+    const currentProblemIndex = codingProblems.findIndex(p => p.id === problem.id)
+
+    if (result.hasNextProblem) {
+      this.stateMachine.clearSilenceTimer()
+      this.deps.syncConversationHistoryFromServices()
+
+      const problemConversationHistory = this.deps.getProblemConversationHistory(problem.id)
+      const finalSubmission = this.codeAnalysis.getFinalSubmission()
+
+      const codeSubmissionMsg = problemConversationHistory.find(
+        msg => msg.metadata.type === 'code_submission'
+      )
+      if (codeSubmissionMsg) {
+        const metadata = codeSubmissionMsg.metadata as any
+        if (!metadata.timeComplexity && finalSubmission.timeComplexity) {
+          metadata.timeComplexity = finalSubmission.timeComplexity
+        }
+        if (!metadata.spaceComplexity && finalSubmission.spaceComplexity) {
+          metadata.spaceComplexity = finalSubmission.spaceComplexity
+        }
+      }
+
+      const problemConversation = {
+        problemId: problem.id,
+        problem,
+        conversation: problemConversationHistory,
+        finalCode: finalSubmission.code,
+        timeComplexity: finalSubmission.timeComplexity,
+        spaceComplexity: finalSubmission.spaceComplexity,
+        codeAnalysisHistory: this.codeAnalysis.getObservations().map(obs => obs.analysis),
+        submittedAt: new Date(),
+        evaluation: {
+          score: analysis.progress,
+          feedback: result.feedback,
+          testResults: []
+        }
+      }
+      const conversations = this.deps.getCodingProblemConversations()
+      conversations.push(problemConversation)
+      this.deps.setCodingProblemConversations(conversations)
+
+      const nextProblem = codingProblems[currentProblemIndex + 1]
+      this.deps.setCurrentProblemId(nextProblem.id)
+      this.deps.setCurrentProblem(nextProblem)
+      this.stateMachine.clearSilenceTimer()
+
+      const targetState = InterviewState.CODING_PROBLEM
+      if (currentState === targetState) {
+        await this.stateMachine.setState(InterviewState.IDLE)
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+      await this.stateMachine.setState(targetState)
+
+      return {
+        success: result.success,
+        feedback: result.feedback,
+        hasNextProblem: true
+      }
+    }
+
+    this.stateMachine.clearSilenceTimer()
+    const existingIndex = this.deps.getCodingProblemConversations().findIndex(
+      c => c.problemId === problem.id
+    )
+
+    if (existingIndex !== -1) {
+      this.deps.syncConversationHistoryFromServices()
+      const finalSubmission = this.codeAnalysis.getFinalSubmission()
+      const problemConversationHistory = this.deps.getProblemConversationHistory(problem.id)
+
+      const codeSubmissionMsg = problemConversationHistory.find(
+        msg => msg.metadata.type === 'code_submission'
+      )
+      if (codeSubmissionMsg) {
+        const metadata = codeSubmissionMsg.metadata as any
+        if (!metadata.timeComplexity && finalSubmission.timeComplexity) {
+          metadata.timeComplexity = finalSubmission.timeComplexity
+        }
+        if (!metadata.spaceComplexity && finalSubmission.spaceComplexity) {
+          metadata.spaceComplexity = finalSubmission.spaceComplexity
+        }
+      }
+
+      const conversations = this.deps.getCodingProblemConversations()
+      conversations[existingIndex] = {
+        ...conversations[existingIndex],
+        conversation: problemConversationHistory,
+        finalCode: finalSubmission.code,
+        timeComplexity: finalSubmission.timeComplexity,
+        spaceComplexity: finalSubmission.spaceComplexity,
+        codeAnalysisHistory: this.codeAnalysis.getObservations().map(obs => obs.analysis),
+        submittedAt: new Date(),
+        evaluation: {
+          score: analysis.progress,
+          feedback: result.feedback,
+          testResults: []
+        }
+      }
+      this.deps.setCodingProblemConversations(conversations)
+    } else {
+      this.deps.syncConversationHistoryFromServices()
+      const problemConversationHistory = this.deps.getProblemConversationHistory(problem.id)
+      const finalSubmission = this.codeAnalysis.getFinalSubmission()
+
+      const codeSubmissionMsg = problemConversationHistory.find(
+        msg => msg.metadata.type === 'code_submission'
+      )
+      if (codeSubmissionMsg) {
+        const metadata = codeSubmissionMsg.metadata as any
+        if (!metadata.timeComplexity && finalSubmission.timeComplexity) {
+          metadata.timeComplexity = finalSubmission.timeComplexity
+        }
+        if (!metadata.spaceComplexity && finalSubmission.spaceComplexity) {
+          metadata.spaceComplexity = finalSubmission.spaceComplexity
+        }
+      }
+
+      const problemConversation = {
+        problemId: problem.id,
+        problem,
+        conversation: problemConversationHistory,
+        finalCode: finalSubmission.code,
+        timeComplexity: finalSubmission.timeComplexity,
+        spaceComplexity: finalSubmission.spaceComplexity,
+        codeAnalysisHistory: this.codeAnalysis.getObservations().map(obs => obs.analysis),
+        submittedAt: new Date(),
+        evaluation: {
+          score: analysis.progress,
+          feedback: result.feedback,
+          testResults: []
+        }
+      }
+      const conversations = this.deps.getCodingProblemConversations()
+      conversations.push(problemConversation)
+      this.deps.setCodingProblemConversations(conversations)
+    }
+
+    this.stateMachine.clearSilenceTimer()
+    const stateBeforeTransition = this.stateMachine.getState()
+    if (stateBeforeTransition !== InterviewState.MONITORING_CODE) {
+      await this.stateMachine.setState(InterviewState.MONITORING_CODE)
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+
+    const transitionResult = await this.stateMachine.transition('solution_complete')
+    if (!transitionResult) {
+      await this.stateMachine.setState(InterviewState.WRAP_UP)
+    }
+
+    return {
+      success: result.success,
+      feedback: result.feedback,
+      hasNextProblem: false
+    }
+  }
+
+  async startInterview(session: InterviewSession & { resumeFromIndex?: number; skipIntro?: boolean }): Promise<void> {
+    this.deps.setFullConversationHistory([])
+    this.deps.setCodingProblemConversations([])
+    this.deps.setCurrentProblemId(null)
+    this.deps.setCurrentQuestionId(null)
+
+    const sessionWithStartTime: InterviewSession = {
+      ...session,
+      startTime: session.startTime || new Date(),
+      status: session.status || 'in_progress'
+    }
+
+    this.deps.setQuestions(session.questions)
+    this.stateMachine.setQuestions(session.questions, session.maxTheoreticalQuestions || 10)
+    this.deps.setMaxTheoreticalQuestions(session.maxTheoreticalQuestions || 10)
+
+    if (typeof session.resumeFromIndex === 'number') {
+      const idx = Math.max(0, Math.min(session.resumeFromIndex, session.questions.length - 1))
+      this.deps.setCurrentQuestionIndex(idx)
+    }
+
+    if (this.deps.livekitAgentStart) {
+      const roomName = `interview-${session.id}`
+      try {
+        await this.deps.livekitAgentStart(roomName, 'interview-agent')
+      } catch (error) {
+      }
+    }
+
+    const hasTheoreticalQuestions = session.questions && session.questions.length > 0
+    const hasCodingProblems = session.codingProblems && session.codingProblems.length > 0
+
+    this.deps.setHadTheoreticalQuestions(hasTheoreticalQuestions)
+
+    if (session.skipIntro) {
+      if (hasTheoreticalQuestions) {
+        await this.stateMachine.transition('begin_questions')
+      } else if (hasCodingProblems) {
+        if (session.codingProblems && session.codingProblems.length > 0) {
+          await this.stateMachine.setState(InterviewState.CODING_INTRO)
+        }
+      }
+    } else {
+      if (hasTheoreticalQuestions) {
+        await this.stateMachine.transition('start_interview')
+      } else if (hasCodingProblems) {
+        if (session.codingProblems && session.codingProblems.length > 0) {
+          await this.stateMachine.setState(InterviewState.CODING_INTRO)
+        }
+      } else {
+        throw new Error('No questions or coding problems provided')
+      }
+    }
+  }
+
+  syncConversationHistoryFromServices(): void {
+    const llmHistory = this.llm.getConversationHistory()
+    const fullHistory = this.deps.getFullConversationHistory()
+
+    llmHistory.forEach(msg => {
+      const exists = fullHistory.some(
+        existing => existing.timestamp === msg.timestamp &&
+                   existing.content === msg.content &&
+                   existing.role === msg.role
+      )
+      if (!exists) {
+        const updated = [...fullHistory, msg]
+        this.deps.setFullConversationHistory(updated)
+        if (msg.metadata.questionId) {
+          this.deps.setCurrentQuestionId(msg.metadata.questionId)
+        }
+      }
+    })
+
+    const codeAnalysisHistory = this.codeAnalysis.getConversationHistory()
+    const currentProblemInCodeAnalysis = this.codeAnalysis.getCurrentProblem()
+    const finalSubmission = this.codeAnalysis.getFinalSubmission()
+    let currentHistory = this.deps.getFullConversationHistory()
+
+    codeAnalysisHistory.forEach(msg => {
+      if (!msg.metadata.codingProblemId && currentProblemInCodeAnalysis) {
+        msg.metadata.codingProblemId = currentProblemInCodeAnalysis.id
+      }
+
+      if (!msg.metadata.codingProblemId && this.deps.getCurrentProblemId()) {
+        msg.metadata.codingProblemId = this.deps.getCurrentProblemId() || undefined
+      }
+
+      let existingIndex = -1
+      if (msg.metadata.type === 'question' && msg.metadata.codingProblemId) {
+        existingIndex = currentHistory.findIndex(
+          existing => existing.metadata.type === 'question' &&
+                     existing.metadata.codingProblemId === msg.metadata.codingProblemId &&
+                     existing.role === msg.role
+        )
+
+        if (existingIndex === -1 && msg.content.startsWith("Let's work on:")) {
+          const titleMatch = msg.content.match(/Let's work on:\s*([^\n.]+)/)
+          if (titleMatch) {
+            const questionTitle = titleMatch[1].trim()
+            existingIndex = currentHistory.findIndex(
+              existing => existing.metadata.type === 'question' &&
+                         existing.role === msg.role &&
+                         existing.content.startsWith("Let's work on:") &&
+                         existing.content.includes(questionTitle)
+            )
+          }
+        }
+      }
+
+      if (existingIndex === -1) {
+        existingIndex = currentHistory.findIndex(
+          existing => existing.timestamp === msg.timestamp &&
+                     existing.content === msg.content &&
+                     existing.role === msg.role
+        )
+      }
+
+      if (existingIndex === -1) {
+        if (msg.metadata.type === 'code_submission') {
+          const metadata = msg.metadata as any
+          if (!metadata.timeComplexity && finalSubmission.timeComplexity) {
+            metadata.timeComplexity = finalSubmission.timeComplexity
+          }
+          if (!metadata.spaceComplexity && finalSubmission.spaceComplexity) {
+            metadata.spaceComplexity = finalSubmission.spaceComplexity
+          }
+        }
+
+        currentHistory = [...currentHistory, msg]
+        this.deps.setFullConversationHistory(currentHistory)
+        if (msg.metadata.codingProblemId) {
+          this.deps.setCurrentProblemId(msg.metadata.codingProblemId)
+        }
+      } else {
+        const existing = currentHistory[existingIndex]
+        if (existing.metadata.type === 'code_submission' && msg.metadata.type === 'code_submission') {
+          const existingMetadata = existing.metadata as any
+          const newMetadata = msg.metadata as any
+
+          if (!existingMetadata.timeComplexity && newMetadata.timeComplexity) {
+            existingMetadata.timeComplexity = newMetadata.timeComplexity
+          }
+          if (!existingMetadata.spaceComplexity && newMetadata.spaceComplexity) {
+            existingMetadata.spaceComplexity = newMetadata.spaceComplexity
+          }
+
+          if (!existingMetadata.timeComplexity && finalSubmission.timeComplexity) {
+            existingMetadata.timeComplexity = finalSubmission.timeComplexity
+          }
+          if (!existingMetadata.spaceComplexity && finalSubmission.spaceComplexity) {
+            existingMetadata.spaceComplexity = finalSubmission.spaceComplexity
+          }
+        }
+      }
+    })
+
+    const sorted = this.deps.getFullConversationHistory().sort((a, b) => a.timestamp - b.timestamp)
+    this.deps.setFullConversationHistory(sorted)
+  }
+
+  async speakSecurityWarning(message: string): Promise<void> {
+    if (!message || !message.trim()) {
+      return
+    }
+
+    if (this.deps.getLivekitAgentIsSpeaking() || this.deps.isSecurityWarningInProgress()) {
+      this.deps.setPendingSecurityWarning(message)
+      return
+    }
+
+    this.deps.setIsSecurityWarningInProgress(true)
+    this.deps.setPendingSecurityWarning(null)
+
+    try {
+      await this.deps.speakRequested(
+        message,
+        {
+          interruptible: true,
+          bargeInPolicy: 'hard'
+        },
+        {
+          kind: 'system',
+          priority: 'auto',
+          source: 'security_warning'
+        }
+      )
+    } finally {
+      this.deps.setIsSecurityWarningInProgress(false)
+    }
+  }
+
+  async speakWrapUp(): Promise<void> {
+    const wrapUpText = "Thank you for completing the interview. Your responses have been recorded."
+    await this.deps.speakRequested(
+      wrapUpText,
+      {
+        interruptible: true,
+        bargeInPolicy: 'hard'
+      },
+      { kind: 'system', priority: 'auto', source: 'wrap_up' }
+    )
+    await this.stateMachine.transition('interview_complete')
   }
 }
 
