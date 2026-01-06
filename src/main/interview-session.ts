@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events'
 import { LLMService, Question, Evaluation } from './services/llm-service'
 import { InterviewStateMachine, InterviewState } from './services/state-machine'
-import { CodeAnalysisService } from './services/code-analysis-service'
+import { CodeAnalysisService, CodingProblem } from './services/code-analysis-service'
 import type { ConversationMessage } from '../shared/types'
 
 export type BargeInPolicy = 'hard' | 'soft'
@@ -14,6 +14,7 @@ export interface SpeakOptions {
 export type SpeechContext =
   | { kind: 'prompt'; priority: 'auto' | 'manual'; source: 'theoretical_question' | 'follow_up' }
   | { kind: 'hint'; priority: 'auto' | 'manual'; source: string }
+  | { kind: 'clarification'; priority: 'auto' | 'manual'; source: string }
   | { kind: 'feedback'; priority: 'auto' | 'manual'; source: string }
   | { kind: 'system'; priority: 'auto' | 'manual'; source: string }
 
@@ -38,6 +39,9 @@ export class InterviewEngine extends EventEmitter {
   private allEvaluations: Evaluation[] = []
   private currentQuestionId: string | null = null
   private currentQuestionText: string | null = null
+  private currentCode: string = ''
+  private currentIntervalHasHintClarification: boolean = false
+  private currentIntervalHasSubstantialSpeech: boolean = false
 
   constructor(deps: InterviewSessionDeps) {
     super()
@@ -126,12 +130,18 @@ export class InterviewEngine extends EventEmitter {
   }
 
   async processTranscript(text: string, state: InterviewState): Promise<void> {
-    if (state !== InterviewState.WAITING_FOR_ANSWER && state !== InterviewState.THEORETICAL_QUESTION) {
-      return
-    }
-
     this.stateMachine.clearSilenceTimer()
 
+    if (state === InterviewState.WAITING_FOR_ANSWER || state === InterviewState.THEORETICAL_QUESTION) {
+      await this.processTheoreticalTranscript(text, state)
+    } else if (state === InterviewState.WAITING_FOR_APPROACH) {
+      await this.processApproachTranscript(text)
+    } else if (state === InterviewState.MONITORING_CODE) {
+      await this.processMonitoringTranscript(text)
+    }
+  }
+
+  private async processTheoreticalTranscript(text: string, state: InterviewState): Promise<void> {
     const intent = await this.llm.detectIntent(text)
 
     if (intent.intent === 'hint_request') {
@@ -544,6 +554,480 @@ export class InterviewEngine extends EventEmitter {
     this.stateMachine.moveToNextQuestion()
     this.llm.moveToNextQuestion()
     await this.stateMachine.transition('next_question')
+  }
+
+  setCurrentCode(code: string): void {
+    this.currentCode = code
+  }
+
+  resetIntervalTracking(): void {
+    this.currentIntervalHasHintClarification = false
+    this.currentIntervalHasSubstantialSpeech = false
+  }
+
+  private async processApproachTranscript(text: string): Promise<void> {
+    const problem = this.codeAnalysis.getCurrentProblem()
+    if (!problem) {
+      return
+    }
+
+    const currentCode = this.currentCode || this.stateMachine.getPreviousCode() || ''
+    const isWritingCode = currentCode && currentCode.trim().length > 0
+
+    const intent = await this.llm.detectIntent(text)
+
+    if (intent.intent === 'hint_request') {
+      await this.handleApproachHintRequest(text, problem)
+      return
+    }
+
+    if (intent.intent === 'clarification_request') {
+      await this.handleApproachClarificationRequest(text, problem, currentCode)
+      return
+    }
+
+    if (intent.intent === 'skip_question') {
+      this.emit('skipRequested', { problem, text })
+      return
+    }
+
+    await this.stateMachine.transition('approach_provided')
+    this.codeAnalysis.addVerbalExplanation(text)
+    this.syncConversationHistoryFromServices()
+
+    const isFirstApproach = !this.stateMachine.hasCodingApproachSpoken()
+    const response = await this.codeAnalysis.evaluateApproach(text, problem, currentCode, isFirstApproach)
+
+    const textLength = text.trim().length
+    const isShortText = textLength < 80
+
+    if (isWritingCode) {
+      if (response.isClarification) {
+        this.codeAnalysis.addClarificationRequest(text)
+        const clarification = response.clarification || response.feedback || "Let me clarify that for you."
+        this.codeAnalysis.addClarification(clarification)
+        this.syncConversationHistoryFromServices()
+
+        this.emit('speakRequested', <SpeakRequest>{
+          text: clarification,
+          options: { interruptible: true, bargeInPolicy: 'hard' },
+          context: { kind: 'clarification', priority: 'auto', source: 'approach_clarification' }
+        })
+        await this.stateMachine.transition('approach_approved')
+        return
+      }
+
+      if (isShortText && !response.isApproach) {
+        this.stateMachine.setCodingApproachSpoken(true)
+        await this.stateMachine.transition('approach_approved')
+        return
+      }
+
+      this.stateMachine.setCodingApproachSpoken(true)
+
+      if (response.isApproach && response.isCorrect) {
+        const feedback = response.feedback || "Good approach! Keep implementing."
+        this.emit('speakRequested', <SpeakRequest>{
+          text: feedback,
+          options: { interruptible: true, bargeInPolicy: 'hard' },
+          context: { kind: 'feedback', priority: 'auto', source: 'approach_feedback' }
+        })
+        await this.stateMachine.transition('approach_approved')
+      } else if (response.isApproach && !response.isCorrect) {
+        const feedback = response.feedback || "I see. Keep working on your solution."
+        this.emit('speakRequested', <SpeakRequest>{
+          text: feedback,
+          options: { interruptible: true, bargeInPolicy: 'hard' },
+          context: { kind: 'feedback', priority: 'auto', source: 'approach_feedback' }
+        })
+        await this.stateMachine.transition('approach_approved')
+      } else {
+        await this.stateMachine.transition('approach_approved')
+      }
+    } else {
+      if (response.isClarification) {
+        this.codeAnalysis.addClarificationRequest(text)
+        const clarification = response.clarification || response.feedback || "Let me clarify that for you."
+        this.codeAnalysis.addClarification(clarification)
+        this.syncConversationHistoryFromServices()
+
+        this.emit('speakRequested', <SpeakRequest>{
+          text: clarification,
+          options: { interruptible: false, bargeInPolicy: 'soft' },
+          context: { kind: 'clarification', priority: 'auto', source: 'approach_clarification' }
+        })
+        this.stateMachine.startSilenceTimer(120000)
+        await this.stateMachine.transition('approach_needs_retry')
+        return
+      }
+
+      const isUnclear = !response.isApproach && !response.isClarification
+
+      if (isUnclear) {
+        this.stateMachine.startSilenceTimer(120000)
+        await this.stateMachine.transition('approach_needs_retry')
+        return
+      }
+
+      if (response.isApproach && isShortText) {
+        this.stateMachine.startSilenceTimer(120000)
+        await this.stateMachine.transition('approach_needs_retry')
+        return
+      }
+
+      if (response.isApproach) {
+        this.stateMachine.setCodingApproachSpoken(true)
+
+        if (response.isCorrect) {
+          const feedback = response.feedback || "That's a solid approach! Go ahead and implement it."
+          this.emit('speakRequested', <SpeakRequest>{
+            text: feedback,
+            options: { interruptible: false, bargeInPolicy: 'soft' },
+            context: { kind: 'feedback', priority: 'auto', source: 'approach_feedback' }
+          })
+          await this.stateMachine.transition('approach_approved')
+        } else {
+          const feedback = response.feedback || "That's an interesting approach. Let's proceed with the implementation and see how it goes."
+          this.emit('speakRequested', <SpeakRequest>{
+            text: feedback,
+            options: { interruptible: false, bargeInPolicy: 'soft' },
+            context: { kind: 'feedback', priority: 'auto', source: 'approach_feedback' }
+          })
+          await this.stateMachine.transition('approach_approved')
+        }
+      } else {
+        const approachPromptCount = this.stateMachine.getApproachPromptCount()
+        if (approachPromptCount === 0) {
+          this.stateMachine.incrementApproachPromptCount()
+          const acknowledgement = "I'd like to hear your approach to solving this problem. How do you plan to tackle it?"
+
+          this.codeAnalysis.addConversationMessage('assistant', acknowledgement, {
+            type: 'feedback',
+            codingProblemId: problem.id,
+            section: 'coding'
+          } as any)
+          this.syncConversationHistoryFromServices()
+
+          this.emit('speakRequested', <SpeakRequest>{
+            text: acknowledgement,
+            options: { interruptible: false, bargeInPolicy: 'soft' },
+            context: { kind: 'system', priority: 'auto', source: 'approach_prompt' }
+          })
+          this.stateMachine.startSilenceTimer(120000)
+          await this.stateMachine.transition('approach_needs_retry')
+        } else {
+          this.stateMachine.setCodingApproachSpoken(true)
+          await this.stateMachine.transition('approach_approved')
+        }
+      }
+    }
+  }
+
+  private async handleApproachHintRequest(text: string, problem: CodingProblem): Promise<void> {
+    if (!this.stateMachine.canProvideCodingHint()) {
+      const limitMessage = "I've provided the maximum number of hints. Please continue with your approach."
+      this.codeAnalysis.addConversationMessage('assistant', limitMessage, {
+        type: 'feedback',
+        codingProblemId: problem.id,
+        section: 'coding'
+      } as any)
+      this.syncConversationHistoryFromServices()
+
+      this.emit('speakRequested', <SpeakRequest>{
+        text: limitMessage,
+        options: { interruptible: false, bargeInPolicy: 'soft' },
+        context: { kind: 'hint', priority: 'manual', source: 'approach_manual_hint_limit' }
+      })
+      this.stateMachine.startSilenceTimer(120000)
+      return
+    }
+
+    const hintNumber = this.stateMachine.incrementCodingHintCount()
+    const hintLevel = Math.min(hintNumber, 2) as 1 | 2
+
+    this.codeAnalysis.addHintRequest(text)
+    const hint = await this.codeAnalysis.getApproachHint(problem, hintLevel)
+    this.codeAnalysis.addHint(hint, hintLevel)
+    this.syncConversationHistoryFromServices()
+
+    this.emit('hintSpokenRequested', hint)
+    this.stateMachine.startSilenceTimer(120000)
+    await this.stateMachine.transition('approach_needs_retry')
+  }
+
+  private async handleApproachClarificationRequest(text: string, problem: CodingProblem, currentCode: string): Promise<void> {
+    if (!this.stateMachine.canAskCodingClarification()) {
+      const limitMessage = "I've provided the maximum number of clarifications. Please proceed with the information you have."
+      this.codeAnalysis.addConversationMessage('assistant', limitMessage, {
+        type: 'feedback',
+        codingProblemId: problem.id,
+        section: 'coding'
+      } as any)
+      this.syncConversationHistoryFromServices()
+
+      this.emit('speakRequested', <SpeakRequest>{
+        text: limitMessage,
+        options: { interruptible: false, bargeInPolicy: 'soft' },
+        context: { kind: 'clarification', priority: 'manual', source: 'approach_manual_clarification_limit' }
+      })
+      this.stateMachine.startSilenceTimer(120000)
+      return
+    }
+
+    this.stateMachine.incrementCodingClarificationCount()
+    this.codeAnalysis.addClarificationRequest(text)
+
+    const clarification = await this.llm.generateCodingClarification(
+      problem,
+      text,
+      this.stateMachine.getCodingClarificationCount(),
+      currentCode
+    )
+
+    this.codeAnalysis.addClarification(clarification)
+    this.syncConversationHistoryFromServices()
+
+    this.emit('clarificationSpokenRequested', clarification)
+    this.stateMachine.startSilenceTimer(120000)
+    await this.stateMachine.transition('approach_needs_retry')
+  }
+
+  private async processMonitoringTranscript(text: string): Promise<void> {
+    const problem = this.codeAnalysis.getCurrentProblem()
+    if (!problem) {
+      return
+    }
+
+    const intent = await this.llm.detectIntent(text)
+
+    if (intent.intent === 'hint_request' || intent.intent === 'clarification_request') {
+      this.currentIntervalHasHintClarification = true
+    }
+
+    const transcriptLength = text.trim().length
+    if (transcriptLength > 70) {
+      this.currentIntervalHasSubstantialSpeech = true
+    }
+
+    if (intent.intent === 'hint_request') {
+      await this.handleMonitoringHintRequest(text, problem)
+      return
+    }
+
+    if (intent.intent === 'clarification_request') {
+      await this.handleMonitoringClarificationRequest(text, problem)
+      return
+    }
+
+    if (intent.intent === 'skip_question') {
+      this.emit('skipRequested', { problem, text })
+      return
+    }
+
+    const trimmed = text.trim()
+    if (trimmed.length < 80) {
+      this.codeAnalysis.addConversationMessage('user', text, {
+        type: 'answer',
+        codingProblemId: problem.id,
+        section: 'coding'
+      })
+      this.syncConversationHistoryFromServices()
+      this.stateMachine.startSilenceTimer(120000)
+      return
+    }
+
+    this.codeAnalysis.addConversationMessage('user', text, {
+      type: 'answer',
+      codingProblemId: problem.id,
+      section: 'coding'
+    })
+    this.syncConversationHistoryFromServices()
+
+    const acknowledgement = "I understand. Keep working on your solution."
+    this.emit('speakRequested', <SpeakRequest>{
+      text: acknowledgement,
+      options: { interruptible: true, bargeInPolicy: 'hard' },
+      context: { kind: 'system', priority: 'auto', source: 'monitoring_acknowledgement' }
+    })
+    this.stateMachine.startSilenceTimer(120000)
+  }
+
+  private async handleMonitoringHintRequest(text: string, problem: CodingProblem): Promise<void> {
+    if (!this.stateMachine.canProvideCodingHint()) {
+      const limitMessage = "I've provided the maximum number of hints. Please continue with your implementation."
+      this.codeAnalysis.addConversationMessage('assistant', limitMessage, {
+        type: 'feedback',
+        codingProblemId: problem.id,
+        section: 'coding'
+      } as any)
+      this.syncConversationHistoryFromServices()
+
+      this.emit('speakRequested', <SpeakRequest>{
+        text: limitMessage,
+        options: { interruptible: false, bargeInPolicy: 'soft' },
+        context: { kind: 'hint', priority: 'manual', source: 'coding_manual_hint_limit' }
+      })
+      this.stateMachine.startSilenceTimer(120000)
+      return
+    }
+
+    const hintNumber = this.stateMachine.incrementCodingHintCount()
+    const hintLevel = Math.min(hintNumber, 2) as 1 | 2
+
+    this.codeAnalysis.addHintRequest(text)
+    const currentCode = this.currentCode || this.stateMachine.getPreviousCode() || ''
+    const hintText = await this.codeAnalysis.getHint(problem, currentCode, hintLevel)
+    this.codeAnalysis.addHint(hintText, hintLevel)
+    this.syncConversationHistoryFromServices()
+
+    this.emit('hintSpokenRequested', hintText)
+    this.stateMachine.startSilenceTimer(120000)
+  }
+
+  private async handleMonitoringClarificationRequest(text: string, problem: CodingProblem): Promise<void> {
+    if (!this.stateMachine.canAskCodingClarification()) {
+      const limitMessage = "I've provided the maximum number of clarifications. Please proceed with the information you have."
+      this.codeAnalysis.addConversationMessage('assistant', limitMessage, {
+        type: 'feedback',
+        codingProblemId: problem.id,
+        section: 'coding'
+      } as any)
+      this.syncConversationHistoryFromServices()
+
+      this.emit('speakRequested', <SpeakRequest>{
+        text: limitMessage,
+        options: { interruptible: false, bargeInPolicy: 'soft' },
+        context: { kind: 'clarification', priority: 'manual', source: 'coding_manual_clarification_limit' }
+      })
+      this.stateMachine.startSilenceTimer(120000)
+      return
+    }
+
+    this.stateMachine.incrementCodingClarificationCount()
+    this.codeAnalysis.addClarificationRequest(text)
+
+    const currentCode = this.stateMachine.getPreviousCode() || ''
+    const clarification = await this.llm.generateCodingClarification(
+      problem,
+      text,
+      this.stateMachine.getCodingClarificationCount(),
+      currentCode
+    )
+
+    this.codeAnalysis.addClarification(clarification)
+    this.syncConversationHistoryFromServices()
+
+    this.emit('clarificationSpokenRequested', clarification)
+    this.stateMachine.startSilenceTimer(120000)
+  }
+
+  async analyzeCode(codeData: { code: string, problemId: string, timestamp: number }, problem: CodingProblem | null): Promise<any> {
+    if (!problem) {
+      throw new Error('No coding problem context')
+    }
+
+    this.currentCode = codeData.code
+    const analysis = await this.codeAnalysis.analyzeCode(codeData.code || '', problem)
+
+    const currentState = this.stateMachine.getState()
+    const isMonitoringCode = currentState === InterviewState.MONITORING_CODE
+
+    if (!isMonitoringCode) {
+      return analysis
+    }
+
+    const shouldProvideHint = analysis.isStuck && !this.currentIntervalHasHintClarification && !this.currentIntervalHasSubstantialSpeech
+
+    this.currentIntervalHasHintClarification = false
+    this.currentIntervalHasSubstantialSpeech = false
+
+    if (shouldProvideHint) {
+      if (!this.stateMachine.canProvideCodingHint()) {
+        return analysis
+      }
+
+      const hintNumber = this.stateMachine.incrementCodingHintCount()
+      const hintLevel = Math.min(hintNumber, 2) as 1 | 2
+      const hintText = await this.codeAnalysis.getHint(problem, codeData.code, hintLevel)
+      this.codeAnalysis.addHint(hintText, hintLevel)
+      this.syncConversationHistoryFromServices()
+
+      this.emit('hintSpokenRequested', hintText)
+    }
+
+    return analysis
+  }
+
+  async submitCodingSolution(
+    code: string,
+    problem: CodingProblem,
+    codingProblems: CodingProblem[],
+    isTimeout: boolean = false,
+    timeComplexity?: string,
+    spaceComplexity?: string
+  ): Promise<{ success: boolean, feedback: string, hasNextProblem: boolean }> {
+    this.codeAnalysis.setFinalCode(code, timeComplexity, spaceComplexity)
+    this.syncConversationHistoryFromServices()
+
+    const analysis = await this.codeAnalysis.analyzeCode(code, problem)
+    this.syncConversationHistoryFromServices()
+
+    let feedback = ''
+    if (isTimeout) {
+      if (analysis.progress >= 50) {
+        feedback = "Time's up. Moving on."
+      } else {
+        feedback = "Time's up. Let's continue."
+      }
+    } else {
+      try {
+        feedback = await this.llm.generateSubmissionFeedback(
+          problem,
+          code,
+          {
+            progress: analysis.progress,
+            approach: analysis.approach,
+            issues: analysis.issues,
+            codeQuality: analysis.codeQuality
+          }
+        )
+      } catch (error) {
+        if (analysis.approach === 'correct' && analysis.progress >= 80) {
+          feedback = "Your solution is correct. Well done."
+        } else if (analysis.approach === 'incorrect') {
+          const mainIssue = analysis.issues[0] || "there's a logic error in your approach"
+          feedback = `Your solution has issues. ${mainIssue}.`
+        } else if (analysis.approach === 'incomplete') {
+          const mainIssue = analysis.issues[0] || "some parts are missing"
+          feedback = `Your solution is incomplete. ${mainIssue}.`
+        } else if (analysis.progress >= 50) {
+          const mainIssue = analysis.issues[0] || "there are some issues to address"
+          feedback = `You've made good progress, but ${mainIssue}.`
+        } else {
+          feedback = "Your solution needs more work. Let's move on."
+        }
+      }
+    }
+
+    const currentProblemIndex = codingProblems.findIndex(p => p.id === problem.id)
+    const hasNextProblem = currentProblemIndex >= 0 && currentProblemIndex < codingProblems.length - 1
+
+    this.emit('solutionSubmitted', {
+      code,
+      problem,
+      timeComplexity,
+      spaceComplexity,
+      isTimeout,
+      hasNextProblem,
+      feedback,
+      analysis
+    })
+
+    return {
+      success: analysis.progress >= 70,
+      feedback,
+      hasNextProblem
+    }
   }
 
   private syncConversationHistoryFromServices(): void {
