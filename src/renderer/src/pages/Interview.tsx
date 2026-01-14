@@ -7,7 +7,7 @@ import { useAppDispatch, useAppSelector } from '../store';
 import { InterviewSession } from '../components/interview/InterviewSession';
 import { ResumeUpload } from '../components/interview/ResumeUpload';
 import { InfoCollection } from '../components/interview/InfoCollection';
-import { addChatMessage, setResumeData, setDetailedResumeData, setCurrentSession } from '../store/slices/interviewSlice';
+import { addChatMessage, setResumeData, setDetailedResumeData, startInterviewAsync } from '../store/slices/interviewSlice';
 import { API_BASE_URL } from '../constants/api';
 import axios from 'axios';
 
@@ -80,9 +80,9 @@ export const Interview: React.FC = () => {
       };
       dispatch(setDetailedResumeData(updatedDetailedData));
 
-      // Start the interview session
+      // Start the interview session using centralized async thunk
       if (currentSession) {
-        const response = await axios.post(`${API_BASE_URL}/interview/start`, {
+        const result = await dispatch(startInterviewAsync({
           candidateData: {
             id: user?.id,
             email: info.email,
@@ -90,34 +90,26 @@ export const Interview: React.FC = () => {
             phone: info.phone,
           },
           linkToken: currentSession.interviewLinkId
-        }, {
-          headers: {
-            Authorization: `Bearer ${localStorage.getItem('authToken')}`
-          }
-        });
-
-        if (response.data.success) {
-          dispatch(setCurrentSession(response.data));
-          
-          // Add the first question to chat messages if available
-          if (response.data.questions && response.data.questions.length > 0) {
-            const firstQuestion = response.data.questions[0];
-            const questionMessage = {
-              id: `msg-${Date.now()}`,
-              sessionId: response.data.sessionId,
-              type: 'assistant' as const,
-              content: firstQuestion.question,
-              timestamp: new Date().toISOString()
-            };
-            dispatch(addChatMessage(questionMessage));
-          }
-          
-          setCurrentStep('interview');
-          message.success('Interview started!');
+        })).unwrap();
+        
+        // Add the first question to chat messages if available
+        if (result.questions && result.questions.length > 0) {
+          const firstQuestion = result.questions[0];
+          const questionMessage = {
+            id: `msg-${Date.now()}`,
+            sessionId: result.sessionId,
+            type: 'assistant' as const,
+            content: firstQuestion.question,
+            timestamp: new Date().toISOString()
+          };
+          dispatch(addChatMessage(questionMessage));
         }
+        
+        setCurrentStep('interview');
+        message.success('Interview started!');
       }
     } catch (error: any) {
-      message.error(error.response?.data?.message || 'Failed to start interview');
+      message.error(error.message || 'Failed to start interview');
     } finally {
       setCollectingInfo(false);
     }

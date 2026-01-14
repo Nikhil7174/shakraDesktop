@@ -8,13 +8,14 @@ import { machineIdSync } from 'node-machine-id'
 export interface AppConfig {
   assemblyaiApiKey: string
   openaiApiKey: string
+  deepgramApiKey?: string
   serverUrl: string
   livekitUrl?: string
   livekitApiKey?: string
   livekitApiSecret?: string
   // LiveKit Agent configuration
-  livekitSttProvider?: 'assemblyai' | 'openai' | 'whisper'
-  livekitSttApiKey?: string // For AssemblyAI, if different from OpenAI
+  livekitSttProvider?: 'deepgram' | 'assemblyai' | 'openai' | 'whisper'
+  livekitSttApiKey?: string // For Deepgram/AssemblyAI, if different from OpenAI
   livekitLlmModel?: string // e.g., 'gpt-4', 'gpt-3.5-turbo'
   livekitTtsVoice?: string // e.g., 'alloy', 'echo', 'fable', etc.
   livekitTtsModel?: string // e.g., 'tts-1', 'tts-1-hd'

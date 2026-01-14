@@ -20,8 +20,28 @@ const authPersistConfig = {
 
 const persistConfig = {
   key: 'root',
+  version: 2, // Increment this to invalidate old persisted state
   storage,
-  whitelist: ['user', 'interview'], 
+  whitelist: ['user', 'interview'],
+  migrate: (state: any) => {
+    // Clear old interview state that doesn't have LiveKit credentials
+    if (state && state.interview && state.interview.currentSession) {
+      const session = state.interview.currentSession;
+      // If session exists but doesn't have token/wsUrl/roomName, clear it
+      if (!session.token || !session.wsUrl || !session.roomName) {
+        console.log('🔄 [Redux-Persist] Migrating: Clearing old session without LiveKit credentials');
+        return {
+          ...state,
+          interview: {
+            ...state.interview,
+            currentSession: null,
+            chatMessages: [],
+          }
+        };
+      }
+    }
+    return state;
+  }
 };
 
 const rootReducer = combineReducers({

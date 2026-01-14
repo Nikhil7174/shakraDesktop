@@ -490,6 +490,9 @@ export const InterviewChat: React.FC = () => {
               resumeFromIndex={(currentSession as any)?.answers?.length || 0}
               skipIntro={resumeRequested && ((currentSession as any)?.answers?.length || 0) > 0}
               interviewLinkId={currentSession.interviewLinkId}
+              livekitToken={(currentSession as any)?.token}
+              livekitUrl={(currentSession as any)?.wsUrl}
+              roomName={(currentSession as any)?.roomName}
               onComplete={handleInterviewComplete}
               onSaveResults={saveResults}
               onStateChange={setInterviewState}

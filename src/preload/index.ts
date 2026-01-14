@@ -32,10 +32,6 @@ const interviewAPI = {
   },
   
   // LiveKit token management
-  getLivekitToken: (roomName: string, participantName?: string) => ipcRenderer.invoke('get-livekit-token', roomName, participantName),
-  // Legacy STT token management (for backwards compatibility)
-  getSTTToken: () => ipcRenderer.invoke('get-stt-token'),
-  updateSTTToken: (token: string) => ipcRenderer.invoke('update-stt-token', token),
   
   // Config management
   setAuthToken: (token: string | null) => ipcRenderer.invoke('set-auth-token', token),

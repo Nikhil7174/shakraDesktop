@@ -21,6 +21,9 @@ interface VoiceInterviewSessionProps {
   resumeFromIndex?: number
   skipIntro?: boolean
   interviewLinkId?: number
+  livekitToken?: string
+  livekitUrl?: string
+  roomName?: string
   onComplete?: (results: any) => void
   onSaveResults?: (summary: any) => Promise<void>
   onStateChange?: (state: string) => void
@@ -33,6 +36,9 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   resumeFromIndex,
   skipIntro,
   interviewLinkId,
+  livekitToken: tokenFromProps,
+  livekitUrl: urlFromProps,
+  roomName: roomNameFromProps,
   onComplete,
   onSaveResults,
   onStateChange
@@ -262,21 +268,19 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           return
         }
 
-        // Get LiveKit room token
-        const roomName = `interview-${interviewId}`
-        const tokenResult = await window.electronAPI.getLivekitToken?.(roomName, 'candidate') || 
-                           await window.electronAPI.getSTTToken() // Fallback for backwards compatibility
-        if (!tokenResult.success || !tokenResult.token) {
-          console.error('Failed to get LiveKit token:', tokenResult.error)
+        // Token must be provided from /api/interviews/start response
+        if (!tokenFromProps || !urlFromProps || !roomNameFromProps) {
+          console.error('Missing LiveKit credentials from interview start response')
           return
         }
 
-        console.log('🎤 [Renderer] LiveKit token obtained, room:', roomName)
-        console.log('🎤 [Renderer] Token:', tokenResult.token?.substring(0, 50) + '...', 'URL:', tokenResult.url)
+        console.log('🎤 [Renderer] Using LiveKit token from interview start response')
+        console.log('🎤 [Renderer] Room:', roomNameFromProps)
+        console.log('🎤 [Renderer] Token:', tokenFromProps?.substring(0, 50) + '...')
         
         // Store token and URL for LiveKitRoom
         // LiveKitRoom expects full URL with wss:// protocol
-        let serverUrl = tokenResult.url || 'shakra-ypfk18zl.livekit.cloud'
+        let serverUrl = urlFromProps
         // Ensure URL has wss:// protocol
         if (!serverUrl.startsWith('wss://') && !serverUrl.startsWith('ws://')) {
           serverUrl = `wss://${serverUrl.replace(/^(https?):\/\//, '')}`
@@ -286,9 +290,9 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           serverUrl = serverUrl.replace('http://', 'ws://')
         }
         
-        setLivekitToken(tokenResult.token)
+        setLivekitToken(tokenFromProps)
         setLivekitUrl(serverUrl)
-        setLivekitRoomName(roomName)
+        setLivekitRoomName(roomNameFromProps)
         setHasMicStream(true) // LiveKit handles mic automatically
 
         // Determine resume parameters (props take priority; else use user choice)
@@ -1650,9 +1654,73 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           // Room parameter might be undefined or not have a name property
           const roomName = room?.name || livekitRoomName || 'unknown'
           console.log('🎤 [LiveKit] Connected to room:', roomName)
-          // Don't auto-enable listening on connect - wait for backend state change
-          // This keeps mic off during intro until the first question
-          setIsListening(false)
+          
+          if (room) {
+            // Function to check for agent and enable listening
+            const checkForAgentAndEnableListening = () => {
+              // Check if there are any remote participants (agent should be a remote participant)
+              const remoteParticipants = Array.from(room.remoteParticipants.values())
+              console.log('🎤 [LiveKit] Remote participants:', remoteParticipants.map(p => ({ identity: p.identity, isAgent: p.isAgent })))
+              
+              // In a 1-on-1 interview, any remote participant should be the agent
+              // Or check for isAgent flag if available
+              if (remoteParticipants.length > 0) {
+                const hasAgent = remoteParticipants.some(p => 
+                  p.isAgent || 
+                  p.identity?.toLowerCase().includes('agent') ||
+                  p.identity?.startsWith('agent-')
+                )
+                
+                if (hasAgent || remoteParticipants.length > 0) {
+                  console.log('✅ [LiveKit] Agent detected in room, setting isListening to true')
+                  isListeningRef.current = true
+                  setIsListening(true)
+                  return true
+                }
+              }
+              return false
+            }
+            
+            // Check immediately for existing participants
+            if (checkForAgentAndEnableListening()) {
+              return // Agent already found, we're done
+            }
+            
+            // Listen for participant events to detect when agent joins
+            const handleParticipantConnected = (participant: any) => {
+              console.log('🎤 [LiveKit] Participant connected:', participant.identity, 'isAgent:', participant.isAgent)
+              checkForAgentAndEnableListening()
+            }
+            
+            // Listen for new participants joining
+            room.on('participantConnected', handleParticipantConnected)
+            
+            // Fallback: Enable listening after a delay if agent hasn't been detected
+            // This handles cases where the agent might be slow to join or detection fails
+            const fallbackTimeout = setTimeout(() => {
+              // Use ref to check current state (avoids stale closure)
+              if (!isListeningRef.current) {
+                console.log('⏳ [LiveKit] Fallback: Enabling listening after delay (agent should be ready)')
+                isListeningRef.current = true
+                setIsListening(true)
+              }
+            }, 3000) // 3 second delay
+            
+            // Cleanup listeners and timeout on disconnect
+            const handleDisconnected = () => {
+              room.off('participantConnected', handleParticipantConnected)
+              room.off('disconnected', handleDisconnected)
+              clearTimeout(fallbackTimeout)
+            }
+            room.on('disconnected', handleDisconnected)
+          } else {
+            // Fallback: if room is not available, wait a bit and then enable listening
+            setTimeout(() => {
+              console.log('⏳ [LiveKit] Room not available, enabling listening after delay')
+              isListeningRef.current = true
+              setIsListening(true)
+            }, 3000)
+          }
         }}
         onDisconnected={() => {
           console.log('🎤 [LiveKit] Disconnected from room')

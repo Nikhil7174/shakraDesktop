@@ -5,8 +5,7 @@ import { LinkOutlined, UserOutlined, LeftOutlined } from '@ant-design/icons';
 import { colors, spacing } from '../styles';
 import { useAppDispatch, useAppSelector } from '../store';
 import { useNavigate, useLocation } from 'react-router-dom';
-// import { loginSuccess } from '../store/slices/authSlice';
-import { setCurrentSession } from '../store/slices/interviewSlice';
+import { startInterviewAsync } from '../store/slices/interviewSlice';
 import { API_BASE_URL } from '../constants/api';
 import { extractToken, extractTokenFromHash, extractTokenFromSearch } from '../utils/tokenExtractor';
 import { RestartModal } from '../components/interview/RestartModal';
@@ -135,29 +134,19 @@ export const JoinInterview: React.FC = () => {
         detailedResumeData: detailedResumeData,
       };
 
-      const response = await axios.post(`${API_BASE_URL}/interview/start`, {
+      // Use centralized async thunk - single source of truth
+      const result = await dispatch(startInterviewAsync({
         candidateData,
         linkToken: linkInfo.token
-      }, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('authToken')}`
-        }
-      });
-
-      if (response.data.success) {
-        const session = response.data;
-        
-        console.log('Interview started successfully, session data:', session);
-        
-        // Save session to Redux
-        dispatch(setCurrentSession(session));
-        
-        message.success('Interview started successfully!');
-        // Navigate to interview chat (new flow with resume upload)
-        navigate('/interview', { state: { fromLink: true, sessionId: session.sessionId } });
-      }
+      })).unwrap();
+      
+      console.log('🚀 [JoinInterview] Interview started via async thunk');
+      
+      message.success('Interview started successfully!');
+      // Navigate to interview chat (new flow with resume upload)
+      navigate('/interview', { state: { fromLink: true, sessionId: result.sessionId } });
     } catch (error: any) {
-      message.error(error.response?.data?.message || 'Failed to start interview');
+      message.error(error.message || 'Failed to start interview');
     } finally {
       setLoading(false);
     }

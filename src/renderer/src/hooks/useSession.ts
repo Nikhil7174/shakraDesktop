@@ -3,7 +3,6 @@
 import { useCallback, useMemo, useState, useEffect } from 'react';
 import { useAppDispatch, useAppSelector } from '../store';
 import { 
-  setCurrentSession, 
   updateSession, 
   setChatMessages, 
   setResumeData, 
@@ -131,39 +130,7 @@ export const useSession = () => {
     };
   }, [currentSession?.answers?.length, currentSession?.questions?.length, currentSession?.startTime]);
 
-  /**
-   * Save session data to Redux (automatically persisted by redux-persist)
-   */
-  const saveSession = useCallback((sessionData: {
-    sessionId: string;
-    resumeData?: ResumeData;
-    detailedResumeData?: DetailedResumeData;
-    currentSession: InterviewSession;
-    chatMessages?: ChatMessage[];
-  }) => {
-    try {
-      // Save to Redux (automatically persisted)
-      dispatch(setCurrentSession(sessionData.currentSession));
-      
-      if (sessionData.resumeData) {
-        dispatch(setResumeData(sessionData.resumeData));
-      }
-      
-      if (sessionData.detailedResumeData) {
-        dispatch(setDetailedResumeData(sessionData.detailedResumeData));
-      }
-      
-      if (sessionData.chatMessages) {
-        dispatch(setChatMessages(sessionData.chatMessages));
-      }
-      
-      console.log('Session saved successfully to Redux:', sessionData.sessionId);
-    } catch (error) {
-      console.error('Failed to save session:', error);
-      dispatch(setError('Failed to save session data'));
-      throw error;
-    }
-  }, [dispatch]);
+  // saveSession removed - use startInterviewAsync thunk instead
 
   /**
    * Restore session data (for welcome back modal)
@@ -309,7 +276,7 @@ export const useSession = () => {
     isInterviewActive,
     
     // Actions
-    saveSession,
+    // saveSession removed - use startInterviewAsync thunk instead
     restoreSession: restoreSessionData,
     updateSession: updateSessionData,
     addChatMessage,

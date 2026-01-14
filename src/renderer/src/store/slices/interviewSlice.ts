@@ -1,7 +1,8 @@
 // src/store/slices/interviewSlice.ts
-import { createSlice } from '@reduxjs/toolkit';
+import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import type { PayloadAction } from '@reduxjs/toolkit';
 import type { ResumeData, DetailedResumeData, InterviewSession, ChatMessage } from '../../types';
+import { interviewApi } from '../../services/interviewApi';
 
 interface InterviewState {
   // Resume Data
@@ -29,6 +30,18 @@ interface InterviewState {
   lastDataFetch: number | null;
   cacheExpiry: number; // 30 minutes in milliseconds
 }
+
+/**
+ * Async thunk for starting an interview
+ * Single source of truth for interview initialization
+ */
+export const startInterviewAsync = createAsyncThunk(
+  'interview/start',
+  async ({ candidateData, linkToken }: { candidateData: any; linkToken: string }) => {
+    const session = await interviewApi.startInterview(candidateData, linkToken);
+    return session;
+  }
+);
 
 const initialState: InterviewState = {
   // Resume Data
@@ -165,6 +178,31 @@ const interviewSlice = createSlice({
       state.chatMessages = [];
       state.sessionHistory = [];
     }
+  },
+  extraReducers: (builder) => {
+    builder
+      // Handle startInterviewAsync
+      .addCase(startInterviewAsync.pending, (state) => {
+        state.isStartingInterview = true;
+        state.error = null;
+        console.log('🔄 [Redux] Starting interview...');
+      })
+      .addCase(startInterviewAsync.fulfilled, (state, action) => {
+        state.currentSession = action.payload;
+        state.sessionHistory.push(action.payload);
+        state.isStartingInterview = false;
+        console.log('✅ [Redux] Interview started, session stored:', {
+          sessionId: action.payload.sessionId,
+          hasToken: !!action.payload.token,
+          hasWsUrl: !!action.payload.wsUrl,
+          hasRoomName: !!action.payload.roomName
+        });
+      })
+      .addCase(startInterviewAsync.rejected, (state, action) => {
+        state.error = action.error.message || 'Failed to start interview';
+        state.isStartingInterview = false;
+        console.error('❌ [Redux] Failed to start interview:', action.error.message);
+      });
   }
 });
 

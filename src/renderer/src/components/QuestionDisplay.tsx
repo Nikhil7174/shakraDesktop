@@ -104,68 +104,16 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
 
   // Determine display text and meta
   const isIntroMode = !question && !!introMessage
+  const isLoadingNoQuestion = !question && !introMessage
+
   const displayText = question 
     ? (followUpQuestionText || question.question)
     : (introMessage || null)
+
   const displayMeta = question
     ? `Question ${progress.current} of ${progress.total}`
-    : (introMeta || 'Loading...')
+    : (isLoadingNoQuestion ? 'Loading question...' : (introMeta || 'Loading...'))
   const isFollowUp = !!followUpQuestionText && !!question
-
-  // Show loading state only if no question and no intro message
-  if (!question && !introMessage) {
-    return (
-      <div className="meeting-display">
-        <div className="meeting-container">
-          <div className="video-window ai-video">
-            <div className="video-header">
-              <div className="video-header-info">
-                <div className="video-name">AI Interviewer</div>
-                <div className="video-meta">Loading...</div>
-              </div>
-            </div>
-            <div className="video-content">
-              <div className="video-background">
-                <div className="loading-state">
-                  <div className="spinner"></div>
-                  <p>Loading question...</p>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div className="video-window candidate-video">
-            <div className="video-header">
-              <div className="video-header-info">
-                <div className="video-name">You</div>
-                <div className="video-meta">Candidate</div>
-              </div>
-            </div>
-            <div className="video-content">
-              <VideoCapture
-                onStreamReady={() => {
-                  setTimeout(() => {
-                    const videoEl = document.querySelector('.candidate-video video') as HTMLVideoElement
-                    if (videoEl && (window as any).setVideoElementRef) {
-                      (window as any).setVideoElementRef(videoEl)
-                    }
-                  }, 200)
-                }}
-                onVideoElementReady={(videoEl) => {
-                  setVideoElement(videoEl)
-                  console.log('📹 [QuestionDisplay] Video element ready for vision tracking')
-                }}
-                onStreamError={(error) => {
-                  console.error('Video capture error:', error)
-                }}
-                className="candidate-video-capture"
-                autoStart={true}
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-    )
-  }
 
   return (
     <div className="meeting-display">

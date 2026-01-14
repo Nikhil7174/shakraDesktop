@@ -19,78 +19,8 @@ export const useInterview = () => {
   const { resumeData, detailedResumeData } = useAppSelector(state => state.interview);
   const { token } = useAppSelector(state => state.auth);
 
-  // Use the new unified session management
-  const { saveSession, addChatMessage, markUserInteraction } = useSession();
-
-  const startInterview = useCallback(async (candidateData: DetailedResumeData, linkToken: string) => {
-    try {
-      dispatch(setStartingInterview(true));
-      dispatch(setError(null));
-
-      if (!linkToken) {
-        throw new Error('Interview link token is required');
-      }
-
-      const response = await axios.post(`${API_BASE_URL}/interview/start`, {
-        candidateData,
-        linkToken
-      }, {
-        headers: {
-          Authorization: `Bearer ${token}`
-        }
-      });
-
-      if (response.data.success) {
-        const session = response.data;
-
-        // Save new session using unified session management
-        console.log('=== STARTING INTERVIEW - SAVING SESSION ===');
-        console.log('Saving session to Redux:', session.sessionId);
-
-        // Create complete session with resume data
-        const completeSession = {
-          sessionId: session.sessionId,
-          resumeData: resumeData || undefined,
-          detailedResumeData: detailedResumeData || undefined,
-          currentSession: {
-            ...session,
-            interviewLinkId: session.interviewLinkId // Store the interview link ID
-          },
-          chatMessages: [],
-          sessionType: 'new' as const
-        };
-
-        // Use Redux-only session management (automatically persisted via redux-persist)
-        saveSession(completeSession);
-        console.log('Session saved successfully with resume data');
-
-        // Always add first question for new interview (don't check stored messages)
-        if (session.questions && session.questions.length > 0) {
-          const firstQuestion = session.questions[0];
-
-          const questionMessage: ChatMessage = {
-            id: `msg-${Date.now()}`,
-            sessionId: session.sessionId,
-            type: 'assistant',
-            content: firstQuestion.question,
-            timestamp: new Date().toISOString()
-          };
-
-          // Use unified session management for chat messages
-          addChatMessage(questionMessage);
-        }
-
-        return session;
-      }
-    } catch (error: any) {
-      console.error(' useInterview: Start interview error:', error);
-      const errorMessage = error.response?.data?.message || 'Failed to start interview';
-      dispatch(setError(errorMessage));
-      throw new Error(errorMessage);
-    } finally {
-      dispatch(setStartingInterview(false));
-    }
-  }, [dispatch, saveSession, addChatMessage]);
+  // Note: startInterview is now handled by startInterviewAsync thunk in interviewSlice
+  // This hook only handles submitAnswer and saveResults
 
   const submitAnswer = useCallback(async (
     questionId: string,
@@ -248,7 +178,7 @@ export const useInterview = () => {
     startingInterview: isStartingInterview,
     submittingAnswer: isSubmittingAnswer,
     error,
-    startInterview,
+    // startInterview removed - use startInterviewAsync from interviewSlice instead
     submitAnswer,
     getCurrentSession,
     restoreSession,
