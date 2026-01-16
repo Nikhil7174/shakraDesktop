@@ -97,6 +97,16 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle')
   const [saveRetryCount, setSaveRetryCount] = useState(0)
   const saveSummaryRef = useRef<any>(null)
+  const isInterviewStartedRef = useRef(false)
+
+  // Cleanup on unmount - disconnect from LiveKit room
+  useEffect(() => {
+    return () => {
+      if (isInterviewStartedRef.current) {
+        console.log('🛑 [VoiceInterviewSession] Component unmounting - cleaning up')
+      }
+    }
+  }, [])
 
   // Initialize vision security tracking that stays active throughout the interview
   // This works even when video windows are hidden (like in coding section)
@@ -294,6 +304,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         setLivekitUrl(serverUrl)
         setLivekitRoomName(roomNameFromProps)
         setHasMicStream(true) // LiveKit handles mic automatically
+        isInterviewStartedRef.current = true
 
         // Determine resume parameters (props take priority; else use user choice)
         const effectiveResumeFromIndex = typeof resumeFromIndex === 'number'
@@ -304,21 +315,13 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           ? skipIntro
           : (userChoseResume && (unfinishedSession?.questionsAnswered ?? 0) > 0)
 
-        // Start the interview
-        const result = await window.electronAPI.startInterview({
-          id: interviewId,
-          questions,
-          codingProblems,
-          resumeFromIndex: effectiveResumeFromIndex,
-          skipIntro: effectiveSkipIntro
-        })
-
-        if (!result.success) {
-          console.error('Failed to start interview:', result.error)
-          return
-        }
-
-        console.log('Interview started successfully')
+        // Note: We no longer start the agent via Electron IPC.
+        // The LiveKit Agents process is long-lived and attaches to the room automatically.
+        // At this point we've:
+        // - Generated questions on the server
+        // - Created a LiveKit room + token
+        // - Connected this client to the room
+        // The agent process will pick up the job when the room is created.
       } catch (error) {
         console.error('Failed to initialize interview:', error)
       }
