@@ -100,7 +100,7 @@ export class ProcessMonitor {
     'notion', 'evernote', 'onenote',
     
     // Code editors and IDEs
-    'code', 'vscode', 'visual studio', 'intellij', 'pycharm', 'webstorm',
+    'intellij', 'pycharm', 'webstorm',
     'android studio', 'xcode', 'sublime', 'atom', 'brackets', 'vim', 'emacs',
     'notepad++', 'notepad', 'gedit', 'kate',
     

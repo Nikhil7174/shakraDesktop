@@ -1,15 +1,16 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useSelector } from 'react-redux'
-import { LiveKitRoom, RoomAudioRenderer } from '@livekit/components-react'
+import { LiveKitRoom, RoomAudioRenderer, useRoomContext } from '@livekit/components-react'
+import { RoomEvent, LogLevel, setLogLevel } from 'livekit-client'
 import { CodeEditor } from '../components/CodeEditor'
 import { AudioVisualizer } from '../components/AudioVisualizer'
 import { QuestionDisplay } from '../components/QuestionDisplay'
 import { VideoCapture } from '../components/VideoCapture'
-import { useVisionSecurity } from '../hooks/useVisionSecurity'
 import { VisionSecurityAlert } from '../components/security/VisionSecurityAlert'
 import { ResumeInterviewModal } from '../components/interview/ResumeInterviewModal'
 import { ConfirmationModal } from '../components/interview/ConfirmationModal'
 import { InterviewFeedback } from '../components/interview/InterviewFeedback'
+import { useVoiceInterviewVisionSecurity } from './visionSecurity'
 import { CodingProblem, Question } from '../../../shared/types'
 import type { RootState } from '../store'
 import type { InterviewSession } from '../types'
@@ -43,6 +44,9 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   onSaveResults,
   onStateChange
 }) => {
+  useEffect(() => {
+    setLogLevel(LogLevel.error)
+  }, [])
   const [currentState, setCurrentState] = useState<string>('connecting')
   const [currentQuestion, setCurrentQuestion] = useState<Question | null>(null)
   const [followUpQuestionText, setFollowUpQuestionText] = useState<string | null>(null)
@@ -55,7 +59,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [progress, setProgress] = useState({ current: 0, total: questions.length })
   const [evaluations, setEvaluations] = useState<any[]>([])
   const evaluationsRef = useRef<any[]>([])
-  const [codeAnalysis, setCodeAnalysis] = useState<any>(null)
   const [complexityNotes, setComplexityNotes] = useState<Record<string, { time: string; space: string }>>({})
   const [isMonitoring, setIsMonitoring] = useState(false)
   const [currentCode, setCurrentCode] = useState<string>('')
@@ -69,7 +72,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [hasCheckedUnfinished, setHasCheckedUnfinished] = useState(false)
   const [userChoseResume, setUserChoseResume] = useState(false)
   const [hiddenVideoElement, setHiddenVideoElement] = useState<HTMLVideoElement | null>(null)
-  const [visionSecurityStatus, setVisionSecurityStatus] = useState<any>(null)
   const [showConfirmationModal, setShowConfirmationModal] = useState(false)
   const [confirmationModalConfig, setConfirmationModalConfig] = useState<{
     message: string
@@ -78,17 +80,14 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     onCancel: () => void
     okButtonProps?: any
   } | null>(null)
-  const [pendingSubmission, setPendingSubmission] = useState<{
-    code: string
-    timeComplexity?: string
-    spaceComplexity?: string
-  } | null>(null)
   const pendingSubmissionRef = useRef<{
     code: string
     timeComplexity?: string
     spaceComplexity?: string
   } | null>(null)
-  
+  const agentSpeakingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const userSpeakingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const codeEditorRef = useRef<any>(null)
   const hasInitializedRef = useRef(false)
   const hasCompletedRef = useRef(false)
@@ -99,138 +98,249 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const saveSummaryRef = useRef<any>(null)
   const isInterviewStartedRef = useRef(false)
 
+  const LiveKitRoomEventBridge: React.FC = () => {
+    const room = useRoomContext()
+
+    useEffect(() => {
+      if (!room) return
+
+      const checkForAgentAndEnableListening = () => {
+        const remoteParticipants = Array.from(room.remoteParticipants.values())
+
+        if (remoteParticipants.length > 0) {
+          const hasAgent = remoteParticipants.some(p =>
+            (p as any).isAgent ||
+            (p as any).identity?.toLowerCase().includes('agent') ||
+            (p as any).identity?.startsWith('agent-')
+          )
+
+          if (hasAgent || remoteParticipants.length > 0) {
+            isListeningRef.current = true
+            setIsListening(true)
+            setCurrentState(prev => (prev === 'connecting' ? 'intro' : prev))
+
+            // Also send request state here if we found the agent
+            // This covers the case where the agent was already in the room
+            // Note: Caller might also do it, but deduplication is fine
+            // We'll trust the caller to handle the sending to avoid duplication
+            return true
+          }
+        }
+        return false
+      }
+
+      const isAgentParticipant = (participant: any) => {
+        return !!participant?.isAgent ||
+          participant?.identity?.toLowerCase().includes('agent') ||
+          participant?.identity?.startsWith('agent-')
+      }
+
+      if (checkForAgentAndEnableListening()) {
+        // If agent is already there, request state immediately
+        const requestData = new TextEncoder().encode(JSON.stringify({ type: 'request-state' }))
+        room.localParticipant.publishData(requestData, { reliable: true })
+      }
+
+      const handleParticipantConnected = (participant: any) => {
+        console.log('🎤 [LiveKit] Participant connected:', participant.identity, 'isAgent:', participant.isAgent)
+        if (checkForAgentAndEnableListening()) {
+          console.log('🔄 [LiveKit] Agent connected, requesting state sync...')
+          const requestData = new TextEncoder().encode(JSON.stringify({ type: 'request-state' }))
+          room.localParticipant.publishData(requestData, { reliable: true })
+        }
+      }
+
+      const handleDataReceived = (payload: Uint8Array) => {
+        try {
+          const decoder = new TextDecoder()
+          const messageText = decoder.decode(payload)
+          const messageData = JSON.parse(messageText)
+
+          console.log('📥 [LiveKit] Data channel message received:', {
+            type: messageData.type,
+            hasQuestion: !!messageData.question,
+            hasCodingProblem: !!messageData.codingProblem,
+            questionIndex: messageData.questionIndex,
+            timestamp: messageData.timestamp
+          })
+
+          if (messageData.type === 'question-changed' && messageData.question) {
+            console.log('📝 [LiveKit] Setting theoretical question:', {
+              questionId: messageData.question.id,
+              questionText: messageData.question.question?.substring(0, 100) + '...',
+              questionIndex: messageData.questionIndex
+            })
+            setCurrentQuestion(messageData.question)
+            setFollowUpQuestionText(null)
+            setCurrentState('theoretical_question')
+            onStateChange?.('theoretical_question')
+            setIsListening(true)
+            isListeningRef.current = true
+            if (messageData.questionIndex !== undefined) {
+              setProgress({ current: messageData.questionIndex + 1, total: questions.length })
+              console.log('📊 [LiveKit] Progress updated:', messageData.questionIndex + 1, '/', questions.length)
+            }
+            console.log('✅ [LiveKit] Question state updated successfully')
+          }
+
+          if (messageData.type === 'coding-problem-changed' && messageData.codingProblem) {
+            console.log('💻 [LiveKit] Setting coding problem:', {
+              problemId: messageData.codingProblem.id,
+              problemTitle: messageData.codingProblem.title,
+              problemIndex: messageData.questionIndex
+            })
+            setCurrentCodingProblem(messageData.codingProblem)
+            setIsMonitoring(true)
+            setCurrentCode('')
+            isSubmittingTimeoutRef.current = false
+            setCurrentState('coding_intro')
+            onStateChange?.('coding_intro')
+            setTimeout(() => {
+              setCurrentState('coding_problem')
+              onStateChange?.('coding_problem')
+              console.log('✅ [LiveKit] Coding problem state updated to coding_problem')
+            }, 2000)
+            console.log('✅ [LiveKit] Coding problem state updated to coding_intro')
+          }
+
+          if (messageData.type === 'interview-state-change' && messageData.state) {
+            console.log('🔄 [LiveKit] Interview state change:', messageData.state)
+            setCurrentState(messageData.state)
+            onStateChange?.(messageData.state)
+            setIsEvaluating(messageData.state === 'evaluating_answer' || messageData.state === 'evaluating_approach')
+            console.log('✅ [LiveKit] State updated to:', messageData.state)
+          }
+        } catch (error) {
+          console.error('❌ [LiveKit] Failed to parse data channel message:', error)
+        }
+      }
+
+      const handleActiveSpeakersChanged = (speakers: any[]) => {
+        const agentSpeakingInRoom = speakers.some(isAgentParticipant)
+        const userSpeakingInRoom = speakers.some(speaker =>
+          speaker?.identity && speaker.identity === room.localParticipant?.identity
+        )
+
+        // 1. Handle Agent Speaking (Debounced Offset)
+        if (agentSpeakingInRoom) {
+          // If speaking, clear any pending turn-off timer
+          if (agentSpeakingTimeoutRef.current) {
+            clearTimeout(agentSpeakingTimeoutRef.current)
+            agentSpeakingTimeoutRef.current = null
+          }
+          setIsSpeaking(true)
+          isListeningRef.current = false
+          setIsListening(false)
+        } else {
+          // If silence detected, only turn off after delay if currently indicating active
+          if (!agentSpeakingTimeoutRef.current && isSpeaking) {
+            agentSpeakingTimeoutRef.current = setTimeout(() => {
+              setIsSpeaking(false)
+              // Only resume listening if user isn't speaking
+              if (!isUserSpeaking) {
+                isListeningRef.current = true
+                setIsListening(true)
+              }
+              agentSpeakingTimeoutRef.current = null
+            }, 500) // 500ms hysteresis buffer
+          }
+        }
+
+        // 2. Handle User Speaking (Debounced Offset)
+        if (userSpeakingInRoom) {
+          if (userSpeakingTimeoutRef.current) {
+            clearTimeout(userSpeakingTimeoutRef.current)
+            userSpeakingTimeoutRef.current = null
+          }
+          setIsUserSpeaking(true)
+          // Ensure we don't show "listening" while user speaks
+          setIsListening(false)
+          isListeningRef.current = false
+        } else {
+          if (!userSpeakingTimeoutRef.current && isUserSpeaking) {
+            userSpeakingTimeoutRef.current = setTimeout(() => {
+              console.log('🎤 [LiveKit] User silence confirmed (debounced)')
+              setIsUserSpeaking(false)
+              // Resume listening if agent isn't speaking
+              if (!isSpeaking) {
+                isListeningRef.current = true
+                setIsListening(true)
+              }
+              userSpeakingTimeoutRef.current = null
+            }, 300) // 300ms buffer
+          }
+        }
+      }
+
+      room.on(RoomEvent.ParticipantConnected, handleParticipantConnected)
+      room.on(RoomEvent.DataReceived, handleDataReceived)
+      room.on(RoomEvent.ActiveSpeakersChanged, handleActiveSpeakersChanged)
+
+      const fallbackTimeout = setTimeout(() => {
+        if (!isListeningRef.current) {
+          isListeningRef.current = true
+          setIsListening(true)
+        }
+      }, 3000)
+
+      return () => {
+        room.off(RoomEvent.ParticipantConnected, handleParticipantConnected)
+        room.off(RoomEvent.DataReceived, handleDataReceived)
+        room.off(RoomEvent.ActiveSpeakersChanged, handleActiveSpeakersChanged)
+        clearTimeout(fallbackTimeout)
+      }
+    }, [room, livekitRoomName, questions.length])
+
+    return null
+  }
+
   // Cleanup on unmount - disconnect from LiveKit room
   useEffect(() => {
     return () => {
       if (isInterviewStartedRef.current) {
-        console.log('🛑 [VoiceInterviewSession] Component unmounting - cleaning up')
+        // no-op
       }
     }
   }, [])
 
-  // Initialize vision security tracking that stays active throughout the interview
-  // This works even when video windows are hidden (like in coding section)
-  // Keep it enabled through 'wrap_up' so we can end and persist all active warnings at final evaluation time
-  const { status: hiddenVisionStatus, warningStats, endAllActiveWarnings, getWarningStats } = useVisionSecurity({
-    videoElement: hiddenVideoElement,
-    enabled: hiddenVideoElement !== null && currentState !== 'connecting',
+  const {
+    visionSecurityStatus,
+    warningStats,
+    warningStatsRef,
+    endAllActiveWarnings,
+    handleVisionStatusChange
+  } = useVoiceInterviewVisionSecurity({
+    interviewId,
+    hiddenVideoElement,
+    currentState,
     isSpeaking,
     isEvaluating,
     isListening,
-    isCodingSection: !!currentCodingProblem,
-    onSecurityAlert: (status) => {
-      // Just update UI status - TTS is handled in useVisionSecurity hook
-      setVisionSecurityStatus(status)
-    }
+    currentCodingProblem
   })
-  
-  // Keep warningStats ref for final evaluation (logging stays in renderer)
-  const warningStatsRef = useRef(warningStats)
-  useEffect(() => {
-    warningStatsRef.current = warningStats
-  }, [warningStats])
 
   // Keep evaluations ref updated
   useEffect(() => {
     evaluationsRef.current = evaluations
   }, [evaluations])
-  
-  // Update vision security status from hidden tracking
-  // This ensures we always have the latest status for the UI,
-  // but batching for backend is handled via WarningStateManager stats
-  useEffect(() => {
-    if (hiddenVisionStatus) {
-      setVisionSecurityStatus(hiddenVisionStatus)
-    }
-  }, [hiddenVisionStatus])
-
-  // Track if vision security data has been sent to prevent duplicates
-  const visionSecurityDataSent = useRef(false)
-  
-  // Modified function to send aggregated vision security data
-  const sendVisionSecurityToServer = useCallback(async () => {
-    const stats = warningStats;
-    console.log('📊 [sendVisionSecurityToServer] Called with warningStats:', JSON.stringify(stats, null, 2));
-    if (!interviewId) return
-    if (!stats || Object.keys(stats).length === 0) {
-      console.log('⚠️ [Renderer] No warning stats available')
-      return
-    }
-    
-    // Prevent duplicate sends
-    if (visionSecurityDataSent.current) {
-      console.log('⚠️ Vision security data already sent, skipping duplicate send')
-      return
-    }
-
-    try {
-      const token = localStorage.getItem('authToken') // Fix: use 'authToken' instead of 'token'
-      const { API_BASE_URL } = await import('../constants/api')
-      
-      // Convert warning stats to events array format for API
-      const eventsArray = Object.entries(stats).flatMap(([type, data]: [string, any]) => 
-        data.events.map((event: any) => ({
-          type,
-          severity: type === 'multiple_faces' || type === 'face_absent' || type === 'mobile_device_usage' ? 'high' : 'medium',
-          description: `${type.replace(/_/g, ' ')} - ${Math.round(event.duration / 1000)}s`,
-          count: 1,
-          firstOccurrence: event.startTime,
-          lastOccurrence: event.endTime,
-          duration: event.duration
-        }))
-      )
-      
-      console.log('📤 [Vision Security] ===== SENDING TO BACKEND =====')
-      console.log('📤 [Vision Security] Total events to send:', eventsArray.length)
-      console.log('📤 [Vision Security] Events array:', JSON.stringify(eventsArray, null, 2))
-      console.log('📤 [Vision Security] ===== END BATCH =====')
-      
-
-      
-      const response = await fetch(`${API_BASE_URL}/interview/${interviewId}/vision-security`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token && { Authorization: `Bearer ${token}` })
-        },
-        body: JSON.stringify({
-          suspiciousEvents: eventsArray
-        })
-      })
-
-      if (!response.ok) {
-        console.error('Failed to send vision security data to server')
-      } else {
-        visionSecurityDataSent.current = true
-        console.log(`✅ Vision security summary sent to server: ${eventsArray.length} events`)
-      }
-    } catch (error) {
-      console.error('Error sending vision security data to server:', error)
-    }
-  }, [interviewId, warningStats])
-
-  // Memoize the callback to prevent infinite loops
-  const handleVisionStatusChange = useCallback((status: any) => {
-    setVisionSecurityStatus(status)
-  }, [])
   const resumeData = useSelector((state: RootState) => state.interview.resumeData)
   const { user, token } = useSelector((state: RootState) => state.auth)
   const audioContextRef = useRef<AudioContext | null>(null)
-  
+
   // Refs for callbacks/data to avoid stale closures in event listeners
   const onSaveResultsRef = useRef(onSaveResults)
   const onCompleteRef = useRef(onComplete)
   const tokenRef = useRef(token)
-  
+
   // Update refs when props/state change
   useEffect(() => {
     onSaveResultsRef.current = onSaveResults
   }, [onSaveResults])
-  
+
   useEffect(() => {
     onCompleteRef.current = onComplete
   }, [onComplete])
-  
+
   useEffect(() => {
     tokenRef.current = token
   }, [token])
@@ -242,11 +352,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   useEffect(() => {
     const checkUnfinished = async () => {
       if (hasCheckedUnfinished) return
-      
+
       try {
         const result = await window.electronAPI.checkUnfinishedInterview()
         if (result.hasUnfinished && result.sessionInfo) {
-          console.log('Found unfinished interview:', result.sessionInfo)
           setUnfinishedSession(result.sessionInfo)
           setShowResumeModal(true)
         } else {
@@ -284,10 +393,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           return
         }
 
-        console.log('🎤 [Renderer] Using LiveKit token from interview start response')
-        console.log('🎤 [Renderer] Room:', roomNameFromProps)
-        console.log('🎤 [Renderer] Token:', tokenFromProps?.substring(0, 50) + '...')
-        
         // Store token and URL for LiveKitRoom
         // LiveKitRoom expects full URL with wss:// protocol
         let serverUrl = urlFromProps
@@ -299,21 +404,12 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         } else if (serverUrl.startsWith('http://')) {
           serverUrl = serverUrl.replace('http://', 'ws://')
         }
-        
+
         setLivekitToken(tokenFromProps)
         setLivekitUrl(serverUrl)
         setLivekitRoomName(roomNameFromProps)
         setHasMicStream(true) // LiveKit handles mic automatically
         isInterviewStartedRef.current = true
-
-        // Determine resume parameters (props take priority; else use user choice)
-        const effectiveResumeFromIndex = typeof resumeFromIndex === 'number'
-          ? resumeFromIndex
-          : (userChoseResume && unfinishedSession?.questionsAnswered ? unfinishedSession.questionsAnswered : undefined)
-
-        const effectiveSkipIntro = typeof skipIntro === 'boolean'
-          ? skipIntro
-          : (userChoseResume && (unfinishedSession?.questionsAnswered ?? 0) > 0)
 
         // Note: We no longer start the agent via Electron IPC.
         // The LiveKit Agents process is long-lived and attaches to the room automatically.
@@ -342,19 +438,19 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       await onSaveResultsRef.current(summary)
       setSaveStatus('success')
       setSaveRetryCount(0)
-      
+
       // Show success notification
       window.dispatchEvent(new CustomEvent('dashboard-refresh'))
       localStorage.setItem('dashboard-needs-refresh', Date.now().toString())
-      
+
       // After success, show feedback modal
       setTimeout(() => {
         setShowFeedbackModal(true)
       }, 1000) // Small delay to show success state
-      
+
     } catch (error) {
       console.error(`❌ Failed to save interview results (attempt ${retryCount + 1}/${maxRetries}):`, error)
-      
+
       if (retryCount < maxRetries - 1) {
         // Retry after delay
         setTimeout(() => {
@@ -364,7 +460,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         // Max retries reached
         setSaveStatus('error')
         setSaveRetryCount(retryCount + 1)
-        
+
         // Still show feedback modal even if save failed
         setTimeout(() => {
           setShowFeedbackModal(true)
@@ -373,57 +469,12 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     }
   }, [])
 
-  // Set up event listeners
+  // Set up event listeners for final evaluation and completion
+  // Note: Question display, speaker states, and interview flow are handled by LiveKit data channels
+  // in the LiveKitRoomEventBridge component (lines 96-216)
   useEffect(() => {
     const setupEventListeners = () => {
-      // Interview state changes
-      window.electronAPI.onInterviewStateChange((state: string) => {
-        setCurrentState(state)
-        onStateChange?.(state)
-      })
-
-      // Question changes - this fires for NEW questions only (not follow-ups)
-      window.electronAPI.onQuestionChanged((question: Question) => {
-        setCurrentQuestion(question)
-        setFollowUpQuestionText(null) // Clear any follow-up when moving to new question
-        // Progress will be updated via progressUpdate event, not here
-      })
-
-      // Progress updates from main process (for new questions only, not follow-ups)
-      window.electronAPI.onProgressUpdate?.((progress: { current: number, total: number }) => {
-        setProgress(progress)
-      })
-
-      // Follow-up question asked
-      window.electronAPI.onFollowUpAsked?.((followUpText: string) => {
-        console.log('📝 [Renderer] Follow-up question asked:', followUpText)
-        setFollowUpQuestionText(followUpText)
-      })
-
-      // Coding problem changes
-      window.electronAPI.onCodingProblemChanged((problem: CodingProblem) => {
-        setCurrentCodingProblem(problem)
-        setIsMonitoring(true)
-        setCurrentCode('') // Reset code when problem changes
-        isSubmittingTimeoutRef.current = false // Reset submission flag for new problem
-      })
-
-      // Audio state changes
-      window.electronAPI.onListeningStateChange((listening: boolean) => {
-        console.log('🎤 [Renderer] Received listening state change:', listening)
-        isListeningRef.current = listening
-        setIsListening(listening)
-      })
-
-      window.electronAPI.onSpeakingStateChange((speaking: boolean) => {
-        setIsSpeaking(speaking)
-      })
-
-      window.electronAPI.onUserSpeakingStateChange?.((speaking: boolean) => {
-        setIsUserSpeaking(speaking)
-      })
-
-      // Evaluations
+      // Evaluations - still needed for tracking scores
       window.electronAPI.onEvaluation((evaluation: any) => {
         setEvaluations(prev => {
           const updated = [...prev, evaluation]
@@ -431,41 +482,23 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           return updated
         })
       })
-      
-      // Track evaluation state and hint/clarification states
-      window.electronAPI.onInterviewStateChange((state: string) => {
-        setIsEvaluating(state === 'evaluating_answer' || state === 'evaluating_approach')
-      })
 
-      // Code analysis
-      window.electronAPI.onCodeAnalysis((analysis: any) => {
-        setCodeAnalysis(analysis)
-      })
-
-      // Final evaluation ready
+      // Final evaluation ready - still needed for backend submission
       window.electronAPI.onFinalEvaluationReady(async (payload: any) => {
-        console.log('📊 [Renderer] Submitting final evaluation to backend...')
-        
         // CRITICAL: End all active warnings BEFORE collecting stats
-        console.log('📊 [Renderer] Ending all active warnings before final stats collection...')
         endAllActiveWarnings()
-        
+
         // Use warningStatsRef.current directly - it's updated via useEffect
         const visionWarnings = warningStatsRef.current
-        
-        console.log('📊 [Renderer] ===== FINAL VISION WARNINGS BATCH =====')
-        console.log('📊 [Renderer] Warning types:', Object.keys(visionWarnings).length)
-        console.log('📊 [Renderer] Full structure:', JSON.stringify(visionWarnings, null, 2))
-        console.log('📊 [Renderer] ===== END BATCH =====')
-        
+
         // Add vision warnings to payload for backend
         payload.visionSecurityWarnings = visionWarnings
-        
-          try {
+
+        try {
           const { API_BASE_URL } = await import('../constants/api')
           // Use token from ref to ensure we have the latest one even if localStorage was cleared
           const authToken = tokenRef.current || localStorage.getItem('authToken')
-          
+
           const response = await fetch(`${API_BASE_URL}/interview/final-evaluation`, {
             method: 'POST',
             headers: {
@@ -476,7 +509,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           })
           const data = await response.json()
           if (response.ok && data.success) {
-            console.log('✅ [Renderer] Final evaluation submitted successfully!')
             await window.electronAPI.markPayloadSent()
           } else {
             console.error('❌ [Renderer] Final evaluation submission failed:', data.error)
@@ -488,7 +520,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
       // Skip question confirmation request from main process
       window.electronAPI.onSkipQuestionRequest(() => {
-        console.log('🎯 [Renderer] Received skip question request - showing confirmation modal')
         setConfirmationModalConfig({
           message: 'Are you sure you want to skip this coding problem and move to the next question?',
           okText: 'Skip question',
@@ -501,16 +532,14 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       // Interview completion
       window.electronAPI.onInterviewCompleted(async (results: any) => {
         hasCompletedRef.current = true
-        
+
         // Mark that an interview has been completed in this app session
         sessionStorage.setItem('interviewCompletedInSession', 'true');
-        
+
         // For now, rely on WarningStateManager stats which are used in onFinalEvaluationReady
-        console.log('📊 [Renderer] Interview completed - final warning stats will be attached in final evaluation payload')
-        
         // Note: Final stats will be sent to backend via final evaluation payload
         // No need to send to main process - logging stays in renderer
-        
+
         // Create a session object for the modals
         // Use ref to get current evaluations (closure issue fix)
         const currentEvaluations = evaluationsRef.current
@@ -542,17 +571,17 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           endTime: new Date(),
           duration: results?.duration || 0
         }
-        
+
         setSessionForModals(sessionObject)
-        
+
         // Save results in the background (non-blocking)
         if (onSaveResultsRef.current && interviewLinkId) {
           // Create summary for saving
           const totalQuestions = questions.length + codingProblems.length
-          const theoreticalScore = currentEvaluations.length > 0 
-            ? currentEvaluations.reduce((sum, ev) => sum + (ev.score || 0), 0) / currentEvaluations.length 
+          const theoreticalScore = currentEvaluations.length > 0
+            ? currentEvaluations.reduce((sum, ev) => sum + (ev.score || 0), 0) / currentEvaluations.length
             : 0
-          
+
           const summary = {
             sessionId: interviewId,
             interviewLinkId: interviewLinkId,
@@ -590,10 +619,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               }
             }
           }
-          
+
           // Store summary for retry
           saveSummaryRef.current = summary
-          
+
           // Start saving with retry logic
           saveResultsWithRetry(summary, 0)
         } else {
@@ -604,7 +633,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     }
 
     setupEventListeners()
-    
+
     // No cleanup needed - IPC listeners are one-time setup
     // Dependencies are intentionally minimal to avoid re-registration
   }, [])
@@ -617,10 +646,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         audioContextRef.current = new AudioContext()
         const source = audioContextRef.current.createMediaStreamSource(stream)
         analyserRef.current = audioContextRef.current.createAnalyser()
-        
+
         analyserRef.current.fftSize = 256
         source.connect(analyserRef.current)
-        
+
         startAudioVisualization()
       } catch (error) {
         console.error('Failed to set up audio visualization:', error)
@@ -643,192 +672,17 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     if (!analyserRef.current) return
 
     const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount)
-    
+
     const animate = () => {
       analyserRef.current!.getByteFrequencyData(dataArray)
-      
+
       // Emit audio data for visualization
       // window.electronAPI.onAudioData?.(dataArray)
-      
+
       animationFrameRef.current = requestAnimationFrame(animate)
     }
-    
+
     animate()
-  }
-
-  // Microphone capture removed - LiveKit handles audio automatically
-  // This function is kept for backwards compatibility but does nothing
-  const startMicrophoneStreaming = async () => {
-    console.log('🎤 [Renderer] Audio capture handled by LiveKit automatically')
-    setHasMicStream(true)
-  }
-  
-  // Legacy function - no longer needed with LiveKit
-  const startMicrophoneStreamingLegacy = async () => {
-    try {
-      // Request high-quality audio with noise suppression and echo cancellation
-      // Request high-quality audio with noise suppression and echo cancellation enabled
-      // These improve transcription accuracy by reducing background noise and echo
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: {
-        channelCount: 1,
-        sampleRate: 48000, // browser typical; we'll downsample to 16kHz
-        noiseSuppression: true, // Enable to reduce background noise
-        echoCancellation: true, // Enable to prevent echo/feedback
-        autoGainControl: true   // Enable to normalize volume levels
-      } as MediaTrackConstraints })
-      
-      console.log('🎤 [Mic] Microphone stream obtained:', stream)
-      console.log('🎤 [Mic] Audio tracks:', stream.getAudioTracks().length)
-      const trackSettings = stream.getAudioTracks()[0]?.getSettings()
-      console.log('🎤 [Mic] Track settings:', trackSettings)
-
-      // Use native AudioContext sample rate (don't force 16kHz - let browser handle it)
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
-      const actualSampleRate = audioContext.sampleRate
-      console.log('🎤 [Mic] AudioContext sample rate:', actualSampleRate)
-      
-      const source = audioContext.createMediaStreamSource(stream)
-      // Use 4096 buffer size (power of 2) - approximately 80–90ms at 44.1/48kHz.
-      // AssemblyAI requires each audio message to represent 50–1000ms of audio.
-      const processor = audioContext.createScriptProcessor(4096, 1, 1)
-
-      // Improved downsampling with anti-aliasing for better audio quality
-      const downsampleTo16k = (input: Float32Array, inputSampleRate: number, targetRate = 16000): Int16Array => {
-        // If already at target rate, just convert format
-        if (Math.abs(inputSampleRate - targetRate) < 1) {
-          const result = new Int16Array(input.length)
-          for (let i = 0; i < input.length; i++) {
-            const clamped = Math.max(-1, Math.min(1, input[i]))
-            result[i] = clamped < 0 ? Math.round(clamped * 0x8000) : Math.round(clamped * 0x7FFF)
-          }
-          return result
-        }
-        
-        const sampleRateRatio = inputSampleRate / targetRate
-        const newLength = Math.round(input.length / sampleRateRatio)
-        const result = new Int16Array(newLength)
-        let offsetResult = 0
-        
-        // Use linear interpolation for better quality than simple averaging
-        while (offsetResult < result.length) {
-          const targetIndex = offsetResult * sampleRateRatio
-          const index1 = Math.floor(targetIndex)
-          const index2 = Math.min(index1 + 1, input.length - 1)
-          const fraction = targetIndex - index1
-          
-          // Linear interpolation
-          const sample = input[index1] * (1 - fraction) + input[index2] * fraction
-          // Clamp and convert to 16-bit PCM
-          const clamped = Math.max(-1, Math.min(1, sample))
-          const int16Value = clamped < 0 ? Math.round(clamped * 0x8000) : Math.round(clamped * 0x7FFF)
-          
-          // Log first sample conversion occasionally to verify it's working
-          if (offsetResult === 0 && Math.random() < 0.01) {
-            console.log('🎤 [Renderer] Sample conversion check:', {
-              floatSample: sample.toFixed(6),
-              clamped: clamped.toFixed(6),
-              int16Value: int16Value,
-              expectedRange: '[-32768, 32767]'
-            })
-          }
-          
-          result[offsetResult] = int16Value
-          offsetResult++
-        }
-        return result
-      }
-
-      processor.onaudioprocess = (e) => {
-        // Only stream after STT starts listening
-        if (!isListeningRef.current) {
-          // Log occasionally when not listening to diagnose issues
-          if (Math.random() < 0.01) {
-            console.log('🎤 [Renderer] Audio chunk skipped - not listening. isListeningRef:', isListeningRef.current)
-          }
-          return
-        }
-
-        // Throttle to prevent sending too many chunks (1024 samples = ~64ms)
-        const now = Date.now()
-        if (now - lastAudioTimeRef.current < 50) {
-          return
-        }
-        lastAudioTimeRef.current = now
-
-        const input = e.inputBuffer.getChannelData(0)
-        
-        // Calculate audio level BEFORE downsampling for diagnostics
-        const maxSample = Math.max(...Array.from(input).map(Math.abs))
-        const rmsLevel = Math.sqrt(input.reduce((sum, val) => sum + val * val, 0) / input.length)
-        
-        // Simple adaptive gain control: try to normalize RMS towards a target without clipping
-        const targetRms = 0.05 // target RMS for clear speech (~-26 dBFS)
-        let gain = 1
-        if (rmsLevel > 0 && rmsLevel < targetRms) {
-          // Cap max gain to avoid insane amplification of pure noise
-          gain = Math.min(targetRms / rmsLevel, 8)
-        }
-        
-        const boostedInput =
-          gain !== 1
-            ? input.map((sample) => {
-                const boosted = sample * gain
-                return Math.max(-1, Math.min(1, boosted))
-              })
-            : input
-        
-        // Log audio levels to diagnose volume issues
-        if (Math.random() < 0.1) {
-          console.log(
-            '🎤 [Renderer] Audio levels',
-            '| max:', maxSample.toFixed(6),
-            '| RMS:', rmsLevel.toFixed(6),
-            '| gain:', gain.toFixed(2),
-            '| samples:', input.length,
-            '| sampleRate:', actualSampleRate
-          )
-        }
-        
-        // Downsample to 16kHz using the actual AudioContext sample rate
-        const pcm16 = downsampleTo16k(boostedInput, actualSampleRate)
-        
-        // Check downsampled audio levels
-        const pcmMax = Math.max(...Array.from(pcm16).map(Math.abs))
-        const pcmRms = Math.sqrt(Array.from(pcm16).reduce((sum, val) => sum + (val / 32768) ** 2, 0) / pcm16.length)
-        
-        if (Math.random() < 0.1) {
-          console.log('🎤 [Renderer] PCM16 levels - max:', pcmMax, 'RMS (normalized):', pcmRms.toFixed(6), 'expected range: 0-32767')
-          
-          // Warn if PCM values are suspiciously small
-          if (pcmMax < 100) {
-            console.warn('🎤 [Renderer] WARNING: PCM16 values are very small! max:', pcmMax, 'Expected hundreds or thousands for normal speech.')
-          }
-        }
-        
-        // Convert Int16Array to Uint8Array with proper little-endian byte order
-        // Int16Array is already little-endian in JavaScript, so we can use the buffer directly
-        const buffer = new Uint8Array(pcm16.buffer)
-        
-        // Verify buffer size (should be pcm16.length * 2 bytes for 16-bit samples)
-        if (buffer.length !== pcm16.length * 2) {
-          console.error('🎤 [Renderer] Audio buffer size mismatch!', {
-            pcm16Length: pcm16.length,
-            bufferLength: buffer.length,
-            expected: pcm16.length * 2
-          })
-        }
-        
-        // Send all audio chunks - let AssemblyAI handle silence detection and VAD
-        // Filtering silence here can cause issues with speech detection
-        window.electronAPI.sendAudioChunk(buffer)
-      }
-
-      source.connect(processor)
-      processor.connect(audioContext.destination)
-      setHasMicStream(true)
-    } catch (err) {
-      console.error('Microphone streaming error:', err)
-    }
   }
 
   // When STT is listening and mic stream is ready, proceed from connecting → intro
@@ -841,7 +695,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const handleCodeChange = useCallback((code: string) => {
     // Track current code for timer expiration
     setCurrentCode(code)
-    console.log('Code changed:', code.length, 'characters')
   }, [])
 
   const handleAnalysisRequest = useCallback(async (code: string, problemId: string) => {
@@ -853,7 +706,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       })
 
       if (result.success) {
-        setCodeAnalysis(result.analysis)
+        // no-op
       }
     } catch (error) {
       console.error('Code analysis failed:', error)
@@ -862,7 +715,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
   const handleConfirmSubmit = useCallback(async () => {
     setShowConfirmationModal(false)
-    
+
     const submission = pendingSubmissionRef.current
     if (!submission) {
       console.warn('⚠️ [Interview] No pending submission found')
@@ -871,32 +724,26 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
     const { code, timeComplexity, spaceComplexity } = submission
     pendingSubmissionRef.current = null
-    setPendingSubmission(null)
 
     try {
-      console.log('📤 [Interview] Submitting solution after confirmation:', code.length, 'characters')
       // Get complexity from current problem's notes
       const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
         ? complexityNotes[currentCodingProblem.id]
         : { time: timeComplexity || '', space: spaceComplexity || '' }
-      
+
       const result = await window.electronAPI.submitSolution(
-        code, 
-        false, 
-        complexity.time || undefined, 
+        code,
+        false,
+        complexity.time || undefined,
         complexity.space || undefined
       )
 
       if (result.success) {
-        console.log('✅ [Interview] Solution submitted successfully')
         if (result.hasNextProblem) {
-          console.log('➡️ [Interview] Moving to next problem')
         } else {
-          console.log('🎉 [Interview] All coding problems completed')
         }
         setCurrentCode('')
       } else {
-        console.log('❌ [Interview] Solution needs improvement:', result.feedback)
       }
     } catch (error) {
       console.error('Failed to submit solution:', error)
@@ -908,36 +755,30 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const handleCancelSubmit = useCallback(() => {
     setShowConfirmationModal(false)
     pendingSubmissionRef.current = null
-    setPendingSubmission(null)
   }, [])
 
   const handleSubmit = useCallback(async (code: string, timeComplexity?: string, spaceComplexity?: string, skipConfirmation = false) => {
     // If skipConfirmation is true (timer expiration), submit directly without modal
     if (skipConfirmation) {
       try {
-        console.log('📤 [Interview] Auto-submitting solution (timer expired):', code.length, 'characters')
         // Get complexity from current problem's notes
         const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
           ? complexityNotes[currentCodingProblem.id]
           : { time: timeComplexity || '', space: spaceComplexity || '' }
-        
+
         const result = await window.electronAPI.submitSolution(
-          code, 
+          code,
           true, // isTimeout = true
-          complexity.time || undefined, 
+          complexity.time || undefined,
           complexity.space || undefined
         )
 
         if (result.success) {
-          console.log('✅ [Interview] Timeout solution submitted successfully')
           setCurrentCode('')
           if (result.hasNextProblem) {
-            console.log('➡️ [Interview] Moving to next problem')
           } else {
-            console.log('🎉 [Interview] All coding problems completed')
           }
         } else {
-          console.log('❌ [Interview] Timeout submission failed:', result.feedback)
         }
       } catch (error) {
         console.error('Failed to submit timeout solution:', error)
@@ -946,9 +787,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     }
 
     // For manual submissions, show confirmation modal
-    console.log('📤 [Interview] Requesting confirmation before submitting solution')
     const submissionData = { code, timeComplexity, spaceComplexity }
-    setPendingSubmission(submissionData)
     pendingSubmissionRef.current = submissionData
     setConfirmationModalConfig({
       message: 'Are you sure you want to submit your solution and move to the next question?',
@@ -961,27 +800,25 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
   const handleTimerExpire = useCallback(async () => {
     if (!currentCodingProblem) return
-    
+
     // Prevent multiple simultaneous submissions
     if (isSubmittingTimeoutRef.current) {
-      console.log('⏰ [Interview] Timer expiration already being handled, ignoring duplicate call')
       return
     }
-    
+
     isSubmittingTimeoutRef.current = true
-    console.log('⏰ [Interview] Coding timer expired for problem:', currentCodingProblem.title)
-    
+
     // Submit the current code (or empty if no code written) - skip confirmation for timer expiration
     const codeToSubmit = currentCode.trim() || '// Timeout - no code submitted'
-    
+
     // Get complexity for timeout submission
     const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
       ? complexityNotes[currentCodingProblem.id]
       : { time: '', space: '' }
-    
+
     // Call handleSubmit with skipConfirmation = true to bypass modal
     await handleSubmit(codeToSubmit, complexity.time || undefined, complexity.space || undefined, true)
-    
+
     // Reset the flag after a delay to allow state updates
     setTimeout(() => {
       isSubmittingTimeoutRef.current = false
@@ -1059,10 +896,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         )
       case 'intro':
         const introMessage = "Welcome to your AI interview. I'll be conducting your technical interview today. We'll start with some theoretical questions, then move on to a coding problem. Please make sure your microphone is working and speak clearly."
-        
+
         return (
           <div className="theoretical-section">
-            <QuestionDisplay 
+            <QuestionDisplay
               question={null}
               introMessage={isSpeaking ? introMessage : null}
               introMeta="Ready to begin"
@@ -1083,7 +920,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       case 'handling_clarification':
         return (
           <div className="theoretical-section">
-            <QuestionDisplay 
+            <QuestionDisplay
               question={currentQuestion}
               followUpQuestionText={followUpQuestionText}
               isListening={isListening}
@@ -1145,13 +982,13 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               </div>
               <h2 className="loading-title">Interview Complete</h2>
               <p className="loading-subtitle">
-                {saveStatus === 'saving' 
+                {saveStatus === 'saving'
                   ? `Saving your results${saveRetryCount > 0 ? ` (retry ${saveRetryCount + 1}/3)...` : '...'}`
                   : saveStatus === 'success'
-                  ? 'Your results have been saved successfully!'
-                  : saveStatus === 'error'
-                  ? `Failed to save results after ${saveRetryCount} attempts. Your feedback is still important!`
-                  : 'Thanks for the great conversation. We\'ll review everything and update you shortly.'}
+                    ? 'Your results have been saved successfully!'
+                    : saveStatus === 'error'
+                      ? `Failed to save results after ${saveRetryCount} attempts. Your feedback is still important!`
+                      : 'Thanks for the great conversation. We\'ll review everything and update you shortly.'}
               </p>
               {saveStatus === 'error' && saveSummaryRef.current && (
                 <button
@@ -1199,7 +1036,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
   // Handle continue unfinished interview
   const handleContinueUnfinishedInterview = async () => {
-    console.log('Resuming unfinished interview')
     setShowResumeModal(false)
     setHasCheckedUnfinished(true)
     setUserChoseResume(true)
@@ -1208,7 +1044,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
   // Handle restart fresh interview
   const handleStartFreshInterview = async () => {
-    console.log('Starting fresh interview')
     try {
       // Clear the unfinished session
       await window.electronAPI.clearUnfinishedInterview()
@@ -1223,7 +1058,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
   // Handle cancel/close modal - user doesn't want to continue
   const handleCancelModal = useCallback(() => {
-    console.log('User cancelled resume modal - closing and allowing navigation back')
     setShowResumeModal(false)
     setUnfinishedSession(null)
     setHasCheckedUnfinished(true)
@@ -1233,13 +1067,11 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
   const handleConfirmSkip = useCallback(async () => {
     setShowConfirmationModal(false)
-    console.log('🎯 [Renderer] User confirmed skip question')
     await window.electronAPI.confirmSkipQuestion(true)
   }, [])
 
   const handleCancelSkip = useCallback(async () => {
     setShowConfirmationModal(false)
-    console.log('🎯 [Renderer] User cancelled skip question')
     await window.electronAPI.confirmSkipQuestion(false)
   }, [])
 
@@ -1271,7 +1103,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         onRestart={handleStartFreshInterview}
         onCancel={handleCancelModal}
       />
-      
+
       {confirmationModalConfig && (
         <ConfirmationModal
           visible={showConfirmationModal}
@@ -1292,50 +1124,47 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           onSkip={handleFeedbackSkip}
         />
       )}
-      
-        <div
-          className="voice-interview-session"
-          style={{ height: currentState === 'connecting' ? '100vh' : '86vh' }}
-        >
+
+      <div
+        className="voice-interview-session"
+        style={{ height: currentState === 'connecting' ? '100vh' : '86vh' }}
+      >
         <div className="interview-content">
-        {renderCurrentSection()}
-      </div>
+          {renderCurrentSection()}
+        </div>
 
-      {/* Vision Security Alerts - Display warnings for suspicious events */}
-      <VisionSecurityAlert 
-        status={visionSecurityStatus}
-        warningStats={warningStats}
-        onDismiss={(eventType) => {
-          console.log('🔕 [Vision Security] Alert dismissed:', eventType)
-        }}
-      />
-
-      {/* Hidden video capture for security tracking during coding section and throughout interview */}
-      <div className="hidden-video-tracker">
-        <VideoCapture
-          onStreamReady={() => {
-            console.log('📹 [VoiceInterviewSession] Hidden video stream ready for security tracking')
+        {/* Vision Security Alerts - Display warnings for suspicious events */}
+        <VisionSecurityAlert
+          status={visionSecurityStatus}
+          warningStats={warningStats}
+          onDismiss={() => {
           }}
-          onVideoElementReady={(videoEl) => {
-            setHiddenVideoElement(videoEl)
-            console.log('📹 [VoiceInterviewSession] Hidden video element ready for vision tracking')
-          }}
-          onStreamError={(error) => {
-            console.error('Hidden video capture error:', error)
-          }}
-          className="hidden-video-capture"
-          autoStart={true}
         />
-      </div>
 
-      <div className="audio-visualizer">
-        <AudioVisualizer 
-          isListening={isListening}
-          isSpeaking={isSpeaking}
-        />
-      </div>
+        {/* Hidden video capture for security tracking during coding section and throughout interview */}
+        <div className="hidden-video-tracker">
+          <VideoCapture
+            onStreamReady={() => {
+            }}
+            onVideoElementReady={(videoEl) => {
+              setHiddenVideoElement(videoEl)
+            }}
+            onStreamError={(error) => {
+              console.error('Hidden video capture error:', error)
+            }}
+            className="hidden-video-capture"
+            autoStart={true}
+          />
+        </div>
 
-      <style>{`
+        <div className="audio-visualizer">
+          <AudioVisualizer
+            isListening={isListening}
+            isSpeaking={isSpeaking}
+          />
+        </div>
+
+        <style>{`
         .voice-interview-session {
           display: flex;
           flex-direction: column;
@@ -1622,7 +1451,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         }
       `}</style>
       </div>
-      
+
       {/* LiveKit Audio Renderer - handles AI voice playback */}
       {livekitToken && livekitUrl && (
         <RoomAudioRenderer />
@@ -1639,9 +1468,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     } else if (serverUrl.startsWith('https://')) {
       serverUrl = serverUrl.replace('https://', 'wss://')
     }
-    
-    console.log('🎤 [LiveKit] Connecting to room:', livekitRoomName, 'URL:', serverUrl, 'Token length:', livekitToken.length)
-    
+
     return (
       <LiveKitRoom
         video={false}
@@ -1653,80 +1480,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           adaptiveStream: true,
           dynacast: true,
         }}
-        onConnected={(room) => {
-          // Room parameter might be undefined or not have a name property
-          const roomName = room?.name || livekitRoomName || 'unknown'
-          console.log('🎤 [LiveKit] Connected to room:', roomName)
-          
-          if (room) {
-            // Function to check for agent and enable listening
-            const checkForAgentAndEnableListening = () => {
-              // Check if there are any remote participants (agent should be a remote participant)
-              const remoteParticipants = Array.from(room.remoteParticipants.values())
-              console.log('🎤 [LiveKit] Remote participants:', remoteParticipants.map(p => ({ identity: p.identity, isAgent: p.isAgent })))
-              
-              // In a 1-on-1 interview, any remote participant should be the agent
-              // Or check for isAgent flag if available
-              if (remoteParticipants.length > 0) {
-                const hasAgent = remoteParticipants.some(p => 
-                  p.isAgent || 
-                  p.identity?.toLowerCase().includes('agent') ||
-                  p.identity?.startsWith('agent-')
-                )
-                
-                if (hasAgent || remoteParticipants.length > 0) {
-                  console.log('✅ [LiveKit] Agent detected in room, setting isListening to true')
-                  isListeningRef.current = true
-                  setIsListening(true)
-                  return true
-                }
-              }
-              return false
-            }
-            
-            // Check immediately for existing participants
-            if (checkForAgentAndEnableListening()) {
-              return // Agent already found, we're done
-            }
-            
-            // Listen for participant events to detect when agent joins
-            const handleParticipantConnected = (participant: any) => {
-              console.log('🎤 [LiveKit] Participant connected:', participant.identity, 'isAgent:', participant.isAgent)
-              checkForAgentAndEnableListening()
-            }
-            
-            // Listen for new participants joining
-            room.on('participantConnected', handleParticipantConnected)
-            
-            // Fallback: Enable listening after a delay if agent hasn't been detected
-            // This handles cases where the agent might be slow to join or detection fails
-            const fallbackTimeout = setTimeout(() => {
-              // Use ref to check current state (avoids stale closure)
-              if (!isListeningRef.current) {
-                console.log('⏳ [LiveKit] Fallback: Enabling listening after delay (agent should be ready)')
-                isListeningRef.current = true
-                setIsListening(true)
-              }
-            }, 3000) // 3 second delay
-            
-            // Cleanup listeners and timeout on disconnect
-            const handleDisconnected = () => {
-              room.off('participantConnected', handleParticipantConnected)
-              room.off('disconnected', handleDisconnected)
-              clearTimeout(fallbackTimeout)
-            }
-            room.on('disconnected', handleDisconnected)
-          } else {
-            // Fallback: if room is not available, wait a bit and then enable listening
-            setTimeout(() => {
-              console.log('⏳ [LiveKit] Room not available, enabling listening after delay')
-              isListeningRef.current = true
-              setIsListening(true)
-            }, 3000)
-          }
-        }}
         onDisconnected={() => {
-          console.log('🎤 [LiveKit] Disconnected from room')
           setIsListening(false)
         }}
         onError={(error) => {
@@ -1738,6 +1492,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           }
         }}
       >
+        <LiveKitRoomEventBridge />
         {content}
       </LiveKitRoom>
     )

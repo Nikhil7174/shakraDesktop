@@ -54,7 +54,7 @@ export class WarningStateManager {
         // If the previous warning didn't meet threshold, discard it silently
         // If it did meet threshold but we're restarting, it means detection flickered
         // In this case, we should KEEP the active warning to merge the events (debounce behavior)
-        console.log(`[WarningStateManager] Resuming ${type} warning (current duration=${prematureDuration}ms) - debounce merge`)
+        // no-op
         
         // Do NOT remove the active warning - let it continue accumulating duration
         // this.activeWarnings.delete(type) 
@@ -109,7 +109,7 @@ export class WarningStateManager {
       
       // Only store if duration exceeds threshold
       const threshold = this.thresholds[type] || 0
-      console.log(`[WarningStateManager] Ending ${type}: duration=${duration}ms, threshold=${threshold}ms, willStore=${duration >= threshold}`)
+      // no-op
       
       if (duration >= threshold) {
         const completedWarning: WarningEvent = {
