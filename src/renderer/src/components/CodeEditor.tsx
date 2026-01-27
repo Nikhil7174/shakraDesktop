@@ -42,7 +42,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   const [selectedLanguage, setSelectedLanguage] = useState<string>(problem.language || 'cpp')
   // Initialize timer state - only reset when problem.id changes
   const [timeRemaining, setTimeRemaining] = useState<number>(getTimeLimit(problem.difficulty))
-  
+
   // Reset timer only when problem.id changes (not on every render)
   useEffect(() => {
     if (showTimer && !readOnly) {
@@ -164,7 +164,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
     }
 
     console.log('⏰ [CodeEditor] Starting 60-second timer')
-    
+
     // Send code every 60 seconds
     monitoringIntervalRef.current = setInterval(() => {
       if (monacoEditorRef.current) {
@@ -222,10 +222,10 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   // Preserve user's language choice if the new problem supports it, otherwise reset to problem's default
   useEffect(() => {
     const problemDefaultLanguage = problem.language || 'cpp'
-    
+
     // Check if current selected language has starter code in the new problem
     const hasStarterCodeForSelectedLang = problem.starterCodes && problem.starterCodes[selectedLanguage]
-    
+
     // If selected language doesn't have starter code in new problem, reset to problem's default
     if (!hasStarterCodeForSelectedLang && selectedLanguage !== problemDefaultLanguage) {
       setSelectedLanguage(problemDefaultLanguage)
@@ -235,7 +235,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   // Update editor content when problem or selected language changes
   useEffect(() => {
     if (!monacoEditorRef.current) return
-    
+
     // Get starter code for the selected language
     const getStarterCode = () => {
       if (problem.starterCodes && problem.starterCodes[selectedLanguage]) {
@@ -243,7 +243,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       }
       return problem.starterCode || ''
     }
-    
+
     const starterCode = getStarterCode()
     if (starterCode) {
       const currentValue = monacoEditorRef.current.getValue()
@@ -265,10 +265,10 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       console.log('⚠️ [CodeEditor] Editor not ready, cannot change language')
       return
     }
-    
+
     console.log('🔄 [CodeEditor] Changing language from', selectedLanguage, 'to', newLanguage)
     setSelectedLanguage(newLanguage)
-    
+
     // Get starter code for the new language
     let newStarterCode = ''
     if (problem.starterCodes && problem.starterCodes[newLanguage]) {
@@ -281,17 +281,17 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       newStarterCode = ''
       console.log('⚠️ [CodeEditor] No starter code available for', newLanguage)
     }
-    
+
     // Get current code to check if user has modified it
     const currentCode = monacoEditorRef.current.getValue()
     // Get the starter code for the OLD language (before change) to compare
     const oldStarterCode = problem.starterCodes?.[selectedLanguage] || problem.starterCode || ''
-    
+
     // Check if current code matches the old starter code (user hasn't modified it)
-    const isUnmodified = currentCode.trim() === '' || 
-                         currentCode.trim() === oldStarterCode.trim() ||
-                         (oldStarterCode === '' && currentCode.trim() === '')
-    
+    const isUnmodified = currentCode.trim() === '' ||
+      currentCode.trim() === oldStarterCode.trim() ||
+      (oldStarterCode === '' && currentCode.trim() === '')
+
     if (isUnmodified || newStarterCode === '') {
       // User hasn't started coding, hasn't modified, or no starter code available - safe to replace
       console.log('✅ [CodeEditor] Replacing code with new language starter code')
@@ -332,7 +332,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         return
       }
     }
-    
+
     // Update editor language (syntax highlighting)
     const model = monacoEditorRef.current.getModel()
     if (model) {
@@ -404,7 +404,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
             glyphMarginClassName: 'highlight-glyph'
           }
         }])
-        
+
         // Remove highlight after 3 seconds
         setTimeout(() => {
           monacoEditorRef.current?.deltaDecorations(decoration, [])
@@ -418,8 +418,8 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       const model = monacoEditorRef.current.getModel()
       if (model) {
         const markerSeverity = severity === 'error' ? monaco.MarkerSeverity.Error :
-                              severity === 'warning' ? monaco.MarkerSeverity.Warning :
-                              monaco.MarkerSeverity.Info
+          severity === 'warning' ? monaco.MarkerSeverity.Warning :
+            monaco.MarkerSeverity.Info
 
         monaco.editor.setModelMarkers(model, 'interview', [{
           startLineNumber: lineNumber,
@@ -445,7 +445,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   // Handle submit button click
   const handleSubmit = useCallback(async () => {
     if (!monacoEditorRef.current || !onSubmit || isSubmitting) return
-    
+
     // Read code directly from editor (like we always do)
     const code = monacoEditorRef.current.getValue()
     if (!code.trim()) {
@@ -458,7 +458,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
     const timeComplexityValue = timeComplexityInputRef.current?.value?.trim() || undefined
     const spaceComplexityValue = spaceComplexityInputRef.current?.value?.trim() || undefined
 
-    console.log('📝 [CodeEditor] Submitting - reading from inputs:', { 
+    console.log('📝 [CodeEditor] Submitting - reading from inputs:', {
       codeLength: code.length,
       timeComplexity: timeComplexityValue || 'NOT PROVIDED',
       spaceComplexity: spaceComplexityValue || 'NOT PROVIDED'
@@ -502,27 +502,27 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       <div className="coding-layout">
         {/* Left Column: Question Description */}
         <div className="question-panel">
-        <div className="question-header">
-          <h3>{problem.title}</h3>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            {showTimer && !readOnly && (
-              <div className="timer-display">
-                <span className="timer-icon">⏱️</span>
-                <span>{formatTime(timeRemaining)}</span>
-              </div>
-            )}
-            {isMonitoring && (
-              <span className="monitoring-indicator">
-                <div className="pulse-dot"></div>
-                Monitoring
-              </span>
-            )}
+          <div className="question-header">
+            <h3>{problem.title || (problem as any).question?.split('.')[0] || 'Coding Problem'}</h3>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+              {showTimer && !readOnly && (
+                <div className="timer-display">
+                  <span className="timer-icon">⏱️</span>
+                  <span>{formatTime(timeRemaining)}</span>
+                </div>
+              )}
+              {isMonitoring && (
+                <span className="monitoring-indicator">
+                  <div className="pulse-dot"></div>
+                  Monitoring
+                </span>
+              )}
+            </div>
           </div>
-        </div>
           <div className="question-content">
             <div className="question-section">
               <h4>Problem Description</h4>
-              <p>{problem.description}</p>
+              <p>{problem.description || (problem as any).problemStatement || (problem as any).instructions || (problem as any).question || ''}</p>
             </div>
             {problem.constraints && (
               <div className="question-section">
@@ -569,7 +569,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         <div className="editor-panel">
           <div className="editor-header">
             <div className="editor-controls">
-              <select 
+              <select
                 className="language-selector"
                 value={selectedLanguage}
                 onChange={(e) => handleLanguageChange(e.target.value)}
@@ -577,17 +577,17 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
               >
                 {availableLanguages.map(lang => (
                   <option key={lang} value={lang}>
-                    {lang === 'cpp' ? 'C++' : 
-                     lang === 'python' ? 'Python 3' : 
-                     lang === 'java' ? 'Java' : 
-                     'JavaScript'}
+                    {lang === 'cpp' ? 'C++' :
+                      lang === 'python' ? 'Python 3' :
+                        lang === 'java' ? 'Java' :
+                          'JavaScript'}
                   </option>
                 ))}
               </select>
             </div>
           </div>
-          <div 
-            ref={editorRef} 
+          <div
+            ref={editorRef}
             className="monaco-editor"
             style={{ height: 'calc(100vh - 200px)', width: '100%' }}
           />
@@ -617,7 +617,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                   />
                 </div>
               </div>
-              <button 
+              <button
                 className="submit-button"
                 onClick={handleSubmit}
                 disabled={isSubmitting}
@@ -985,7 +985,7 @@ function getMonacoLanguage(language: string): string {
     'yaml': 'yaml',
     'markdown': 'markdown'
   }
-  
+
   return languageMap[language.toLowerCase()] || 'plaintext'
 }
 

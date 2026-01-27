@@ -63,7 +63,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [isMonitoring, setIsMonitoring] = useState(false)
   const [currentCode, setCurrentCode] = useState<string>('')
   const [hasMicStream, setHasMicStream] = useState(false)
-  const isSubmittingTimeoutRef = useRef(false)
+  const isSubmittingTimeoutRef = useRef<boolean>(false)
+  const broadcastDataRef = useRef<((data: any) => void) | null>(null)
   const [livekitToken, setLivekitToken] = useState<string | null>(null)
   const [livekitUrl, setLivekitUrl] = useState<string | null>(null)
   const [livekitRoomName, setLivekitRoomName] = useState<string | null>(null)
@@ -100,6 +101,45 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
   const LiveKitRoomEventBridge: React.FC = () => {
     const room = useRoomContext()
+
+    // Expose data broadcasting to parent
+    useEffect(() => {
+      if (room && room.localParticipant) {
+        broadcastDataRef.current = (data: any) => {
+          const encoded = new TextEncoder().encode(JSON.stringify(data))
+          room.localParticipant.publishData(encoded, { reliable: true })
+        }
+      } else {
+        broadcastDataRef.current = null
+      }
+      return () => {
+        broadcastDataRef.current = null
+      }
+    }, [room])
+
+    useEffect(() => {
+      if (!room) return
+
+      // Broadcast code changes to agent (debounced)
+      // Handle both 'coding' (backend state) and 'coding_problem' (frontend state)
+      const isCodingState = currentState === 'coding_problem' || currentState === 'coding'
+      if (isCodingState && currentCode) {
+        const timeoutId = setTimeout(() => {
+          if (room.localParticipant) {
+            const data = new TextEncoder().encode(JSON.stringify({
+              type: 'code_snapshot',
+              code: currentCode,
+              timestamp: Date.now()
+            }))
+            room.localParticipant.publishData(data, { reliable: true })
+            console.log(`📤 [LiveKit] Sent code_snapshot (${currentCode.length} chars)`)
+          }
+        }, 2000) // 2 second debounce
+
+        return () => clearTimeout(timeoutId)
+      }
+      return
+    }, [currentCode, room, currentState])
 
     useEffect(() => {
       if (!room) return
@@ -187,7 +227,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
             console.log('💻 [LiveKit] Setting coding problem:', {
               problemId: messageData.codingProblem.id,
               problemTitle: messageData.codingProblem.title,
-              problemIndex: messageData.questionIndex
+              problemIndex: messageData.questionIndex,
+              hasDescription: !!messageData.codingProblem.description,
+              descriptionLength: messageData.codingProblem.description?.length || 0,
+              allKeys: Object.keys(messageData.codingProblem)
             })
             setCurrentCodingProblem(messageData.codingProblem)
             setIsMonitoring(true)
@@ -686,19 +729,28 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   }
 
   // When STT is listening and mic stream is ready, proceed from connecting → intro
-  useEffect(() => {
-    if (currentState === 'connecting' && isListening && hasMicStream) {
-      setCurrentState('intro')
-    }
-  }, [currentState, isListening, hasMicStream])
+  // (Logic moved to LiveKitRoomEventBridge)
 
   const handleCodeChange = useCallback((code: string) => {
     // Track current code for timer expiration
+    console.log(`💻 [VoiceInterview] handleCodeChange called: ${code.length} chars, currentState=${currentState}`)
     setCurrentCode(code)
-  }, [])
+  }, [currentState])
 
   const handleAnalysisRequest = useCallback(async (code: string, problemId: string) => {
     try {
+      // 1. Broadcast to LiveKit Agent (DSA Persona) for real-time context
+      if (broadcastDataRef.current) {
+        broadcastDataRef.current({
+          type: 'code_snapshot',
+          code: code,
+          problemId: problemId,
+          timestamp: Date.now()
+        })
+        console.log('📤 [Analysis] Sent code snapshot to LiveKit agent')
+      }
+
+      // 2. Call local analysis (optional/legacy)
       const result = await window.electronAPI.analyzeCode({
         code,
         problemId,
