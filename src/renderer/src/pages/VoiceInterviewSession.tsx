@@ -99,6 +99,20 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const saveSummaryRef = useRef<any>(null)
   const isInterviewStartedRef = useRef(false)
 
+  // Handlers for Agent-triggered confirmation modal
+  const handleConfirmNextQuestion = useCallback(() => {
+    setShowConfirmationModal(false)
+    if (broadcastDataRef.current) {
+      broadcastDataRef.current({ type: 'confirm_next_question' })
+      console.log('✅ [LiveKit] Sent confirm_next_question to agent')
+    }
+  }, [])
+
+  const handleCancelNextQuestion = useCallback(() => {
+    setShowConfirmationModal(false)
+    // Optional: Send cancel event if needed
+  }, [])
+
   const LiveKitRoomEventBridge: React.FC = () => {
     const room = useRoomContext()
 
@@ -252,6 +266,165 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
             onStateChange?.(messageData.state)
             setIsEvaluating(messageData.state === 'evaluating_answer' || messageData.state === 'evaluating_approach')
             console.log('✅ [LiveKit] State updated to:', messageData.state)
+          }
+
+          if (messageData.type === 'show_confirmation_modal') {
+            console.log('🛡️ [LiveKit] Showing confirmation modal', messageData)
+            setConfirmationModalConfig({
+              message: messageData.message || 'Are you sure you want to move to the next question?',
+              okText: 'Yes, move on',
+              onConfirm: handleConfirmNextQuestion,
+              onCancel: handleCancelNextQuestion
+            })
+            setShowConfirmationModal(true)
+          }
+
+          // Handle interview completion from agent
+          if (messageData.type === 'interview_completed') {
+            console.log('🎉 [LiveKit] Interview completed via data channel', messageData)
+            hasCompletedRef.current = true
+
+            // Mark that an interview has been completed in this app session
+            sessionStorage.setItem('interviewCompletedInSession', 'true')
+
+            // Update state to completed
+            setCurrentState('completed')
+            onStateChange?.('completed')
+
+            // Build session object for modals from agent data
+            const agentState = messageData.state || {}
+            const agentEvaluations = messageData.evaluations || []
+            const currentEvaluations = evaluationsRef.current
+
+            const sessionObject: InterviewSession = {
+              sessionId: interviewId,
+              interviewLinkId: interviewLinkId,
+              candidateId: agentState.candidateId || 'unknown',
+              status: 'completed',
+              questions: questions.map((q, idx) => ({
+                id: q.id || `q-${idx}`,
+                question: q.question || '',
+                type: 'technical' as const,
+                difficulty: (q as any).difficulty || 'medium',
+                timeLimit: 300,
+                options: [],
+                answeredAt: (q as any).answeredAt,
+                correctAnswerId: (q as any).correctAnswerId,
+              })),
+              answers: (agentEvaluations.length > 0 ? agentEvaluations : currentEvaluations).map((ev: any) => ({
+                questionId: ev.questionId || '',
+                answer: ev.answer || '',
+                answeredAt: new Date(ev.timestamp || Date.now()),
+                timeTaken: ev.timeTaken || 0,
+                score: ev.score,
+                feedback: ev.feedback,
+                code: ev.code
+              })),
+              startTime: new Date(agentState.startTime || Date.now()),
+              endTime: new Date(agentState.endTime || Date.now()),
+              duration: 0
+            }
+
+            // Calculate duration
+            if (sessionObject.startTime && sessionObject.endTime) {
+              sessionObject.duration = Math.floor((sessionObject.endTime.getTime() - sessionObject.startTime.getTime()) / 1000)
+            }
+
+            setSessionForModals(sessionObject)
+
+            // Submit final evaluation to backend API directly
+            const submitFinalEvaluation = async () => {
+              try {
+                const { API_BASE_URL } = await import('../constants/api')
+                const authToken = tokenRef.current || localStorage.getItem('authToken')
+
+                // End all active warnings before collecting stats
+                endAllActiveWarnings()
+                const visionWarnings = warningStatsRef.current
+
+                const payload = {
+                  sessionId: interviewId,
+                  interviewLinkId: interviewLinkId,
+                  state: agentState,
+                  conversationHistory: messageData.conversationHistory || [],
+                  evaluations: agentEvaluations,
+                  visionSecurityWarnings: visionWarnings,
+                }
+
+                console.log('📤 [LiveKit] Submitting final evaluation to backend')
+                const response = await fetch(`${API_BASE_URL}/interview/final-evaluation`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${authToken}`
+                  },
+                  body: JSON.stringify(payload)
+                })
+
+                const data = await response.json()
+                if (response.ok && data.success) {
+                  console.log('✅ [LiveKit] Final evaluation submitted successfully')
+                } else {
+                  console.error('❌ [LiveKit] Final evaluation submission failed:', data.error)
+                }
+              } catch (error: any) {
+                console.error('❌ [LiveKit] Failed to submit final evaluation:', error.message)
+              }
+            }
+
+            // Run async operations without blocking
+            (async () => {
+              await submitFinalEvaluation()
+
+              // Save results if needed
+              if (onSaveResultsRef.current && interviewLinkId) {
+                const totalQuestions = questions.length + codingProblems.length
+                const allEvaluations = agentEvaluations.length > 0 ? agentEvaluations : currentEvaluations
+                const theoreticalScore = allEvaluations.length > 0
+                  ? allEvaluations.reduce((sum: number, ev: any) => sum + (ev.score || 0), 0) / allEvaluations.length
+                  : 0
+
+                const summary = {
+                  sessionId: interviewId,
+                  interviewLinkId: interviewLinkId,
+                  candidateId: agentState.candidateId || 'unknown',
+                  candidateName: resumeData?.name || user?.fullName || 'Unknown',
+                  candidateEmail: user?.email || resumeData?.email || 'unknown@example.com',
+                  candidatePhone: resumeData?.phone || '',
+                  completedAt: new Date().toISOString(),
+                  startTime: agentState.startTime || new Date().toISOString(),
+                  endTime: agentState.endTime || new Date().toISOString(),
+                  duration: sessionObject.duration,
+                  score: Math.round(theoreticalScore),
+                  totalQuestions: totalQuestions,
+                  correctAnswers: allEvaluations.filter((ev: any) => ev.score >= 70).length,
+                  timeSpent: sessionObject.duration,
+                  strengths: theoreticalScore >= 80 ? ['Excellent technical knowledge'] : ['Good understanding'],
+                  areasForImprovement: theoreticalScore < 60 ? ['Review fundamentals'] : ['Continue practicing'],
+                  overallFeedback: `Interview completed with ${Math.round(theoreticalScore)}% average score.`,
+                  detailedAnswers: allEvaluations.map((ev: any) => ({
+                    questionId: ev.questionId || '',
+                    question: ev.question || '',
+                    userAnswer: ev.answer || '',
+                    correctAnswer: '',
+                    isCorrect: ev.score >= 70,
+                    timeTaken: ev.timeTaken || 0
+                  })),
+                  questionAnalysis: {
+                    easyQuestions: questions.filter(q => (q as any).difficulty === 'easy').length,
+                    mediumQuestions: questions.filter(q => (q as any).difficulty === 'medium').length,
+                    hardQuestions: questions.filter(q => (q as any).difficulty === 'hard').length,
+                    correctByDifficulty: { easy: 0, medium: 0, hard: 0 }
+                  }
+                }
+
+                saveSummaryRef.current = summary
+                saveResultsWithRetry(summary, 0)
+              } else {
+                // No save needed, go directly to feedback
+                setShowFeedbackModal(true)
+              }
+            })()
           }
         } catch (error) {
           console.error('❌ [LiveKit] Failed to parse data channel message:', error)
@@ -526,153 +699,11 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         })
       })
 
-      // Final evaluation ready - still needed for backend submission
-      window.electronAPI.onFinalEvaluationReady(async (payload: any) => {
-        // CRITICAL: End all active warnings BEFORE collecting stats
-        endAllActiveWarnings()
-
-        // Use warningStatsRef.current directly - it's updated via useEffect
-        const visionWarnings = warningStatsRef.current
-
-        // Add vision warnings to payload for backend
-        payload.visionSecurityWarnings = visionWarnings
-
-        try {
-          const { API_BASE_URL } = await import('../constants/api')
-          // Use token from ref to ensure we have the latest one even if localStorage was cleared
-          const authToken = tokenRef.current || localStorage.getItem('authToken')
-
-          const response = await fetch(`${API_BASE_URL}/interview/final-evaluation`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${authToken}`
-            },
-            body: JSON.stringify(payload)
-          })
-          const data = await response.json()
-          if (response.ok && data.success) {
-            await window.electronAPI.markPayloadSent()
-          } else {
-            console.error('❌ [Renderer] Final evaluation submission failed:', data.error)
-          }
-        } catch (error: any) {
-          console.error('❌ [Renderer] Failed to submit final evaluation:', error.message)
-        }
-      })
-
-      // Skip question confirmation request from main process
-      window.electronAPI.onSkipQuestionRequest(() => {
-        setConfirmationModalConfig({
-          message: 'Are you sure you want to skip this coding problem and move to the next question?',
-          okText: 'Skip question',
-          onConfirm: handleConfirmSkip,
-          onCancel: handleCancelSkip
-        })
-        setShowConfirmationModal(true)
-      })
-
-      // Interview completion
-      window.electronAPI.onInterviewCompleted(async (results: any) => {
-        hasCompletedRef.current = true
-
-        // Mark that an interview has been completed in this app session
-        sessionStorage.setItem('interviewCompletedInSession', 'true');
-
-        // For now, rely on WarningStateManager stats which are used in onFinalEvaluationReady
-        // Note: Final stats will be sent to backend via final evaluation payload
-        // No need to send to main process - logging stays in renderer
-
-        // Create a session object for the modals
-        // Use ref to get current evaluations (closure issue fix)
-        const currentEvaluations = evaluationsRef.current
-        const sessionObject: InterviewSession = {
-          sessionId: interviewId,
-          interviewLinkId: interviewLinkId,
-          candidateId: results?.candidateId || 'unknown',
-          status: 'completed',
-          questions: questions.map((q, idx) => ({
-            id: q.id || `q-${idx}`,
-            question: q.question || '',
-            type: 'technical' as const,
-            difficulty: (q as any).difficulty || 'medium',
-            timeLimit: 300,
-            options: [],
-            answeredAt: (q as any).answeredAt,
-            correctAnswerId: (q as any).correctAnswerId,
-          })),
-          answers: currentEvaluations.map(ev => ({
-            questionId: ev.questionId || '',
-            answer: ev.answer || '',
-            answeredAt: new Date(),
-            timeTaken: ev.timeTaken || 0,
-            score: ev.score,
-            feedback: ev.feedback,
-            code: ev.code // Include code for coding questions
-          })),
-          startTime: new Date(results?.startTime || Date.now()),
-          endTime: new Date(),
-          duration: results?.duration || 0
-        }
-
-        setSessionForModals(sessionObject)
-
-        // Save results in the background (non-blocking)
-        if (onSaveResultsRef.current && interviewLinkId) {
-          // Create summary for saving
-          const totalQuestions = questions.length + codingProblems.length
-          const theoreticalScore = currentEvaluations.length > 0
-            ? currentEvaluations.reduce((sum, ev) => sum + (ev.score || 0), 0) / currentEvaluations.length
-            : 0
-
-          const summary = {
-            sessionId: interviewId,
-            interviewLinkId: interviewLinkId,
-            candidateId: results?.candidateId || 'unknown',
-            candidateName: resumeData?.name || user?.fullName || 'Unknown',
-            candidateEmail: user?.email || resumeData?.email || 'unknown@example.com',
-            candidatePhone: resumeData?.phone || '',
-            completedAt: new Date().toISOString(),
-            startTime: results?.startTime || new Date().toISOString(),
-            endTime: new Date().toISOString(),
-            duration: results?.duration || 0,
-            score: Math.round(theoreticalScore),
-            totalQuestions: totalQuestions,
-            correctAnswers: currentEvaluations.filter(ev => ev.score >= 70).length,
-            timeSpent: results?.timeSpent || 0,
-            strengths: theoreticalScore >= 80 ? ['Excellent technical knowledge'] : ['Good understanding'],
-            areasForImprovement: theoreticalScore < 60 ? ['Review fundamentals'] : ['Continue practicing'],
-            overallFeedback: `Interview completed with ${Math.round(theoreticalScore)}% average score.`,
-            detailedAnswers: currentEvaluations.map(ev => ({
-              questionId: ev.questionId || '',
-              question: ev.question || '',
-              userAnswer: ev.answer || '',
-              correctAnswer: '',
-              isCorrect: ev.score >= 70,
-              timeTaken: ev.timeTaken || 0
-            })),
-            questionAnalysis: {
-              easyQuestions: questions.filter(q => (q as any).difficulty === 'easy').length,
-              mediumQuestions: questions.filter(q => (q as any).difficulty === 'medium').length,
-              hardQuestions: questions.filter(q => (q as any).difficulty === 'hard').length,
-              correctByDifficulty: {
-                easy: 0,
-                medium: 0,
-                hard: 0
-              }
-            }
-          }
-
-          // Store summary for retry
-          saveSummaryRef.current = summary
-
-          // Start saving with retry logic
-          saveResultsWithRetry(summary, 0)
-        } else {
-          // No save needed, go directly to feedback
-          setShowFeedbackModal(true)
-        }
-      })
+      // NOTE: The following listeners are now handled via LiveKit data channels:
+      // - onFinalEvaluationReady -> handled in handleDataReceived 'interview_completed'
+      // - onSkipQuestionRequest -> handled in handleDataReceived 'show_confirmation_modal'
+      // - onInterviewCompleted -> handled in handleDataReceived 'interview_completed'
+      // These IPC events are no longer sent by main process.
     }
 
     setupEventListeners()
@@ -777,32 +808,34 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     const { code, timeComplexity, spaceComplexity } = submission
     pendingSubmissionRef.current = null
 
-    try {
-      // Get complexity from current problem's notes
-      const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
-        ? complexityNotes[currentCodingProblem.id]
-        : { time: timeComplexity || '', space: spaceComplexity || '' }
+    console.log('📤 [Interview] Submitting via Direct Data Channel (bypassing main process)')
 
-      const result = await window.electronAPI.submitSolution(
-        code,
-        false,
-        complexity.time || undefined,
-        complexity.space || undefined
-      )
+    if (broadcastDataRef.current) {
+      // 1. Send final code snapshot
+      broadcastDataRef.current({
+        type: 'code_snapshot',
+        code: code,
+        timestamp: Date.now()
+      })
 
-      if (result.success) {
-        if (result.hasNextProblem) {
-        } else {
+      // 2. Broadcast confirm_next_question to Agent so it moves on
+      // We include complexity stats just in case the agent wants to store them in future
+      broadcastDataRef.current({
+        type: 'confirm_next_question',
+        metadata: {
+          forced: true,
+          submission: true,
+          complexity: { time: timeComplexity, space: spaceComplexity }
         }
-        setCurrentCode('')
-      } else {
-      }
-    } catch (error) {
-      console.error('Failed to submit solution:', error)
-      // Don't show blocking alert - error is already logged
-      // The interview flow will handle errors gracefully
+      })
+      console.log('✅ [LiveKit] Sent confirm_next_question (Submit) to agent')
+
+      // Clear local code immediately
+      setCurrentCode('')
+    } else {
+      console.error('❌ [Interview] Cannot submit - broadcastDataRef is null')
     }
-  }, [currentCodingProblem, complexityNotes])
+  }, [])
 
   const handleCancelSubmit = useCallback(() => {
     setShowConfirmationModal(false)
@@ -812,28 +845,27 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const handleSubmit = useCallback(async (code: string, timeComplexity?: string, spaceComplexity?: string, skipConfirmation = false) => {
     // If skipConfirmation is true (timer expiration), submit directly without modal
     if (skipConfirmation) {
-      try {
-        // Get complexity from current problem's notes
-        const complexity = currentCodingProblem && complexityNotes[currentCodingProblem.id]
-          ? complexityNotes[currentCodingProblem.id]
-          : { time: timeComplexity || '', space: spaceComplexity || '' }
+      console.log('⏰ [Interview] Timer expired - submitting via Data Channel')
 
-        const result = await window.electronAPI.submitSolution(
-          code,
-          true, // isTimeout = true
-          complexity.time || undefined,
-          complexity.space || undefined
-        )
+      if (broadcastDataRef.current) {
+        // 1. Send code snapshot
+        broadcastDataRef.current({
+          type: 'code_snapshot',
+          code: code,
+          timestamp: Date.now()
+        })
 
-        if (result.success) {
-          setCurrentCode('')
-          if (result.hasNextProblem) {
-          } else {
+        // 2. Force next question (Timeout)
+        broadcastDataRef.current({
+          type: 'confirm_next_question',
+          metadata: {
+            forced: true,
+            timeout: true
           }
-        } else {
-        }
-      } catch (error) {
-        console.error('Failed to submit timeout solution:', error)
+        })
+        console.log('✅ [LiveKit] Sent confirm_next_question (Timeout) to agent')
+
+        setCurrentCode('')
       }
       return
     }

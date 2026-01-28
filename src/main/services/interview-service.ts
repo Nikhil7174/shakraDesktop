@@ -24,9 +24,9 @@ export class InterviewService implements Service {
     console.log('🔧 [Interview] Initializing interview service (thin client mode)')
     console.log('   Server URL:', config.serverUrl)
     console.log('   LiveKit URL:', config.livekitUrl)
-    
+
     this.setupIpcHandlers()
-    
+
     console.log('✓ Interview service initialized (all logic runs on server)')
   }
 
@@ -84,6 +84,33 @@ export class InterviewService implements Service {
       }
     })
 
+    // Submit solution handler
+    ipcMain.handle('submit-solution', async (_event, code, isTimeout, timeComplexity, spaceComplexity) => {
+      try {
+        console.log('📝 [Interview] Solution submitted:', {
+          codeLength: code?.length,
+          isTimeout,
+          complexity: { time: timeComplexity, space: spaceComplexity }
+        })
+        // Return success to let renderer proceed with agent notification
+        return { success: true, hasNextProblem: true }
+      } catch (error) {
+        console.error('❌ [Interview] Submit solution error:', error)
+        return { success: false, error: String(error) }
+      }
+    })
+
+    // Analyze code handler (no-op/stub)
+    ipcMain.handle('analyze-code', async (_event, codeData) => {
+      // Analysis happens on server side or via agent now
+      return { success: true }
+    })
+
+    // Confirm skip question handler
+    ipcMain.handle('confirm-skip-question', async (_event, confirmed) => {
+      console.log('📝 [Interview] Skip question confirmed:', confirmed)
+      return { success: true }
+    })
 
     console.log('✓ Interview IPC handlers registered')
   }
