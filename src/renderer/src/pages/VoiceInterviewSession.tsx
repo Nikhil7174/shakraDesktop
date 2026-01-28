@@ -216,14 +216,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           const messageText = decoder.decode(payload)
           const messageData = JSON.parse(messageText)
 
-          console.log('📥 [LiveKit] Data channel message received:', {
-            type: messageData.type,
-            hasQuestion: !!messageData.question,
-            hasCodingProblem: !!messageData.codingProblem,
-            questionIndex: messageData.questionIndex,
-            timestamp: messageData.timestamp
-          })
-
           if (messageData.type === 'question-changed' && messageData.question) {
             console.log('📝 [LiveKit] Setting theoretical question:', {
               questionId: messageData.question.id,
@@ -256,14 +248,27 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
             setIsMonitoring(true)
             setCurrentCode('')
             isSubmittingTimeoutRef.current = false
-            setCurrentState('coding_intro')
-            onStateChange?.('coding_intro')
-            setTimeout(() => {
+
+            // Only show coding_intro transition when coming from non-coding state (e.g., theoretical)
+            // For subsequent coding problems, go directly to coding_problem
+            const isAlreadyInCodingPhase = currentState === 'coding' || currentState === 'coding_problem' || currentState === 'coding_intro'
+
+            if (isAlreadyInCodingPhase) {
+              // Already in coding phase - go directly to coding_problem (no transition screen)
               setCurrentState('coding_problem')
               onStateChange?.('coding_problem')
-              console.log('✅ [LiveKit] Coding problem state updated to coding_problem')
-            }, 2000)
-            console.log('✅ [LiveKit] Coding problem state updated to coding_intro')
+              console.log('✅ [LiveKit] Next coding problem - skipping intro, state: coding_problem')
+            } else {
+              // First time entering coding phase - show transition intro
+              setCurrentState('coding_intro')
+              onStateChange?.('coding_intro')
+              setTimeout(() => {
+                setCurrentState('coding_problem')
+                onStateChange?.('coding_problem')
+                console.log('✅ [LiveKit] Coding problem state updated to coding_problem')
+              }, 4000)
+              console.log('✅ [LiveKit] First coding problem - showing intro, state: coding_intro')
+            }
           }
 
           if (messageData.type === 'interview-state-change' && messageData.state) {
