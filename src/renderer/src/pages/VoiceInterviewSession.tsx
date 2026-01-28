@@ -62,6 +62,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [complexityNotes, setComplexityNotes] = useState<Record<string, { time: string; space: string }>>({})
   const [isMonitoring, setIsMonitoring] = useState(false)
   const [currentCode, setCurrentCode] = useState<string>('')
+  const currentCodeRef = useRef<string>('')
   const [hasMicStream, setHasMicStream] = useState(false)
   const isSubmittingTimeoutRef = useRef<boolean>(false)
   const broadcastDataRef = useRef<((data: any) => void) | null>(null)
@@ -154,6 +155,11 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       }
       return
     }, [currentCode, room, currentState])
+
+    // Keep currentCodeRef in sync with currentCode state
+    useEffect(() => {
+      currentCodeRef.current = currentCode
+    }, [currentCode])
 
     useEffect(() => {
       if (!room) return
@@ -332,8 +338,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
             setSessionForModals(sessionObject)
 
-            // Submit final evaluation to backend API directly
-            const submitFinalEvaluation = async () => {
+            // Send vision security warnings to backend (conversation history is sent by agent)
+            const sendVisionWarnings = async () => {
               try {
                 const { API_BASE_URL } = await import('../constants/api')
                 const authToken = tokenRef.current || localStorage.getItem('authToken')
@@ -342,39 +348,36 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
                 endAllActiveWarnings()
                 const visionWarnings = warningStatsRef.current
 
-                const payload = {
-                  sessionId: interviewId,
-                  interviewLinkId: interviewLinkId,
-                  state: agentState,
-                  conversationHistory: messageData.conversationHistory || [],
-                  evaluations: agentEvaluations,
-                  visionSecurityWarnings: visionWarnings,
+                // Only send if there are warnings to report
+                if (!visionWarnings || Object.keys(visionWarnings).length === 0) {
+                  console.log('📋 [LiveKit] No vision warnings to send')
+                  return
                 }
 
-                console.log('📤 [LiveKit] Submitting final evaluation to backend')
-                const response = await fetch(`${API_BASE_URL}/interview/final-evaluation`, {
-                  method: 'POST',
+                console.log('📤 [LiveKit] Sending vision security warnings to backend')
+                const response = await fetch(`${API_BASE_URL}/interview/${interviewId}/vision-security`, {
+                  method: 'PUT',
                   headers: {
                     'Content-Type': 'application/json',
                     Authorization: `Bearer ${authToken}`
                   },
-                  body: JSON.stringify(payload)
+                  body: JSON.stringify({ suspiciousEvents: Object.values(visionWarnings) })
                 })
 
                 const data = await response.json()
                 if (response.ok && data.success) {
-                  console.log('✅ [LiveKit] Final evaluation submitted successfully')
+                  console.log('✅ [LiveKit] Vision warnings sent successfully')
                 } else {
-                  console.error('❌ [LiveKit] Final evaluation submission failed:', data.error)
+                  console.error('❌ [LiveKit] Vision warnings submission failed:', data.error)
                 }
               } catch (error: any) {
-                console.error('❌ [LiveKit] Failed to submit final evaluation:', error.message)
+                console.error('❌ [LiveKit] Failed to send vision warnings:', error.message)
               }
             }
 
             // Run async operations without blocking
             (async () => {
-              await submitFinalEvaluation()
+              await sendVisionWarnings()
 
               // Save results if needed
               if (onSaveResultsRef.current && interviewLinkId) {
@@ -472,6 +475,20 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           // Ensure we don't show "listening" while user speaks
           setIsListening(false)
           isListeningRef.current = false
+
+          // IMMEDIATE CODE SYNC: Send current code when user starts speaking
+          // This ensures agent has the latest code before processing user's speech
+          const isCodingState = currentState === 'coding_problem' || currentState === 'coding'
+          if (isCodingState && currentCodeRef.current && currentCodeRef.current.length > 0 && room.localParticipant) {
+            const data = new TextEncoder().encode(JSON.stringify({
+              type: 'code_snapshot',
+              code: currentCodeRef.current,
+              timestamp: Date.now(),
+              trigger: 'user_speaking'
+            }))
+            room.localParticipant.publishData(data, { reliable: true })
+            console.log(`📤 [LiveKit] Sent IMMEDIATE code_snapshot on user speaking (${currentCodeRef.current.length} chars)`)
+          }
         } else {
           if (!userSpeakingTimeoutRef.current && isUserSpeaking) {
             userSpeakingTimeoutRef.current = setTimeout(() => {
