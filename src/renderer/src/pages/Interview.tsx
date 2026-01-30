@@ -180,7 +180,7 @@ export const Interview: React.FC = () => {
     } catch (err) {
       console.error('Failed to stop interview:', err);
     } finally {
-      window.location.hash = '#/join';
+      window.location.hash = '#/candidate/dashboard';
     }
   };
 

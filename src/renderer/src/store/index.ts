@@ -24,23 +24,26 @@ const persistConfig = {
   storage,
   whitelist: ['user', 'interview'],
   migrate: (state: any) => {
-    // Clear old interview state that doesn't have LiveKit credentials
-    if (state && state.interview && state.interview.currentSession) {
-      const session = state.interview.currentSession;
-      // If session exists but doesn't have token/wsUrl/roomName, clear it
-      if (!session.token || !session.wsUrl || !session.roomName) {
-        console.log('🔄 [Redux-Persist] Migrating: Clearing old session without LiveKit credentials');
-        return {
-          ...state,
-          interview: {
-            ...state.interview,
-            currentSession: null,
-            chatMessages: [],
-          }
-        };
+    // Migrate function must return a Promise
+    return Promise.resolve(state).then((resolvedState) => {
+      // Clear old interview state that doesn't have LiveKit credentials
+      if (resolvedState && resolvedState.interview && resolvedState.interview.currentSession) {
+        const session = resolvedState.interview.currentSession;
+        // If session exists but doesn't have token/wsUrl/roomName, clear it
+        if (!session.token || !session.wsUrl || !session.roomName) {
+          console.log('🔄 [Redux-Persist] Migrating: Clearing old session without LiveKit credentials');
+          return {
+            ...resolvedState,
+            interview: {
+              ...resolvedState.interview,
+              currentSession: null,
+              chatMessages: [],
+            }
+          };
+        }
       }
-    }
-    return state;
+      return resolvedState;
+    });
   }
 };
 

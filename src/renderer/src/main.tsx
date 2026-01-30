@@ -24,6 +24,9 @@ const rootElement = document.getElementById('root')
 if (!rootElement) {
   console.error('❌ [Renderer] Root element not found!')
   document.body.innerHTML = '<div style="padding: 20px; color: red;">Error: Root element not found</div>'
+  // Hide splash on error
+  const splash = document.getElementById('app-loading')
+  if (splash) splash.remove()
 } else {
   console.log('✅ [Renderer] Root element found, mounting React app...')
   try {
@@ -34,8 +37,12 @@ if (!rootElement) {
       </StrictMode>
     )
     console.log('✅ [Renderer] React app mounted successfully')
+    // Splash screen will be hidden by App component after redux-persist rehydrates
   } catch (error) {
     console.error('❌ [Renderer] Failed to mount React app:', error)
     rootElement.innerHTML = `<div style="padding: 20px; color: red;">Error mounting app: ${error}</div>`
+    // Hide splash on error
+    const splash = document.getElementById('app-loading')
+    if (splash) splash.remove()
   }
 }

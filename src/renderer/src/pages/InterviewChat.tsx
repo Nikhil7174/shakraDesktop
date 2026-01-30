@@ -50,7 +50,7 @@ export const InterviewChat: React.FC = () => {
     } catch (err) {
       console.error('Failed to stop interview:', err);
     } finally {
-      navigate('/join', { replace: true });
+      navigate('/candidate/dashboard', { replace: true });
     }
   };
 
@@ -307,10 +307,21 @@ export const InterviewChat: React.FC = () => {
     }
   }, [dispatch, clearAllSessions, resetPageVisibilityTracking]);
 
-  const handleInterviewComplete = useCallback(async () => {
-    console.log('Interview completed - clearing all data and redirecting');
+  const handleInterviewComplete = useCallback(async (result?: { cancelled?: boolean }) => {
+    console.log('Interview completed/cancelled - clearing all data and redirecting', result);
 
     try {
+      // If interview was cancelled, just clear state and navigate back
+      if (result?.cancelled) {
+        console.log('Interview was cancelled by user');
+        dispatch(resetInterview());
+        clearAllSessions();
+        
+        navigate('/candidate/dashboard', { replace: true });
+        return;
+      }
+
+      // Normal completion flow
       // NOTE: Don't clear unfinished interview here - the payload needs to be sent first
       // The main process will clear conversations after payload is successfully sent via markPayloadSent()
       // Only clear Redux state (UI state), not main process state

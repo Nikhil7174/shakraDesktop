@@ -112,6 +112,19 @@ export class InterviewService implements Service {
       return { success: true }
     })
 
+    // Stop interview handler
+    ipcMain.handle('stop-interview', async () => {
+      try {
+        console.log('🛑 [Interview] Stop interview requested')
+        // Since all state is on the server now, just acknowledge the stop request
+        // The server will handle cleanup when the LiveKit room is disconnected
+        return { success: true }
+      } catch (error) {
+        console.error('❌ [Interview] Stop interview error:', error)
+        return { success: false, error: String(error) }
+      }
+    })
+
     console.log('✓ Interview IPC handlers registered')
   }
 }

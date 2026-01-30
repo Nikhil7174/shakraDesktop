@@ -18,6 +18,21 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { Register } from './pages/Register';
 
 const App: React.FC = () => {
+  // Hide splash screen when app is ready (minimum 1 second display)
+  React.useEffect(() => {
+    const hideSplashScreen = () => {
+      const splash = document.getElementById('app-loading')
+      if (splash) {
+        splash.classList.add('loaded')
+        setTimeout(() => splash.remove(), 300)
+      }
+    }
+    
+    // Keep splash screen visible for at least 1 second
+    const timer = setTimeout(hideSplashScreen, 1000)
+    return () => clearTimeout(timer)
+  }, [])
+
   return (
     <ErrorBoundary>
       <Provider store={store}>
