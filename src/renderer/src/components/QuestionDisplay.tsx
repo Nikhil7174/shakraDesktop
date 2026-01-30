@@ -15,6 +15,7 @@ interface QuestionDisplayProps {
   onVisionStatusChange?: (status: any) => void
   isHint?: boolean
   isClarification?: boolean
+  isFollowUp?: boolean
 }
 
 export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
@@ -28,10 +29,11 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
   progress,
   onVisionStatusChange,
   isHint = false,
-  isClarification = false
+  isClarification = false,
+  isFollowUp = false
 }) => {
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null)
-  
+
   // Initialize vision security tracking
   const { status: visionStatus, isInitialized: visionInitialized, error: visionError } = useVisionSecurity({
     videoElement,
@@ -62,7 +64,7 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
       // Always update parent with latest status to ensure alerts are shown
       // The VisionSecurityAlert component will handle deduplication
       onVisionStatusChange(visionStatus)
-      
+
       // Log when suspicious events are detected for debugging
       if (visionStatus.suspiciousEvents && visionStatus.suspiciousEvents.length > 0) {
         console.log('📢 [QuestionDisplay] Passing suspicious events to parent:', {
@@ -106,14 +108,15 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
   const isIntroMode = !question && !!introMessage
   const isLoadingNoQuestion = !question && !introMessage
 
-  const displayText = question 
+  const displayText = question
     ? (followUpQuestionText || question.question)
     : (introMessage || null)
 
   const displayMeta = question
-    ? `Question ${progress.current} of ${progress.total}`
+    ? `Live Interview`
     : (isLoadingNoQuestion ? 'Loading question...' : (introMeta || 'Loading...'))
-  const isFollowUp = !!followUpQuestionText && !!question
+
+  const showFollowUpBadge = isFollowUp || (!!followUpQuestionText && !!question)
 
   return (
     <div className="meeting-display">
@@ -125,7 +128,7 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
               <div className="video-name">AI Interviewer</div>
               <div className="video-meta">
                 {displayMeta}
-                {isFollowUp && <span className="follow-up-badge">Follow-up</span>}
+                {showFollowUpBadge && <span className="follow-up-badge">Follow-up</span>}
                 {isHint && <span className="hint-badge">Hint</span>}
                 {isClarification && <span className="clarification-badge">Clarification</span>}
               </div>
@@ -144,8 +147,8 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
             <div className="video-background">
               <div className="person-icon ai-icon">
                 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <circle cx="12" cy="8" r="4" fill="currentColor"/>
-                  <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor"/>
+                  <circle cx="12" cy="8" r="4" fill="currentColor" />
+                  <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor" />
                 </svg>
               </div>
             </div>
@@ -262,7 +265,7 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
           position: relative;
           transition: all 0.3s ease;
           min-height: 500px;
-          height: 80%;
+          height: 72%;
         }
 
         .meeting-container .video-window.speaking-active {

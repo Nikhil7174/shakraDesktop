@@ -525,8 +525,22 @@ export const InterviewChat: React.FC = () => {
     (currentSession?.questions?.length ?? 0) > 0;
 
   return (
-    <div style={{ padding: spacing.xl, minHeight: '100vh', backgroundColor: colors.background.secondary }}>
-      <div style={{ marginBottom: spacing.md, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+    <div style={{
+      padding: currentStep === 'interview' ? 0 : spacing.xl,
+      minHeight: '100vh',
+      backgroundColor: currentStep === 'interview' ? 'transparent' : colors.background.secondary,
+      margin: 0
+    }}>
+      <div style={{
+        marginBottom: currentStep === 'interview' ? 0 : spacing.md,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        position: currentStep === 'interview' ? 'fixed' : 'relative',
+        top: currentStep === 'interview' ? spacing.md : 'auto',
+        right: currentStep === 'interview' ? spacing.md : 'auto',
+        zIndex: 1000
+      }}>
         <div>
           {currentStep !== 'interview' && (
             <Button type="text" onClick={handleBack} icon={<LeftOutlined />} style={{ padding: 0 }}>
@@ -536,13 +550,23 @@ export const InterviewChat: React.FC = () => {
         </div>
         <div>
           {showQuitButton && (
-            <Button danger type="primary" onClick={() => setShowQuitConfirm(true)}>
+            <Button
+              danger
+              type="primary"
+              onClick={() => setShowQuitConfirm(true)}
+              style={{
+                backgroundColor: '#d43f40',
+                borderColor: '#d43f40',
+                padding: '8px 12px',
+                height: 'auto'
+              }}
+            >
               Quit Interview
             </Button>
           )}
         </div>
       </div>
-      <Space direction="vertical" size="large" style={{ width: '100%' }}>
+      <Space direction="vertical" size="large" style={{ width: '100%', margin: 0, padding: 0 }}>
 
         {/* Main Content */}
         {renderCurrentStep()}

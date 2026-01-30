@@ -48,19 +48,19 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
 
           // Create gradient
           const gradient = ctx.createLinearGradient(0, y, 0, height)
-          if (isListening) {
-            gradient.addColorStop(0, '#4caf50')
-            gradient.addColorStop(1, '#2e7d32')
-          } else if (isSpeaking) {
+          if (isSpeaking) {
             gradient.addColorStop(0, '#2196f3')
             gradient.addColorStop(1, '#1565c0')
+          } else if (isListening) {
+            gradient.addColorStop(0, '#4caf50')
+            gradient.addColorStop(1, '#2e7d32')
           }
 
           ctx.fillStyle = gradient
           ctx.fillRect(x, y, barWidth - 2, barHeight)
 
           // Add glow effect
-          ctx.shadowColor = isListening ? '#4caf50' : '#2196f3'
+          ctx.shadowColor = isSpeaking ? '#2196f3' : '#4caf50'
           ctx.shadowBlur = 10
           ctx.fillRect(x, y, barWidth - 2, barHeight)
           ctx.shadowBlur = 0
@@ -86,7 +86,7 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
   }, [isListening, isSpeaking, audioData])
 
   const getStatusText = () => {
-    if (isSpeaking) return 'AI Speaking'
+    if (isSpeaking) return 'Interviewer'
     if (isListening) return 'Listening...'
     return 'Ready'
   }

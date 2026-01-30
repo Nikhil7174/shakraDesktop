@@ -58,6 +58,9 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const isListeningRef = useRef(false)
   const [progress, setProgress] = useState({ current: 0, total: questions.length })
   const [evaluations, setEvaluations] = useState<any[]>([])
+  const [isFollowUp, setIsFollowUp] = useState(false)
+  const [isHint, setIsHint] = useState(false)
+  const [isClarification, setIsClarification] = useState(false)
   const evaluationsRef = useRef<any[]>([])
   const [complexityNotes, setComplexityNotes] = useState<Record<string, { time: string; space: string }>>({})
   const [isMonitoring, setIsMonitoring] = useState(false)
@@ -105,7 +108,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     setShowConfirmationModal(false)
     if (broadcastDataRef.current) {
       broadcastDataRef.current({ type: 'confirm_next_question' })
-      console.log('✅ [LiveKit] Sent confirm_next_question to agent')
     }
   }, [])
 
@@ -147,7 +149,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               timestamp: Date.now()
             }))
             room.localParticipant.publishData(data, { reliable: true })
-            console.log(`📤 [LiveKit] Sent code_snapshot (${currentCode.length} chars)`)
           }
         }, 2000) // 2 second debounce
 
@@ -217,36 +218,43 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           const messageData = JSON.parse(messageText)
 
           if (messageData.type === 'question-changed' && messageData.question) {
-            console.log('📝 [LiveKit] Setting theoretical question:', {
-              questionId: messageData.question.id,
-              questionText: messageData.question.question?.substring(0, 100) + '...',
-              questionIndex: messageData.questionIndex
-            })
+            // Only reset badges if this is a different question
+            const isDifferentQuestion = currentQuestion?.id !== messageData.question.id
+            
             setCurrentQuestion(messageData.question)
             setFollowUpQuestionText(null)
+            
+            // Only reset badges when switching to a different question
+            if (isDifferentQuestion) {
+              setIsFollowUp(false)
+              setIsHint(false)
+              setIsClarification(false)
+            }
+            
             setCurrentState('theoretical_question')
             onStateChange?.('theoretical_question')
             setIsListening(true)
             isListeningRef.current = true
             if (messageData.questionIndex !== undefined) {
               setProgress({ current: messageData.questionIndex + 1, total: questions.length })
-              console.log('📊 [LiveKit] Progress updated:', messageData.questionIndex + 1, '/', questions.length)
             }
-            console.log('✅ [LiveKit] Question state updated successfully')
           }
 
           if (messageData.type === 'coding-problem-changed' && messageData.codingProblem) {
-            console.log('💻 [LiveKit] Setting coding problem:', {
-              problemId: messageData.codingProblem.id,
-              problemTitle: messageData.codingProblem.title,
-              problemIndex: messageData.questionIndex,
-              hasDescription: !!messageData.codingProblem.description,
-              descriptionLength: messageData.codingProblem.description?.length || 0,
-              allKeys: Object.keys(messageData.codingProblem)
-            })
+            // Only reset badges if this is a different problem
+            const isDifferentProblem = currentCodingProblem?.id !== messageData.codingProblem.id
+            
             setCurrentCodingProblem(messageData.codingProblem)
             setIsMonitoring(true)
-            setCurrentCode('')
+            
+            // Only reset code and badges when switching to a different problem
+            if (isDifferentProblem) {
+              setCurrentCode('')
+              setIsFollowUp(false)
+              setIsHint(false)
+              setIsClarification(false)
+            }
+            
             isSubmittingTimeoutRef.current = false
 
             // Only show coding_intro transition when coming from non-coding state (e.g., theoretical)
@@ -257,7 +265,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               // Already in coding phase - go directly to coding_problem (no transition screen)
               setCurrentState('coding_problem')
               onStateChange?.('coding_problem')
-              console.log('✅ [LiveKit] Next coding problem - skipping intro, state: coding_problem')
             } else {
               // First time entering coding phase - show transition intro
               setCurrentState('coding_intro')
@@ -265,22 +272,17 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               setTimeout(() => {
                 setCurrentState('coding_problem')
                 onStateChange?.('coding_problem')
-                console.log('✅ [LiveKit] Coding problem state updated to coding_problem')
               }, 4000)
-              console.log('✅ [LiveKit] First coding problem - showing intro, state: coding_intro')
             }
           }
 
           if (messageData.type === 'interview-state-change' && messageData.state) {
-            console.log('🔄 [LiveKit] Interview state change:', messageData.state)
             setCurrentState(messageData.state)
             onStateChange?.(messageData.state)
             setIsEvaluating(messageData.state === 'evaluating_answer' || messageData.state === 'evaluating_approach')
-            console.log('✅ [LiveKit] State updated to:', messageData.state)
           }
 
           if (messageData.type === 'show_confirmation_modal') {
-            console.log('🛡️ [LiveKit] Showing confirmation modal', messageData)
             setConfirmationModalConfig({
               message: messageData.message || 'Are you sure you want to move to the next question?',
               okText: 'Yes, move on',
@@ -288,6 +290,33 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               onCancel: handleCancelNextQuestion
             })
             setShowConfirmationModal(true)
+          }
+
+          if (messageData.type === 'follow_up') {
+            // Clear other badges when follow-up is detected
+            setIsHint(false)
+            setIsClarification(false)
+            setIsFollowUp(true)
+          }
+
+          if (messageData.type === 'hint') {
+            // Clear other badges when hint is detected
+            setIsFollowUp(false)
+            setIsClarification(false)
+            setIsHint(true)
+          }
+
+          if (messageData.type === 'clarification') {
+            // Clear other badges when clarification is detected
+            setIsFollowUp(false)
+            setIsHint(false)
+            setIsClarification(true)
+          }
+
+          if (messageData.type === 'clear_badges') {
+            setIsFollowUp(false)
+            setIsHint(false)
+            setIsClarification(false)
           }
 
           // Handle interview completion from agent
@@ -492,12 +521,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               trigger: 'user_speaking'
             }))
             room.localParticipant.publishData(data, { reliable: true })
-            console.log(`📤 [LiveKit] Sent IMMEDIATE code_snapshot on user speaking (${currentCodeRef.current.length} chars)`)
           }
         } else {
           if (!userSpeakingTimeoutRef.current && isUserSpeaking) {
             userSpeakingTimeoutRef.current = setTimeout(() => {
-              console.log('🎤 [LiveKit] User silence confirmed (debounced)')
               setIsUserSpeaking(false)
               // Resume listening if agent isn't speaking
               if (!isSpeaking) {
@@ -800,7 +827,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           problemId: problemId,
           timestamp: Date.now()
         })
-        console.log('📤 [Analysis] Sent code snapshot to LiveKit agent')
       }
 
       // 2. Call local analysis (optional/legacy)
@@ -850,7 +876,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           complexity: { time: timeComplexity, space: spaceComplexity }
         }
       })
-      console.log('✅ [LiveKit] Sent confirm_next_question (Submit) to agent')
 
       // Clear local code immediately
       setCurrentCode('')
@@ -885,7 +910,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
             timeout: true
           }
         })
-        console.log('✅ [LiveKit] Sent confirm_next_question (Timeout) to agent')
 
         setCurrentCode('')
       }
@@ -1006,14 +1030,18 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         return (
           <div className="theoretical-section">
             <QuestionDisplay
-              question={null}
-              introMessage={isSpeaking ? introMessage : null}
-              introMeta="Ready to begin"
+              question={currentQuestion}
+              followUpQuestionText={followUpQuestionText}
+              introMessage={currentState === 'intro' ? "I'm ready when you are. Just say hello to begin." : null}
+              introMeta={currentState === 'intro' ? "Waiting for you to start..." : undefined}
               isListening={isListening}
               isSpeaking={isSpeaking}
               isUserSpeaking={isUserSpeaking}
               progress={progress}
               onVisionStatusChange={handleVisionStatusChange}
+              isHint={isHint}
+              isClarification={isClarification}
+              isFollowUp={isFollowUp}
             />
           </div>
         )
@@ -1034,8 +1062,9 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               isUserSpeaking={isUserSpeaking}
               progress={progress}
               onVisionStatusChange={handleVisionStatusChange}
-              isHint={currentState === 'handling_theoretical_hint'}
-              isClarification={currentState === 'handling_clarification'}
+              isHint={isHint}
+              isClarification={isClarification}
+              isFollowUp={isFollowUp}
             />
           </div>
         )
@@ -1233,7 +1262,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
       <div
         className="voice-interview-session"
-        style={{ height: currentState === 'connecting' ? '100vh' : '86vh' }}
       >
         <div className="interview-content">
           {renderCurrentSection()}
@@ -1274,9 +1302,12 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         .voice-interview-session {
           display: flex;
           flex-direction: column;
-          height: 86vh;
+          height: 100vh;
           background: #1a1a1a;
           color: #ffffff;
+          overflow: hidden;
+          margin: 0;
+          padding: 0;
         }
 
         .interview-content {
@@ -1503,9 +1534,11 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
         .coding-section {
           margin: 0 auto;
-          padding: 24px;
+          padding: 80px 0px 80px 0px;
+          max-width: 1400px;
           width: 100%;
           height: 100%;
+          box-sizing: border-box;
         }
 
 
