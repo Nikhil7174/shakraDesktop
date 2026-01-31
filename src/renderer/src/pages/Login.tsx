@@ -70,24 +70,27 @@ export const Login: React.FC = () => {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          background: `linear-gradient(135deg, rgb(9, 88, 217) 0%, rgb(208 233 255) 100%)`,
+          background: '#F3F4F6',
           padding: spacing.lg,
+          position: 'relative',
         }}
       >
       <Card
         style={{
           width: '100%',
           maxWidth: 450,
-          boxShadow: '0 8px 32px rgba(0,0,0,0.1)',
+          border: '1px solid #E5E7EB',
+          boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
           borderRadius: 16,
+          background: '#FFFFFF',
         }}
       >
         <div style={{ textAlign: 'center', marginBottom: spacing.xl }}>
-          <Title level={2} style={{ color: colors.primary.main, marginBottom: spacing.sm }}>
+          <Title level={2} style={{ color: '#111827', marginBottom: spacing.sm }}>
             Welcome Back
           </Title>
           <Text type="secondary">
-            Sign in to practice interviews and track your progress
+            Sign in to give live interviews
           </Text>
         </div>
 
@@ -133,8 +136,8 @@ export const Login: React.FC = () => {
                 width: '100%',
                 height: 48,
                 borderRadius: 8,
-                background: `linear-gradient(135deg, rgb(9, 88, 217) 0%, rgb(208 233 255) 100%)`,
-                border: 'none',
+                background: colors.primary.main,
+                border: `1px solid ${colors.primary.main}`,
                 boxShadow: 'none',
               }}
               className="login-signup-button"
@@ -152,7 +155,7 @@ export const Login: React.FC = () => {
             <Link
               to="/register"
               style={{
-                color: colors.primary.main,
+                color: '#111827',
                 fontWeight: 500,
               }}
             >

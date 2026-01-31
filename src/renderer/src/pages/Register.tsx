@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { Form, Input, Button, Card, Typography, Divider, App } from 'antd';
-import { UserOutlined, LockOutlined, MailOutlined, PhoneOutlined, LeftOutlined } from '@ant-design/icons';
+import { UserOutlined, LockOutlined, MailOutlined, PhoneOutlined } from '@ant-design/icons';
 import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { colors, spacing } from '../styles';
 import { useAuth } from '../hooks/useAuth';
@@ -18,11 +18,6 @@ export const Register: React.FC = () => {
   const returnTo = (location.state as any)?.returnTo;
   
   // Only allow candidate signup - userType is hardcoded to 'candidate'
-
-  const handleBack = () => {
-    // Always navigate to home page
-    navigate('/', { replace: true });
-  };
 
   // Redirect if already authenticated
   useEffect(() => {
@@ -67,25 +62,23 @@ export const Register: React.FC = () => {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          background: `linear-gradient(135deg, rgb(9, 88, 217) 0%, rgb(208 233 255) 100%)`,
+          background: '#F3F4F6',
           padding: spacing.lg,
+          position: 'relative',
         }}
       >
       <Card
         style={{
           width: '100%',
           maxWidth: 500,
-          boxShadow: '0 8px 32px rgba(0,0,0,0.1)',
+          border: '1px solid #E5E7EB',
+          boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
           borderRadius: 16,
+          background: '#FFFFFF',
         }}
       >
-        <div style={{ marginBottom: spacing.md }}>
-          <Button type="text" onClick={handleBack} icon={<LeftOutlined />} style={{ padding: 0 }}>
-            Back
-          </Button>
-        </div>
         <div style={{ textAlign: 'center', marginBottom: spacing.xl }}>
-          <Title level={2} style={{ color: colors.primary.main, marginBottom: spacing.sm }}>
+          <Title level={2} style={{ color: '#111827', marginBottom: spacing.sm }}>
             Create Account
           </Title>
           <Text type="secondary">Join Shakra AI to practice interviews</Text>
@@ -190,8 +183,8 @@ export const Register: React.FC = () => {
                 width: '100%',
                 height: 48,
                 borderRadius: 8,
-                background: `linear-gradient(135deg, rgb(9, 88, 217) 0%, rgb(208 233 255) 100%)`,
-                border: 'none',
+                background: colors.primary.main,
+                border: `1px solid ${colors.primary.main}`,
                 boxShadow: 'none',
               }}
               className="login-signup-button"
@@ -209,7 +202,7 @@ export const Register: React.FC = () => {
             <Link
               to="/login"
               style={{
-                color: colors.primary.main,
+                color: '#111827',
                 fontWeight: 500,
               }}
             >

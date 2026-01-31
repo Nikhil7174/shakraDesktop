@@ -25,23 +25,24 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
     }
   }, [token, user]); // Removed getCurrentUser from dependencies to prevent infinite loop
 
-  // Timeout mechanism: After 10 seconds, redirect to login
+  // Timeout mechanism: Redirect to login if data takes too long
   useEffect(() => {
     if (!token || user) {
       setMaxWaitReached(false);
       return;
     }
 
-    // If we have a token but no user after 10 seconds, show login
+    // If we have a token but no user after 3 seconds, show login
     const timeout = setTimeout(() => {
+      console.warn('⚠️ [ProtectedRoute] User data fetch timed out. Redirecting to login...');
       setMaxWaitReached(true);
-    }, 10000);
+    }, 3000);
 
     return () => clearTimeout(timeout);
   }, [token, user]);
 
-  // If timeout reached, redirect to login
-  if (maxWaitReached && token && !user) {
+  // If timeout reached, or if we are not loading but still have no user despite having a token
+  if ((maxWaitReached && token && !user) || (!loading && isAuthenticated && !user)) {
     return <Navigate to="/login" state={{ from: location.pathname }} replace />;
   }
 

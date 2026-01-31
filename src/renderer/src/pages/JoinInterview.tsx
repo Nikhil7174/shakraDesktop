@@ -159,20 +159,21 @@ export const JoinInterview: React.FC = () => {
       alignItems: 'center',
       justifyContent: 'center',
       backgroundColor: colors.background.secondary,
-      padding: spacing.lg
+      padding: spacing.lg,
+      position: 'relative'
     }}>
+      <div style={{ position: 'absolute', top: 24, left: 24 }}>
+        <Button type="text" onClick={handleBack} icon={<LeftOutlined />} style={{ padding: '0 8px' }}>
+          Back
+        </Button>
+      </div>
       <Card style={{ maxWidth: 500, width: '100%' }}>
-        <div style={{ marginBottom: spacing.md }}>
-          <Button type="text" onClick={handleBack} icon={<LeftOutlined />} style={{ padding: 0 }}>
-            Back
-          </Button>
-        </div>
         <Space direction="vertical" size="large" style={{ width: '100%' }}>
           <div style={{ textAlign: 'center' }}>
-            <UserOutlined style={{ fontSize: 48, color: colors.primary.main }} />
+            <UserOutlined style={{ fontSize: 48, color: colors.primary.main , marginBottom: spacing.sm}} />
             <Title level={2}>Join Interview</Title>
             <Paragraph>
-              Enter your interview link to get started with your AI interview session.
+              Enter your interview link to start the interview.
             </Paragraph>
           </div>
 
