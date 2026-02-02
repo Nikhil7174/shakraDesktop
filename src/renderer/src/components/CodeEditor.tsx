@@ -5,6 +5,7 @@ import { CodingProblem } from '../../../shared/types'
 interface CodeEditorProps {
   problem: CodingProblem
   onCodeChange?: (code: string) => void
+  onNotepadChange?: (notepad: string) => void
   onAnalysisRequest?: (code: string, problemId: string) => void
   onSubmit?: (code: string, timeComplexity?: string, spaceComplexity?: string) => void
   isMonitoring?: boolean
@@ -20,6 +21,7 @@ interface CodeEditorProps {
 export const CodeEditor: React.FC<CodeEditorProps> = ({
   problem,
   onCodeChange,
+  onNotepadChange,
   onAnalysisRequest,
   onSubmit,
   isMonitoring = true,
@@ -665,7 +667,10 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                 className="notepad-textarea"
                 placeholder="Use this space for scratchpad notes, pseudocode, or thinking through the problem."
                 value={notepadContent}
-                onChange={(e) => setNotepadContent(e.target.value)}
+                onChange={(e) => {
+                  setNotepadContent(e.target.value)
+                  onNotepadChange?.(e.target.value)
+                }}
                 disabled={readOnly}
               />
             </div>

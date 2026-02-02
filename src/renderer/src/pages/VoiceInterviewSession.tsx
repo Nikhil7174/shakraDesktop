@@ -69,6 +69,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [isMonitoring, setIsMonitoring] = useState(false)
   const [currentCode, setCurrentCode] = useState<string>('')
   const currentCodeRef = useRef<string>('')
+  const [currentNotepad, setCurrentNotepad] = useState<string>('')
+  const currentNotepadRef = useRef<string>('')
   const [hasMicStream, setHasMicStream] = useState(false)
   const isSubmittingTimeoutRef = useRef<boolean>(false)
   const broadcastDataRef = useRef<((data: any) => void) | null>(null)
@@ -192,7 +194,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       if (!room) return
 
       // Broadcast code changes to agent (debounced)
-      // Handle both 'coding' (backend state) and 'coding_problem' (frontend state)
+      // Notepad is bundled with code sync; also synced immediately when user speaks
       const isCodingState = currentState === 'coding_problem' || currentState === 'coding'
       if (isCodingState && currentCode) {
         const timeoutId = setTimeout(() => {
@@ -200,6 +202,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
             const data = new TextEncoder().encode(JSON.stringify({
               type: 'code_snapshot',
               code: currentCode,
+              notepad: currentNotepadRef.current || '',
               timestamp: Date.now()
             }))
             room.localParticipant.publishData(data, { reliable: true })
@@ -211,10 +214,14 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       return
     }, [currentCode, room, currentState])
 
-    // Keep currentCodeRef in sync with currentCode state
+    // Keep currentCodeRef and currentNotepadRef in sync with state
     useEffect(() => {
       currentCodeRef.current = currentCode
     }, [currentCode])
+
+    useEffect(() => {
+      currentNotepadRef.current = currentNotepad
+    }, [currentNotepad])
 
     useEffect(() => {
       if (!room) return
@@ -564,13 +571,16 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           setIsListening(false)
           isListeningRef.current = false
 
-          // IMMEDIATE CODE SYNC: Send current code when user starts speaking
-          // This ensures agent has the latest code before processing user's speech
+          // IMMEDIATE SYNC: Send current code/notepad when user starts speaking
+          // This ensures agent has the latest context before processing user's speech
           const isCodingState = currentState === 'coding_problem' || currentState === 'coding'
-          if (isCodingState && currentCodeRef.current && currentCodeRef.current.length > 0 && room.localParticipant) {
+          const hasCodeOrNotepad = (currentCodeRef.current && currentCodeRef.current.length > 0) ||
+            (currentNotepadRef.current && currentNotepadRef.current.length > 0)
+          if (isCodingState && hasCodeOrNotepad && room.localParticipant) {
             const data = new TextEncoder().encode(JSON.stringify({
               type: 'code_snapshot',
-              code: currentCodeRef.current,
+              code: currentCodeRef.current || '',
+              notepad: currentNotepadRef.current || '',
               timestamp: Date.now(),
               trigger: 'user_speaking'
             }))
@@ -1023,6 +1033,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           <CodeEditor
             problem={currentCodingProblem}
             onCodeChange={handleCodeChange}
+            onNotepadChange={(notepad) => {
+              setCurrentNotepad(notepad)
+              currentNotepadRef.current = notepad
+            }}
             onAnalysisRequest={handleAnalysisRequest}
             onSubmit={handleSubmit}
             onTimerExpire={handleTimerExpire}
