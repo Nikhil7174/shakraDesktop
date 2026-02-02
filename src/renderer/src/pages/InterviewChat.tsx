@@ -316,7 +316,7 @@ export const InterviewChat: React.FC = () => {
         console.log('Interview was cancelled by user');
         dispatch(resetInterview());
         clearAllSessions();
-        
+
         navigate('/candidate/dashboard', { replace: true });
         return;
       }
@@ -507,6 +507,7 @@ export const InterviewChat: React.FC = () => {
               onComplete={handleInterviewComplete}
               onSaveResults={saveResults}
               onStateChange={setInterviewState}
+              onQuitInterview={() => setShowQuitConfirm(true)}
             />
           );
         }
@@ -528,12 +529,8 @@ export const InterviewChat: React.FC = () => {
 
 
   // Only show quit when interview is actually ready (has questions and not loading)
-  const showQuitButton =
-    currentStep === 'interview' &&
-    interviewState &&
-    interviewState !== 'connecting' &&
-    !loading &&
-    (currentSession?.questions?.length ?? 0) > 0;
+  // DISABLED: Now using the call controls in VoiceInterviewSession instead
+  const showQuitButton = false;
 
   return (
     <div style={{

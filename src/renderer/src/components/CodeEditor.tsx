@@ -40,6 +40,8 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   const [isEditorReady, setIsEditorReady] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [selectedLanguage, setSelectedLanguage] = useState<string>(problem.language || 'cpp')
+  const [activeTab, setActiveTab] = useState<'code' | 'notepad'>('code')
+  const [notepadContent, setNotepadContent] = useState('')
   // Initialize timer state - only reset when problem.id changes
   const [timeRemaining, setTimeRemaining] = useState<number>(getTimeLimit(problem.difficulty))
 
@@ -48,6 +50,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
     if (showTimer && !readOnly) {
       setTimeRemaining(getTimeLimit(problem.difficulty))
     }
+    setNotepadContent('') // Reset notepad content for new problem
   }, [problem.id]) // Only reset when problem.id changes
 
   // Available languages
@@ -507,7 +510,11 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
             <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
               {showTimer && !readOnly && (
                 <div className="timer-display">
-                  <span className="timer-icon">⏱️</span>
+                  <svg className="timer-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 8V12L15 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" />
+                    <path d="M10 2H14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  </svg>
                   <span>{formatTime(timeRemaining)}</span>
                 </div>
               )}
@@ -565,65 +572,102 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           </div>
         </div>
 
-        {/* Right Column: Code Editor */}
+        {/* Right Column: Editor Panel */}
         <div className="editor-panel">
+          {/* Editor Header with Tabs */}
           <div className="editor-header">
-            <div className="editor-controls">
-              <select
-                className="language-selector"
-                value={selectedLanguage}
-                onChange={(e) => handleLanguageChange(e.target.value)}
-                disabled={readOnly}
-              >
-                {availableLanguages.map(lang => (
-                  <option key={lang} value={lang}>
-                    {lang === 'cpp' ? 'C++' :
-                      lang === 'python' ? 'Python 3' :
-                        lang === 'java' ? 'Java' :
-                          'JavaScript'}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <div
-            ref={editorRef}
-            className="monaco-editor"
-            style={{ height: 'calc(100vh - 200px)', width: '100%' }}
-          />
-          {onSubmit && !readOnly && (
-            <div className="code-editor-footer">
-              <div className="complexity-inputs">
-                <div className="complexity-input">
-                  <label htmlFor="time-complexity">Time Complexity</label>
-                  <input
-                    ref={timeComplexityInputRef}
-                    id="time-complexity"
-                    type="text"
-                    placeholder="e.g. O(n log n)"
-                    value={timeComplexity}
-                    onChange={(e) => onTimeComplexityChange?.(e.target.value)}
-                  />
-                </div>
-                <div className="complexity-input">
-                  <label htmlFor="space-complexity">Space Complexity</label>
-                  <input
-                    ref={spaceComplexityInputRef}
-                    id="space-complexity"
-                    type="text"
-                    placeholder="e.g. O(n)"
-                    value={spaceComplexity}
-                    onChange={(e) => onSpaceComplexityChange?.(e.target.value)}
-                  />
-                </div>
-              </div>
+            <div className="editor-tabs">
               <button
-                className="submit-button"
-                onClick={handleSubmit}
-                disabled={isSubmitting}
+                className={`editor-tab ${activeTab === 'code' ? 'active' : ''}`}
+                onClick={() => setActiveTab('code')}
               >
-                {isSubmitting ? 'Submitting...' : 'Submit Solution'}
+                Code
               </button>
+              <button
+                className={`editor-tab ${activeTab === 'notepad' ? 'active' : ''}`}
+                onClick={() => setActiveTab('notepad')}
+              >
+                Notepad
+              </button>
+            </div>
+
+            {activeTab === 'code' && (
+              <div className="editor-controls">
+                <select
+                  className="language-selector"
+                  value={selectedLanguage}
+                  onChange={(e) => handleLanguageChange(e.target.value)}
+                  disabled={readOnly}
+                >
+                  {availableLanguages.map(lang => (
+                    <option key={lang} value={lang}>
+                      {lang === 'cpp' ? 'C++' :
+                        lang === 'python' ? 'Python 3' :
+                          lang === 'java' ? 'Java' :
+                            'JavaScript'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
+          {/* Code Editor View */}
+          <div style={{ display: activeTab === 'code' ? 'flex' : 'none', flexDirection: 'column', flex: 1, overflow: 'hidden', minHeight: 0 }}>
+            <div className="monaco-wrapper" style={{ flex: 1, minHeight: 0, width: '100%' }}>
+              <div
+                ref={editorRef}
+                className="monaco-editor"
+                style={{ height: 'calc(100% - 40px)', width: '100%' }}
+              />
+            </div>
+            {onSubmit && !readOnly && (
+              <div className="code-editor-footer">
+                <div className="complexity-inputs">
+                  <div className="complexity-input">
+                    <label htmlFor="time-complexity">Time Complexity</label>
+                    <input
+                      ref={timeComplexityInputRef}
+                      id="time-complexity"
+                      type="text"
+                      placeholder="e.g. O(n log n)"
+                      value={timeComplexity}
+                      onChange={(e) => onTimeComplexityChange?.(e.target.value)}
+                    />
+                  </div>
+                  <div className="complexity-input">
+                    <label htmlFor="space-complexity">Space Complexity</label>
+                    <input
+                      ref={spaceComplexityInputRef}
+                      id="space-complexity"
+                      type="text"
+                      placeholder="e.g. O(n)"
+                      value={spaceComplexity}
+                      onChange={(e) => onSpaceComplexityChange?.(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <button
+                  className="submit-button"
+                  onClick={handleSubmit}
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? 'Submitting...' : 'Submit Solution'}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Notepad View */}
+          {activeTab === 'notepad' && (
+            <div className="notepad-container">
+              <textarea
+                className="notepad-textarea"
+                placeholder="Use this space for scratchpad notes, pseudocode, or thinking through the problem."
+                value={notepadContent}
+                onChange={(e) => setNotepadContent(e.target.value)}
+                disabled={readOnly}
+              />
             </div>
           )}
         </div>
@@ -635,6 +679,8 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           display: flex;
           flex-direction: column;
           background: #1e1e1e;
+          border-radius: 12px;
+          overflow: hidden;
         }
         
         .coding-layout {
@@ -652,15 +698,18 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           display: flex;
           flex-direction: column;
           overflow: hidden;
+          border-top-left-radius: 12px;
+          border-bottom-left-radius: 12px;
         }
         
         .question-header {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          padding: 16px 16px;
+          padding: 12px 16px;
           background: #2d2d30;
           border-bottom: 1px solid #333;
+          border-top-left-radius: 12px;
         }
         
         .question-header h3 {
@@ -677,10 +726,14 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           font-size: 16px;
           font-weight: 600;
           color: ${timeRemaining > 300 ? '#4caf50' : timeRemaining > 60 ? '#ff9800' : '#f44336'};
+          min-width: 80px;
+          font-variant-numeric: tabular-nums;
         }
         
         .timer-icon {
-          font-size: 18px;
+          width: 18px;
+          height: 18px;
+          flex-shrink: 0;
         }
         
         .question-content {
@@ -760,21 +813,78 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           flex-direction: column;
           background: #1e1e1e;
           overflow: hidden;
+          border-top-right-radius: 12px;
+          border-bottom-right-radius: 12px;
         }
         
         .editor-header {
           display: flex;
-          justify-content: flex-end;
+          justify-content: space-between;
           align-items: center;
-          padding: 16px 16px;
           background: #2d2d30;
           border-bottom: 1px solid #333;
+          height: 52px;
+          border-top-right-radius: 12px;
+        }
+
+        .editor-tabs {
+          display: flex;
+          height: 100%;
+          align-items: flex-end; 
+          padding-left: 16px; 
+        }
+
+        .editor-tab {
+          background: transparent;
+          color: #969696;
+          border: none;
+          padding: 10px 16px; /* Added top/bottom padding to center vertically or position correctly */
+          height: 100%;
+          cursor: pointer;
+          font-size: 13px;
+          outline: none;
+          border-bottom: 2px solid transparent; /* Use bottom border for active state to look cleaner */
+          display: flex;
+          align-items: center;
+        }
+
+        .editor-tab:hover {
+          color: #e0e0e0;
+        }
+
+        .editor-tab.active {
+          color: #ffffff;
+          border-bottom: 2px solid #007acc; 
+          border-right: none;
+          border-top: none; 
+          /* Removing previous borders to look more like standard tabs */
+        }
+        
+        .notepad-container {
+          flex: 1;
+          display: flex;
+          background: #1e1e1e;
+          overflow: hidden;
+        }
+
+        .notepad-textarea {
+          flex: 1;
+          background: #1e1e1e;
+          color: #d4d4d4;
+          border: none;
+          resize: none;
+          padding: 16px;
+          font-family: 'Consolas', 'Courier New', monospace;
+          font-size: 14px;
+          line-height: 1.5;
+          outline: none;
         }
         
         .editor-controls {
           display: flex;
           align-items: center;
           gap: 12px;
+          padding-right: 16px;
         }
         
         .language-selector {

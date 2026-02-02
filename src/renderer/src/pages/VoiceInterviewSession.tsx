@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useSelector } from 'react-redux'
+import { AudioOutlined, AudioMutedOutlined, PhoneOutlined } from '@ant-design/icons'
 import { LiveKitRoom, RoomAudioRenderer, useRoomContext } from '@livekit/components-react'
 import { RoomEvent, LogLevel, setLogLevel } from 'livekit-client'
 import { CodeEditor } from '../components/CodeEditor'
@@ -28,6 +29,7 @@ interface VoiceInterviewSessionProps {
   onComplete?: (results: any) => void
   onSaveResults?: (summary: any) => Promise<void>
   onStateChange?: (state: string) => void
+  onQuitInterview?: () => void
 }
 
 export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
@@ -42,7 +44,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   roomName: roomNameFromProps,
   onComplete,
   onSaveResults,
-  onStateChange
+  onStateChange,
+  onQuitInterview
 }) => {
   useEffect(() => {
     setLogLevel(LogLevel.error)
@@ -102,6 +105,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
   const [saveRetryCount, setSaveRetryCount] = useState(0)
   const saveSummaryRef = useRef<any>(null)
   const isInterviewStartedRef = useRef(false)
+  const [isMicMuted, setIsMicMuted] = useState(false)
+  const livekitRoomRef = useRef<any>(null)
 
   // Handlers for Agent-triggered confirmation modal
   const handleConfirmNextQuestion = useCallback(() => {
@@ -116,12 +121,61 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     // Optional: Send cancel event if needed
   }, [])
 
+  // Handle mic mute toggle
+  const handleMicToggle = useCallback(async () => {
+    const newMutedState = !isMicMuted
+    setIsMicMuted(newMutedState)
+
+    // Toggle actual microphone via LiveKit using setMicrophoneEnabled
+    if (livekitRoomRef.current?.localParticipant) {
+      try {
+        // Use LiveKit's built-in method to enable/disable microphone
+        await livekitRoomRef.current.localParticipant.setMicrophoneEnabled(!newMutedState)
+        console.log(`Microphone ${newMutedState ? 'muted' : 'unmuted'}`)
+      } catch (error) {
+        console.error('Failed to toggle microphone:', error)
+        // Revert state if toggle failed
+        setIsMicMuted(!newMutedState)
+      }
+    }
+  }, [isMicMuted])
+
+  // Handle end call
+  const handleEndCall = useCallback(async () => {
+    // Use the provided quit handler if available, otherwise use default behavior
+    if (onQuitInterview) {
+      onQuitInterview()
+    } else {
+      const confirmEnd = window.confirm('Are you sure you want to end the interview?')
+      if (confirmEnd) {
+        try {
+          // Disconnect from LiveKit room
+          if (livekitRoomRef.current) {
+            await livekitRoomRef.current.disconnect()
+            livekitRoomRef.current = null
+          }
+
+          // Clear any unfinished interview data
+          await window.electronAPI?.clearUnfinishedInterview?.()
+
+          // Call the onComplete callback to end the interview
+          onComplete?.({ userEnded: true })
+        } catch (error) {
+          console.error('Error ending interview:', error)
+          // Still call onComplete even if cleanup fails
+          onComplete?.({ userEnded: true })
+        }
+      }
+    }
+  }, [onQuitInterview, onComplete])
+
   const LiveKitRoomEventBridge: React.FC = () => {
     const room = useRoomContext()
 
-    // Expose data broadcasting to parent
+    // Expose data broadcasting to parent and store room ref
     useEffect(() => {
       if (room && room.localParticipant) {
+        livekitRoomRef.current = room
         broadcastDataRef.current = (data: any) => {
           const encoded = new TextEncoder().encode(JSON.stringify(data))
           room.localParticipant.publishData(encoded, { reliable: true })
@@ -220,17 +274,17 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           if (messageData.type === 'question-changed' && messageData.question) {
             // Only reset badges if this is a different question
             const isDifferentQuestion = currentQuestion?.id !== messageData.question.id
-            
+
             setCurrentQuestion(messageData.question)
             setFollowUpQuestionText(null)
-            
+
             // Only reset badges when switching to a different question
             if (isDifferentQuestion) {
               setIsFollowUp(false)
               setIsHint(false)
               setIsClarification(false)
             }
-            
+
             setCurrentState('theoretical_question')
             onStateChange?.('theoretical_question')
             setIsListening(true)
@@ -243,10 +297,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           if (messageData.type === 'coding-problem-changed' && messageData.codingProblem) {
             // Only reset badges if this is a different problem
             const isDifferentProblem = currentCodingProblem?.id !== messageData.codingProblem.id
-            
+
             setCurrentCodingProblem(messageData.codingProblem)
             setIsMonitoring(true)
-            
+
             // Only reset code and badges when switching to a different problem
             if (isDifferentProblem) {
               setCurrentCode('')
@@ -254,7 +308,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
               setIsHint(false)
               setIsClarification(false)
             }
-            
+
             isSubmittingTimeoutRef.current = false
 
             // Only show coding_intro transition when coming from non-coding state (e.g., theoretical)
@@ -1295,10 +1349,44 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           <AudioVisualizer
             isListening={isListening}
             isSpeaking={isSpeaking}
+            isMuted={isMicMuted}
           />
         </div>
 
+        {/* Call Controls - Bottom Center - Only show during active interview */}
+        {currentState !== 'connecting' && currentState !== 'completed' && (
+          <div className="call-controls">
+            <button
+              className={`control-btn mic-btn ${isMicMuted ? 'muted' : ''}`}
+              onClick={handleMicToggle}
+              data-tooltip={isMicMuted ? 'Unmute microphone' : 'Mute microphone'}
+            >
+              {isMicMuted ? <AudioMutedOutlined /> : <AudioOutlined />}
+            </button>
+
+            <button
+              className="control-btn end-call-btn"
+              onClick={handleEndCall}
+              data-tooltip="End interview"
+            >
+              <PhoneOutlined />
+            </button>
+          </div>
+        )}
+
         <style>{`
+        /* Hide scrollbars globally for interview screens */
+        body, html {
+          overflow: hidden !important;
+          scrollbar-width: none; /* Firefox */
+          -ms-overflow-style: none; /* IE and Edge */
+        }
+
+        body::-webkit-scrollbar,
+        html::-webkit-scrollbar {
+          display: none; /* Chrome, Safari, Opera */
+        }
+
         .voice-interview-session {
           display: flex;
           flex-direction: column;
@@ -1308,6 +1396,12 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           overflow: hidden;
           margin: 0;
           padding: 0;
+          scrollbar-width: none; /* Firefox */
+          -ms-overflow-style: none; /* IE and Edge */
+        }
+
+        .voice-interview-session::-webkit-scrollbar {
+          display: none; /* Chrome, Safari, Opera */
         }
 
         .interview-content {
@@ -1567,7 +1661,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
         .audio-visualizer {
           position: fixed;
-          bottom: 10px;
+          bottom: 8px;
           right: 20px;
           z-index: 1000;
         }
@@ -1587,6 +1681,106 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         .hidden-video-tracker video {
           width: 1px;
           height: 1px;
+        }
+
+        /* Call Controls - Bottom Center */
+        .call-controls {
+          position: fixed;
+          bottom: 10px;
+          left: 50%;
+          transform: translateX(-50%);
+          display: flex;
+          gap: 16px;
+          z-index: 1000;
+          align-items: center;
+        }
+
+        .control-btn {
+          width: 48px;
+          height: 48px;
+          border-radius: 50%;
+          border: none;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          transition: all 0.2s ease;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+
+        .control-btn svg {
+          width: 20px;
+          height: 20px;
+        }
+
+        .control-btn .anticon {
+          font-size: 24px;
+        }
+
+        .mic-btn {
+          background: rgba(45, 45, 48, 0.95);
+          color: #ffffff;
+          backdrop-filter: blur(10px);
+        }
+
+        .mic-btn:hover {
+          background: rgba(60, 60, 65, 0.95);
+        }
+
+        .mic-btn.muted {
+          background: rgba(197, 36, 36, 0.95);
+          color: #ffffff;
+        }
+
+        .mic-btn.muted:hover {
+          background: rgba(185, 28, 28, 0.95);
+        }
+
+        .end-call-btn {
+          background: rgba(197, 36, 36, 0.95);
+          color: #ffffff;
+        }
+
+        .end-call-btn:hover {
+          background: rgba(185, 28, 28, 0.95);
+        }
+
+        .end-call-btn .anticon {
+          transform: rotate(225deg);
+        }
+
+        /* Tooltip styling for call control buttons */
+        .control-btn[data-tooltip]:hover::after {
+          content: attr(data-tooltip);
+          position: absolute;
+          bottom: calc(100% + 4px);
+          left: 50%;
+          transform: translateX(-50%);
+          background: rgba(0, 0, 0, 0.85);
+          color: white;
+          padding: 6px 12px;
+          border-radius: 8px;
+          font-size: 12px;
+          white-space: nowrap;
+          pointer-events: none;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+          border: none;
+        }
+
+        .control-btn[data-tooltip]:hover::before {
+          content: '';
+          position: absolute;
+          bottom: calc(100% + 2px);
+          left: 50%;
+          transform: translateX(-50%);
+          border: 6px solid transparent;
+          border-top-color: rgba(0, 0, 0, 0.85);
+          pointer-events: none;
+        }
+
+        /* Hide default browser tooltip */
+        .control-btn {
+          position: relative;
         }
       `}</style>
       </div>
