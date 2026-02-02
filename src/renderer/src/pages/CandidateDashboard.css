@@ -56,3 +56,18 @@
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
 }
 
+.primary-cta-btn {
+  transition: background-color 0.2s ease;
+}
+
+.primary-cta-btn:hover {
+  background: #2563EB !important;
+}
+
+.ghost-logout-btn {
+  transition: background-color 0.2s ease;
+}
+
+.ghost-logout-btn:hover {
+  background: #E5E7EB !important;
+}
