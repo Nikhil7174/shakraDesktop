@@ -146,6 +146,7 @@ code {
   font-size: 14px;
   line-height: 14px;
   opacity: 0.8;
+
   &:last-child {
     border: none;
   }
@@ -164,6 +165,7 @@ code {
 }
 
 @media (max-width: 350px) {
+
   .tip,
   .actions {
     display: none;
@@ -171,7 +173,9 @@ code {
 }
 
 /* Layout overrides: make the app fill the full window */
-html, body, #root {
+html,
+body,
+#root {
   height: 100vh;
   width: 100vw;
 }
@@ -183,7 +187,7 @@ body {
   overflow: auto;
   overlay: hidden;
   overflow-x: hidden;
-  overflow-y: scroll;
+  overflow-y: auto;
   /* Remove decorative background to avoid letterboxing */
   background-image: none;
 }
@@ -455,7 +459,7 @@ body {
   white-space: nowrap;
 }
 
-.table-row > div:not(.process-name) {
+.table-row>div:not(.process-name) {
   color: #a0aec0;
   font-size: 13px;
   font-family: monospace;
@@ -651,6 +655,7 @@ body {
     opacity: 0;
     transform: translateY(-10px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -1131,27 +1136,28 @@ body {
 
 /* Responsive design */
 @media (max-width: 768px) {
+
   .process-stats-window,
   .ai-connection-monitor-window,
   .dns-monitor-window {
     width: 95%;
     max-height: 90vh;
   }
-  
+
   .stats-grid {
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   }
-  
+
   .processes-table .table-header,
   .processes-table .table-row {
     grid-template-columns: 2fr 1fr 1fr;
     gap: 8px;
   }
-  
-  .processes-table .table-header > div:nth-child(4),
-  .processes-table .table-header > div:nth-child(5),
-  .processes-table .table-row > div:nth-child(4),
-  .processes-table .table-row > div:nth-child(5) {
+
+  .processes-table .table-header>div:nth-child(4),
+  .processes-table .table-header>div:nth-child(5),
+  .processes-table .table-row>div:nth-child(4),
+  .processes-table .table-row>div:nth-child(5) {
     display: none;
   }
 
@@ -1160,11 +1166,11 @@ body {
     grid-template-columns: 2fr 1fr 1fr 1fr;
     gap: 8px;
   }
-  
-  .connections-table .table-header > div:nth-child(5),
-  .connections-table .table-header > div:nth-child(6),
-  .connections-table .table-row > div:nth-child(5),
-  .connections-table .table-row > div:nth-child(6) {
+
+  .connections-table .table-header>div:nth-child(5),
+  .connections-table .table-header>div:nth-child(6),
+  .connections-table .table-row>div:nth-child(5),
+  .connections-table .table-row>div:nth-child(6) {
     display: none;
   }
 
@@ -1173,11 +1179,11 @@ body {
     grid-template-columns: 2fr 1fr 1fr;
     gap: 8px;
   }
-  
-  .queries-table .table-header > div:nth-child(4),
-  .queries-table .table-header > div:nth-child(5),
-  .queries-table .table-row > div:nth-child(4),
-  .queries-table .table-row > div:nth-child(5) {
+
+  .queries-table .table-header>div:nth-child(4),
+  .queries-table .table-header>div:nth-child(5),
+  .queries-table .table-row>div:nth-child(4),
+  .queries-table .table-row>div:nth-child(5) {
     display: none;
   }
 }

@@ -9,6 +9,7 @@ import {
   Col,
   Empty,
   Tooltip,
+  Input,
 } from 'antd';
 import {
   LogoutOutlined,
@@ -18,6 +19,7 @@ import {
   FileTextOutlined,
   CalendarOutlined,
   BuildOutlined,
+  SearchOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useAuth } from '../hooks/useAuth';
@@ -208,13 +210,68 @@ export const CandidateDashboard: React.FC = () => {
     navigate('/interview', { state: { checkExistingSession: true } });
   }, [navigate]);
 
+  // Search state
+  const [companySearchText, setCompanySearchText] = useState('');
+  const [companySearchVisible, setCompanySearchVisible] = useState(false);
+  const [titleSearchText, setTitleSearchText] = useState('');
+  const [titleSearchVisible, setTitleSearchVisible] = useState(false);
+
+  // Filter attempts based on search text
+  const filteredAttempts = useMemo(() => {
+    let result = completedAttempts;
+
+    if (companySearchText) {
+      const lower = companySearchText.toLowerCase();
+      result = result.filter(a => (a.company || '').toLowerCase().includes(lower));
+    }
+
+    if (titleSearchText) {
+      const lower = titleSearchText.toLowerCase();
+      result = result.filter(a => a.title.toLowerCase().includes(lower));
+    }
+
+    return result;
+  }, [completedAttempts, companySearchText, titleSearchText]);
+
   // Memoized table columns with Phase 4: Typography improvements
   const columns = useMemo(() => [
     {
-      title: 'Company',
+      title: (
+        <div style={{ height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {companySearchVisible ? (
+            <Input
+              placeholder="Search company..."
+              value={companySearchText}
+              onChange={(e) => setCompanySearchText(e.target.value)}
+              onBlur={() => {
+                if (!companySearchText) setCompanySearchVisible(false);
+              }}
+              autoFocus
+              prefix={<SearchOutlined style={{ color: '#9CA3AF' }} />}
+              onClick={(e) => e.stopPropagation()}
+              style={{ width: '100%', fontSize: 13 }}
+            />
+          ) : (
+            <div
+              onClick={() => setCompanySearchVisible(true)}
+              style={{
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'flex-start',
+                gap: 8,
+                width: '100%',
+                height: '100%'
+              }}
+            >
+              Company <SearchOutlined style={{ fontSize: 12, color: '#9CA3AF' }} />
+            </div>
+          )}
+        </div>
+      ),
       dataIndex: 'company',
       key: 'company',
-      width: '30%',
+      width: 300,
       render: (company: string, record: InterviewAttempt) => (
         <Space>
           {record.companyLogo && (
@@ -231,10 +288,42 @@ export const CandidateDashboard: React.FC = () => {
       ),
     },
     {
-      title: 'Interview Name',
+      title: (
+        <div style={{ height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {titleSearchVisible ? (
+            <Input
+              placeholder="Search interview..."
+              value={titleSearchText}
+              onChange={(e) => setTitleSearchText(e.target.value)}
+              onBlur={() => {
+                if (!titleSearchText) setTitleSearchVisible(false);
+              }}
+              autoFocus
+              prefix={<SearchOutlined style={{ color: '#9CA3AF' }} />}
+              onClick={(e) => e.stopPropagation()}
+              style={{ width: '100%', fontSize: 13 }}
+            />
+          ) : (
+            <div
+              onClick={() => setTitleSearchVisible(true)}
+              style={{
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'flex-start',
+                gap: 8,
+                width: '100%',
+                height: '100%'
+              }}
+            >
+              Interview Name <SearchOutlined style={{ fontSize: 12, color: '#9CA3AF' }} />
+            </div>
+          )}
+        </div>
+      ),
       dataIndex: 'title',
       key: 'title',
-      width: '50%',
+      width: 400,
       render: (title: string) => (
         <Text style={{ fontSize: 14, fontWeight: 500, lineHeight: 1.6, color: '#111827' }}>
           {title}
@@ -252,7 +341,7 @@ export const CandidateDashboard: React.FC = () => {
         </Text>
       ),
     },
-  ], []);
+  ], [companySearchVisible, companySearchText, titleSearchVisible, titleSearchText]);
 
   return (
     <div style={{ minHeight: '100vh', background: '#F9FAFB', padding: '32px 0' }}>
@@ -464,7 +553,7 @@ export const CandidateDashboard: React.FC = () => {
               completedAttempts.length > 0 ? (
                 <Table
                   columns={columns}
-                  dataSource={completedAttempts}
+                  dataSource={filteredAttempts}
                   rowKey="id"
                   loading={loading}
                   pagination={{ pageSize: 10 }}

@@ -15,7 +15,7 @@ export class WindowService implements Service {
 
   async initialize(): Promise<void> {
     this.resolveIconPath()
-    
+
     // Optimize window on macOS
     app.on('browser-window-created', (_, window) => {
       optimizer.watchWindowShortcuts(window)
@@ -23,11 +23,11 @@ export class WindowService implements Service {
 
     this.createWindow()
     this.registerShortcuts()
-    
+
     // Linux/Wayland desktop file
     if (process.platform === 'linux' && !app.isPackaged) {
       this.createDesktopFile()
-      
+
       if (this.iconPath && existsSync(this.iconPath)) {
         try {
           app.dock?.setIcon?.(this.appIcon || this.iconPath)
@@ -62,18 +62,28 @@ export class WindowService implements Service {
     return this.mainWindow
   }
 
+  public sendDeepLink(url: string): void {
+    if (this.mainWindow) {
+      if (this.mainWindow.isMinimized()) this.mainWindow.restore()
+      this.mainWindow.show()
+      this.mainWindow.focus()
+      this.mainWindow.webContents.send('deep-link', url)
+      console.log('🔗 [Window] Deep link sent to renderer:', url)
+    }
+  }
+
   private resolveIconPath(): void {
     const possiblePaths = app.isPackaged
       ? [
-          join(process.resourcesPath, 'icon.png'),
-          join(process.resourcesPath, 'resources', 'icon.png')
-        ]
+        join(process.resourcesPath, 'icon.png'),
+        join(process.resourcesPath, 'resources', 'icon.png')
+      ]
       : [
-          resolve(__dirname, '../../resources/icon.png'),
-          join(app.getAppPath(), 'resources/icon.png'),
-          resolve(process.cwd(), 'resources/icon.png'),
-          resolve(process.cwd(), 'crispDesktop/resources/icon.png')
-        ]
+        resolve(__dirname, '../../resources/icon.png'),
+        join(app.getAppPath(), 'resources/icon.png'),
+        resolve(process.cwd(), 'resources/icon.png'),
+        resolve(process.cwd(), 'crispDesktop/resources/icon.png')
+      ]
 
     console.log('🔍 [Icon] Searching for icon in paths:')
     for (const path of possiblePaths) {
@@ -107,7 +117,7 @@ export class WindowService implements Service {
 
   private createWindow(): void {
     const windowIcon = this.appIcon && !this.appIcon.isEmpty() ? this.appIcon : (this.iconPath || undefined)
-    
+
     this.mainWindow = new BrowserWindow({
       width: 1400,
       height: 900,
@@ -118,7 +128,7 @@ export class WindowService implements Service {
       fullscreen: false,
       maximizable: true,
       resizable: true,
-      autoHideMenuBar: true,
+      // autoHideMenuBar: true,
       webPreferences: {
         preload: join(__dirname, '../preload/index.js'),
         nodeIntegration: false,
@@ -141,7 +151,7 @@ export class WindowService implements Service {
       } catch (err) {
         console.warn('⚠️ [Icon] Failed to set icon via path:', err)
       }
-      
+
       if (this.appIcon && !this.appIcon.isEmpty()) {
         try {
           this.mainWindow.setIcon(this.appIcon)
@@ -154,7 +164,7 @@ export class WindowService implements Service {
     this.mainWindow.once('ready-to-show', () => {
       this.mainWindow?.show()
       this.mainWindow?.maximize()
-      
+
       if (this.iconPath) {
         setTimeout(() => {
           if (this.mainWindow && !this.mainWindow.isDestroyed()) {
@@ -165,7 +175,7 @@ export class WindowService implements Service {
             }
           }
         }, 100)
-        
+
         if (this.appIcon && !this.appIcon.isEmpty()) {
           setTimeout(() => {
             if (this.mainWindow && !this.mainWindow.isDestroyed()) {
@@ -185,7 +195,7 @@ export class WindowService implements Service {
       this.mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
     } else {
       const htmlPath = join(__dirname, '../renderer/index.html')
-      
+
       this.mainWindow.loadFile(htmlPath).catch((error) => {
         console.error('❌ [Main] loadFile failed, trying loadURL with file:// protocol:', error)
         const fileUrl = format({
@@ -281,26 +291,27 @@ export class WindowService implements Service {
     try {
       const desktopDir = join(homedir(), '.local', 'share', 'applications')
       mkdirSync(desktopDir, { recursive: true })
-      
+
       const desktopFile = join(desktopDir, 'shakra-ai-interview-dev.desktop')
       const execPath = process.execPath
       const iconAbsolutePath = resolve(this.iconPath)
-      
+
       const desktopContent = `[Desktop Entry]
 Name=Shakra AI Interview (Dev)
 Comment=AI-powered interview platform with security monitoring
-Exec=${execPath}
+Exec=${execPath} %u
 Icon=${iconAbsolutePath}
 Type=Application
 Categories=Utility;Development;
+MimeType=x-scheme-handler/shakra-app;
 StartupNotify=true
 StartupWMClass=electron
 NoDisplay=false
 `
-      
+
       writeFileSync(desktopFile, desktopContent, { mode: 0o755 })
       console.log(`✅ [Desktop] Created desktop file: ${desktopFile}`)
-      
+
       try {
         const { exec } = require('child_process')
         exec('update-desktop-database ~/.local/share/applications', (error: any) => {

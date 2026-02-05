@@ -1,9 +1,11 @@
 {
-  "name": "shakra-interview-app",
+  "name": "shakra-ai-interview",
+  "productName": "Shakra",
   "version": "1.0.0",
   "description": "Shakra AI Interview Desktop App - AI-powered interview platform with security monitoring",
   "main": "./out/main/index.js",
-  "author": "example.com",
+  "license": "MIT",
+  "author": "Nikhil",
   "homepage": "https://electron-vite.org",
   "scripts": {
     "format": "prettier --write .",

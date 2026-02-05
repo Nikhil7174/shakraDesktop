@@ -3,6 +3,7 @@ import './assets/main.css'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
+import { ClerkProvider } from '@clerk/clerk-react'
 
 // Add error handler for unhandled errors
 window.addEventListener('error', (event) => {
@@ -30,10 +31,18 @@ if (!rootElement) {
 } else {
   console.log('✅ [Renderer] Root element found, mounting React app...')
   try {
+    const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY
+
+    if (!PUBLISHABLE_KEY) {
+      console.error("Missing VITE_CLERK_PUBLISHABLE_KEY")
+    }
+
     const root = createRoot(rootElement)
     root.render(
       <StrictMode>
-        <App />
+        <ClerkProvider publishableKey={PUBLISHABLE_KEY} afterSignOutUrl="/">
+          <App />
+        </ClerkProvider>
       </StrictMode>
     )
     console.log('✅ [Renderer] React app mounted successfully')

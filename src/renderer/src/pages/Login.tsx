@@ -1,171 +1,118 @@
-import React, { useEffect } from 'react';
-import { Form, Input, Button, Card, Typography, Divider, App } from 'antd';
-import { UserOutlined, LockOutlined } from '@ant-design/icons';
-import { useNavigate, Link, useLocation } from 'react-router-dom';
-import { colors, spacing } from '../styles';
-import { useAuth } from '../hooks/useAuth';
-import { useAppDispatch } from '../store';
-import { setLoading } from '../store/slices/authSlice';
-
-const { Title, Text } = Typography;
+import React from 'react';
+import icon from '../assets/icon.png';
 
 export const Login: React.FC = () => {
-  console.log('✅ [Login] Component rendering...');
-  const { message } = App.useApp();
-  const navigate = useNavigate();
-  const location = useLocation();
-  console.log('✅ [Login] Location:', location);
-  const { login, loading, isAuthenticated, user } = useAuth();
-  const dispatch = useAppDispatch();
-  const [form] = Form.useForm();
-  
-  useEffect(() => {
-    console.log('✅ [Login] Component mounted');
-    dispatch(setLoading(false));
-  }, [dispatch]);
+  const handleLogin = () => {
+    // Redirect to local web client's dedicated desktop login page
+    // This page enforces candidate role and redirects to deep link
+    const webClientUrl = 'http://localhost:5173/auth/desktop-login';
 
-  useEffect(() => {
-    return () => {
-      dispatch(setLoading(false));
-    };
-  }, [dispatch]);
-
-  // Get return to path from navigation state
-  const returnTo = (location.state as any)?.returnTo;
-
-
-  // Redirect if already authenticated
-  useEffect(() => {
-    if (isAuthenticated && user) {
-      const from = returnTo || (location.state as any)?.from || '/candidate/dashboard';
-      navigate(from, { replace: true });
-    }
-  }, [isAuthenticated, user, navigate, location, returnTo]);
-
-  const handleSubmit = async (values: { email: string; password: string }) => {
-    try {
-      await login(values.email, values.password);
-      message.success('Login successful!');
-      // Navigation will be handled by the useEffect above
-    } catch (error: any) {
-      message.error(error.message || 'Login failed');
+    // @ts-ignore
+    if (window.electronAPI?.openExternal) {
+      // @ts-ignore
+      window.electronAPI.openExternal(webClientUrl);
+    } else {
+      console.warn('openExternal not available');
+      window.location.href = webClientUrl;
     }
   };
 
   return (
-    <>
+    <div
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        width: '100%',
+        height: '100%',
+        background: '#1a1a1a',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 9999, // Ensure it sits on top if needed
+        overflow: 'hidden' // Remove any scrolling
+      }}
+    >
+      <div
+        style={{
+          marginBottom: '32px',
+          width: '120px',
+          height: '120px',
+          flexShrink: 0,
+          animation: 'fadeInScale 0.6s ease-out'
+        }}
+      >
+        <img
+          src={icon}
+          alt="Shakra AI Interview"
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
+            filter: 'drop-shadow(0 8px 16px rgba(0, 0, 0, 0.5))',
+            display: 'block'
+          }}
+        />
+      </div>
+
+      <div
+        style={{
+          color: '#ffffff',
+          fontSize: '28px',
+          fontWeight: 600,
+          fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif",
+          lineHeight: 1.2,
+          marginBottom: '12px',
+          textAlign: 'center',
+          whiteSpace: 'nowrap'
+        }}
+      >
+        Shakra AI Interview
+      </div>
+
       <style>
         {`
-          .login-signup-button:hover {
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1) !important;
-          }
-          .login-signup-button:focus {
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1) !important;
+          @keyframes fadeInScale {
+            from {
+              opacity: 0;
+              transform: scale(0.8);
+            }
+            to {
+              opacity: 1;
+              transform: scale(1);
+            }
           }
         `}
       </style>
-      <div
+
+      <button
+        onClick={handleLogin}
         style={{
-          minHeight: '100vh',
-          display: 'flex',
+          marginTop: '2rem',
+          backgroundColor: '#2d333b',
+          color: 'white',
+          fontWeight: '600',
+          height: '36px',
           alignItems: 'center',
           justifyContent: 'center',
-          background: '#F3F4F6',
-          padding: spacing.lg,
-          position: 'relative',
+          padding: '8px 20px',
+          borderRadius: '6px',
+          border: '1px solid rgba(255,255,255,0.1)',
+          cursor: 'pointer',
+          transition: 'all 0.2s',
+          fontSize: '14px',
+          boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+        }}
+        onMouseOver={(e) => {
+          e.currentTarget.style.backgroundColor = '#373e47';
+        }}
+        onMouseOut={(e) => {
+          e.currentTarget.style.backgroundColor = '#2d333b';
         }}
       >
-      <Card
-        style={{
-          width: '100%',
-          maxWidth: 450,
-          border: '1px solid #E5E7EB',
-          boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
-          borderRadius: 16,
-          background: '#FFFFFF',
-        }}
-      >
-        <div style={{ textAlign: 'center', marginBottom: spacing.xl }}>
-          <Title level={2} style={{ color: '#111827', marginBottom: spacing.sm }}>
-            Welcome Back
-          </Title>
-          <Text type="secondary">
-            Sign in to give live interviews
-          </Text>
-        </div>
-
-        <Form
-          form={form}
-          name="login"
-          onFinish={handleSubmit}
-          layout="vertical"
-          size="large"
-          autoComplete="off"
-        >
-          <Form.Item
-            name="email"
-            rules={[
-              { required: true, message: 'Please enter your email!' },
-              { type: 'email', message: 'Please enter a valid email!' },
-            ]}
-          >
-            <Input
-              prefix={<UserOutlined />}
-              placeholder="Email"
-              style={{ borderRadius: 8 }}
-            />
-          </Form.Item>
-
-          <Form.Item
-            name="password"
-            rules={[{ required: true, message: 'Please enter your password!' }]}
-          >
-            <Input.Password
-              prefix={<LockOutlined />}
-              placeholder="Password"
-              style={{ borderRadius: 8 }}
-            />
-          </Form.Item>
-
-          <Form.Item>
-            <Button
-              type="primary"
-              htmlType="submit"
-              loading={loading}
-              style={{
-                width: '100%',
-                height: 48,
-                borderRadius: 8,
-                background: colors.primary.main,
-                border: `1px solid ${colors.primary.main}`,
-                boxShadow: 'none',
-              }}
-              className="login-signup-button"
-            >
-              Sign In
-            </Button>
-          </Form.Item>
-        </Form>
-
-        <Divider />
-
-        <div style={{ textAlign: 'center' }}>
-          <Text type="secondary">
-            Don't have an account?{' '}
-            <Link
-              to="/register"
-              style={{
-                color: '#111827',
-                fontWeight: 500,
-              }}
-            >
-              Sign up
-            </Link>
-          </Text>
-        </div>
-      </Card>
+        Sign In
+      </button>
     </div>
-    </>
   );
 };
-
