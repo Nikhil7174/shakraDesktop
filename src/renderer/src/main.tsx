@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client'
 import App from './App'
 import { ClerkProvider } from '@clerk/clerk-react'
 
+
 // Add error handler for unhandled errors
 window.addEventListener('error', (event) => {
   console.error('❌ [Renderer] Unhandled error:', event.error)
@@ -33,14 +34,20 @@ if (!rootElement) {
   try {
     const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY
 
+    console.log('🔑 [Renderer] Initializing Clerk with key:', PUBLISHABLE_KEY ? 'PRESENT (Masked)' : 'MISSING')
+
     if (!PUBLISHABLE_KEY) {
-      console.error("Missing VITE_CLERK_PUBLISHABLE_KEY")
+      console.error("Missing CLERK_PUBLISHABLE_KEY")
     }
 
     const root = createRoot(rootElement)
     root.render(
       <StrictMode>
-        <ClerkProvider publishableKey={PUBLISHABLE_KEY} afterSignOutUrl="/">
+        <ClerkProvider
+          publishableKey={PUBLISHABLE_KEY}
+          afterSignOutUrl="/"
+          allowedRedirectOrigins={['http://localhost:3000', 'shakra-app://*']}
+        >
           <App />
         </ClerkProvider>
       </StrictMode>

@@ -403,6 +403,7 @@ export const CandidateDashboard: React.FC = () => {
                   onClick={handleLogout}
                   size="large"
                   type="text"
+                  loading={authLoading}
                   className="ghost-logout-btn"
                   style={{
                     color: '#6B7280',
@@ -600,7 +601,6 @@ export const CandidateDashboard: React.FC = () => {
                       icon={<PlayCircleOutlined />}
                       onClick={handleJoinInterview}
                       size="large"
-                      className="primary-cta-btn"
                       style={{
                         color: colors.primary.main,
                         borderColor: colors.primary.main,

@@ -1,5 +1,6 @@
 import { useCallback, useRef, useEffect } from 'react';
 import axios from 'axios';
+import { useClerk } from '@clerk/clerk-react';
 import { useAppDispatch, useAppSelector } from '../store';
 import { loginSuccess, registerSuccess, setUser, logout as logoutAction, setLoading, setError } from '../store/slices/authSlice';
 import { API_BASE_URL } from '../constants/api';
@@ -8,6 +9,7 @@ import api from '../services/api'; // Use api instance with interceptors for tok
 export const useAuth = () => {
   const dispatch = useAppDispatch();
   const { user, token, isAuthenticated, loading, error } = useAppSelector((state) => state.auth);
+  const { signOut } = useClerk();
   const getCurrentUserInProgress = useRef(false);
 
   // Reset the ref when token is cleared
@@ -39,14 +41,14 @@ export const useAuth = () => {
               token: response.data.token,
             })
           );
-          
+
           // Send token to main process (triggers config fetch)
           if (window.electronAPI?.setAuthToken && response.data.token) {
             window.electronAPI.setAuthToken(response.data.token).catch(err => {
               console.warn('⚠️ [Auth] Failed to set auth token after registration:', err);
             });
           }
-          
+
           return response.data;
         }
       } catch (error: any) {
@@ -78,14 +80,14 @@ export const useAuth = () => {
               token: response.data.token,
             })
           );
-          
+
           // Send token to main process (triggers config fetch)
           if (window.electronAPI?.setAuthToken && response.data.token) {
             window.electronAPI.setAuthToken(response.data.token).catch(err => {
               console.warn('⚠️ [Auth] Failed to set auth token after login:', err);
             });
           }
-          
+
           return response.data;
         }
       } catch (error: any) {
@@ -101,6 +103,10 @@ export const useAuth = () => {
 
   const logout = useCallback(async () => {
     try {
+      dispatch(setLoading(true));
+      // Sign out from Clerk (critical for session cleanup)
+      await signOut();
+
       // Call logout endpoint if token exists
       if (token) {
         await axios.post(
@@ -119,10 +125,10 @@ export const useAuth = () => {
       dispatch(logoutAction());
       // Clear token in main process
       if (window.electronAPI?.setAuthToken) {
-        window.electronAPI.setAuthToken(null).catch(() => {});
+        window.electronAPI.setAuthToken(null).catch(() => { });
       }
     }
-  }, [dispatch, token]);
+  }, [dispatch, token, signOut]);
 
   const getCurrentUser = useCallback(async () => {
     // Prevent multiple simultaneous calls using ref instead of loading state

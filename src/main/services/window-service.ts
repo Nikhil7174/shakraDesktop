@@ -4,6 +4,7 @@ import { existsSync, writeFileSync, mkdirSync } from 'fs'
 import { homedir } from 'os'
 import { is } from '@electron-toolkit/utils'
 import { format } from 'url'
+import express from 'express'
 import { Service } from './lifecycle'
 import { optimizer } from '@electron-toolkit/utils'
 
@@ -24,9 +25,13 @@ export class WindowService implements Service {
     this.createWindow()
     this.registerShortcuts()
 
-    // Linux/Wayland desktop file
-    if (process.platform === 'linux' && !app.isPackaged) {
-      this.createDesktopFile()
+    // Linux/Wayland desktop file assignment
+    // We do this for:
+    // 1. Dev mode (to test deep links)
+    // 2. AppImage (to register protocol/icon since AppImage doesn't install itself)
+    const isAppImage = !!process.env.APPIMAGE;
+    if (process.platform === 'linux' && (!app.isPackaged || isAppImage)) {
+      this.createDesktopFile(isAppImage)
 
       if (this.iconPath && existsSync(this.iconPath)) {
         try {
@@ -194,20 +199,54 @@ export class WindowService implements Service {
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
       this.mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
     } else {
-      const htmlPath = join(__dirname, '../renderer/index.html')
+      // In production, start a local server to serve the renderer
+      // This is needed for Clerk authentication (requires localhost origin)
+      const port = 3000 // You might want to find a free port dynamically
+      const serverUrl = `http://localhost:${port}`
 
-      this.mainWindow.loadFile(htmlPath).catch((error) => {
-        console.error('❌ [Main] loadFile failed, trying loadURL with file:// protocol:', error)
-        const fileUrl = format({
-          pathname: htmlPath.replace(/\\/g, '/'),
-          protocol: 'file:',
-          slashes: true
+      this.startLocalServer(port).then(() => {
+        console.log(`✅ [Main] Local server started at ${serverUrl}`)
+        this.mainWindow?.loadURL(serverUrl).catch((error) => {
+          console.error('❌ [Main] Failed to load local server URL:', error)
         })
-        this.mainWindow?.loadURL(fileUrl).catch((fallbackError) => {
-          console.error('❌ [Main] Fallback also failed:', fallbackError)
-        })
+      }).catch((err) => {
+        console.error('❌ [Main] Failed to start local server:', err)
+        // Fallback to file protocol if server fails (though auth likely won't work)
+        const htmlPath = join(__dirname, '../renderer/index.html')
+        this.mainWindow?.loadFile(htmlPath)
       })
     }
+  }
+
+  private startLocalServer(port: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const app = express()
+      const staticPath = join(__dirname, '../renderer')
+
+      app.use(express.static(staticPath))
+
+      // Handle SPA routing - serve index.html for all non-file requests
+      app.use((req, res, next) => {
+        console.log(`📡 [LocalServer] Request: ${req.method} ${req.url}`)
+        next()
+      })
+
+      // Use a custom middleware for fallback instead of wildcard route to avoid path-to-regexp errors
+      app.use((req, res) => {
+        if (req.accepts('html')) {
+          console.log('📄 [LocalServer] Serving index.html for:', req.url)
+          res.sendFile(join(staticPath, 'index.html'))
+        } else {
+          res.sendStatus(404)
+        }
+      })
+
+      app.listen(port, () => {
+        resolve()
+      }).on('error', (err) => {
+        reject(err)
+      })
+    })
 
     this.mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
       console.error('❌ [Main] Page failed to load:', { errorCode, errorDescription, validatedURL })
@@ -282,30 +321,44 @@ export class WindowService implements Service {
     })
   }
 
-  private createDesktopFile(): void {
-    if (!this.iconPath || !existsSync(this.iconPath)) {
-      console.warn('⚠️ [Desktop] Cannot create desktop file - icon not found')
+  private createDesktopFile(isAppImage: boolean = false): void {
+    if (!isAppImage && process.env.SKIP_DESKTOP_REGISTER) {
+      console.log('⚠️ [Desktop] Skipping desktop file creation (SKIP_DESKTOP_REGISTER set)')
       return
+    }
+
+    if (!this.iconPath || !existsSync(this.iconPath)) {
+      console.warn('⚠️ [Desktop] Icon not found, creating desktop file without icon to ensure Deep Linking works')
     }
 
     try {
       const desktopDir = join(homedir(), '.local', 'share', 'applications')
       mkdirSync(desktopDir, { recursive: true })
 
-      const desktopFile = join(desktopDir, 'shakra-ai-interview-dev.desktop')
-      const execPath = process.execPath
-      const iconAbsolutePath = resolve(this.iconPath)
+      const filename = isAppImage ? 'shakra-ai-interview.desktop' : 'shakra-ai-interview-dev.desktop';
+      const desktopFile = join(desktopDir, filename)
+
+      // For AppImage, use the AppImage file itself as the executable
+      // For Dev, use process.execPath (node/electron binary)
+      const execPath = isAppImage ? (process.env.APPIMAGE || process.execPath) : process.execPath;
+
+      const iconAbsolutePath = this.iconPath ? resolve(this.iconPath) : ''
+
+      // If AppImage, we need to correctly handle arguments. 
+      // AppImage requires %u to be passed if we want deep linking.
+      // But verify if the variable is already escaped?
+      const execCommand = `"${execPath}" %u`;
 
       const desktopContent = `[Desktop Entry]
-Name=Shakra AI Interview (Dev)
+Name=${isAppImage ? 'Shakra AI Interview' : 'Shakra AI Interview (Dev)'}
 Comment=AI-powered interview platform with security monitoring
-Exec=${execPath} %u
-Icon=${iconAbsolutePath}
+Exec=${execCommand}
+${iconAbsolutePath ? `Icon=${iconAbsolutePath}` : ''}
 Type=Application
 Categories=Utility;Development;
 MimeType=x-scheme-handler/shakra-app;
 StartupNotify=true
-StartupWMClass=electron
+StartupWMClass=${isAppImage ? 'shakra-ai-interview' : 'electron'}
 NoDisplay=false
 `
 

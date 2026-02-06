@@ -29,6 +29,26 @@ if (!gotTheLock) {
   app.quit()
 }
 
+// Function to handle deep link
+function handleDeepLink(argv: string[]) {
+  const url = argv.find((arg) => arg.startsWith('shakra-app://'))
+  if (url) {
+    // If window service is ready, send it immediately
+    // If not, we store it or wait? 
+    // Actually, windowService.initialize handles creation.
+    // We should wait for app.whenReady() essentially.
+
+    // For now, let's just log it and we will handle it in whenReady
+    console.log('🔗 [Main] Deep link received:', url)
+    return url
+  }
+  return null
+}
+
+// Check for deep link on startup (Windows/Linux cold start)
+// On macOS, open-url is triggered.
+const startupDeepLink = process.platform !== 'darwin' ? handleDeepLink(process.argv) : null
+
 // Lifecycle manager instance
 const lifecycle = new LifecycleManager()
 
@@ -77,7 +97,7 @@ app.whenReady().then(async () => {
         ...details.responseHeaders,
         'Content-Security-Policy': [
           "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; " +
-          "connect-src 'self' https://crisp-server-n0r1.onrender.com https://localhost:3001 http://localhost:3001 https://cdn.jsdelivr.net https://storage.googleapis.com https://*.livekit.cloud wss://*.livekit.cloud ws://*.livekit.cloud https://*.clerk.accounts.dev https://clerk-telemetry.com; " +
+          "connect-src 'self' http://localhost:3000 https://localhost:3000 https://crisp-server-n0r1.onrender.com https://localhost:3001 http://localhost:3001 https://cdn.jsdelivr.net https://storage.googleapis.com https://*.livekit.cloud wss://*.livekit.cloud ws://*.livekit.cloud https://*.clerk.accounts.dev https://clerk-telemetry.com; " +
           "img-src 'self' data: https:; " +
           "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com https://*.clerk.accounts.dev; " +
           "script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com https://*.clerk.accounts.dev; " +
@@ -90,6 +110,22 @@ app.whenReady().then(async () => {
       }
     })
   })
+
+  // Intercept Clerk requests to ensure Origin is set correctly (fix for 401 in prod)
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: ['https://*.clerk.accounts.dev/*', 'https://api.clerk.com/*'] },
+    (details, callback) => {
+      console.log('🔒 [Main] Intercepting Clerk Request:', details.url)
+      console.log('🔒 [Main] Original Headers:', JSON.stringify(details.requestHeaders, null, 2))
+
+      // Force Origin to localhost:3000 to match Clerk's allowed_origins
+      details.requestHeaders['Origin'] = 'http://localhost:3000';
+      // details.requestHeaders['Referer'] = 'http://localhost:3000'; // Optional, sometimes needed
+
+      console.log('🔒 [Main] Modified Headers:', JSON.stringify(details.requestHeaders, null, 2))
+      callback({ requestHeaders: details.requestHeaders });
+    }
+  );
 
   // Start all services
   try {
@@ -105,6 +141,15 @@ app.whenReady().then(async () => {
     console.log('🔗 [Main] Opening external URL:', url)
     await shell.openExternal(url)
   })
+
+  // If we had a startup deep link, send it now that window exists
+  if (startupDeepLink) {
+    console.log('🔗 [Main] Processing startup deep link:', startupDeepLink)
+    // Small delay to ensure React is mounted
+    setTimeout(() => {
+      windowService.sendDeepLink(startupDeepLink)
+    }, 2000)
+  }
 })
 
 // macOS - keep app running

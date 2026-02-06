@@ -19,7 +19,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 
 const App: React.FC = () => {
   const { isSignedIn, isLoaded } = useUser();
-  const { signIn } = useSignIn();
+  const { signIn, setActive } = useSignIn();
 
   // Hide splash screen based on auth state
   React.useEffect(() => {
@@ -58,31 +58,62 @@ const App: React.FC = () => {
       // @ts-ignore
       window.electronAPI.onDeepLink(async (url: string) => {
         try {
-          console.log("Received deep link:", url);
+          console.log("📢 [Renderer] Received deep link:", url);
+
+          if (isSignedIn) {
+            console.log("📢 [Renderer] User already signed in. Ignoring deep link auth.");
+            // Focus window? 
+            return;
+          }
+
           const u = new URL(url);
           // Check for ticket or token (Clerk flows)
           const ticket = u.searchParams.get("ticket");
           const token = u.searchParams.get("token");
 
           if (ticket) {
-            console.log("Attempting sign in with ticket...");
-            const result = await signIn.create({ strategy: "ticket", ticket });
-            console.log("Sign in with ticket result:", result.status);
+            console.log("📢 [Renderer] Attempting sign in with ticket...");
+            try {
+              const result = await signIn.create({ strategy: "ticket", ticket });
+              console.log("📢 [Renderer] Sign in with ticket result:", result.status);
+              if (result.status === "complete") {
+                await setActive({ session: result.createdSessionId });
+              }
+            } catch (ticketErr: any) {
+              // Handle specific case where user is technically already signed in (race condition)
+              if (ticketErr?.errors?.[0]?.code === 'session_exists' ||
+                ticketErr?.message?.toLowerCase()?.includes("signed in")) {
+                console.log("📢 [Renderer] Clerk reports already signed in (race condition). Proceeding.");
+                // We assume we are good. useUser hook should update soon.
+              } else {
+                throw ticketErr;
+              }
+            }
           } else if (token) {
-            console.log("Attempting sign in with token as ticket...");
-            // Try using token as ticket (sometimes works for transfer tokens)
-            // or specific custom flow if supported
-            const result = await signIn.create({ strategy: "ticket", ticket: token });
-            console.log("Sign in with token result:", result.status);
+            console.error("📢 [Renderer] Attempting sign in with token as ticket...");
+            try {
+              const result = await signIn.create({ strategy: "ticket", ticket: token });
+              console.log("📢 [Renderer] Sign in with token result:", result.status);
+              if (result.status === "complete") {
+                await setActive({ session: result.createdSessionId });
+              }
+            } catch (innerErr: any) {
+              if (innerErr?.errors?.[0]?.code === 'session_exists' ||
+                innerErr?.message?.toLowerCase()?.includes("signed in")) {
+                console.log("📢 [Renderer] Clerk reports already signed in (race condition). Proceeding.");
+              } else {
+                console.error("📢 [Renderer] signIn.create failed with token:", innerErr);
+              }
+            }
           } else {
-            console.warn("No ticket or token found in deep link");
+            console.warn("📢 [Renderer] No ticket or token found in deep link");
           }
         } catch (err) {
-          console.error("Deep link auth error:", err);
+          console.error("📢 [Renderer] Deep link auth error:", err);
         }
       });
     }
-  }, [isLoaded, signIn]);
+  }, [isLoaded, signIn, isSignedIn]);
 
   return (
     <ErrorBoundary>
