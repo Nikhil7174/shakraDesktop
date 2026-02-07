@@ -223,10 +223,52 @@ export class WindowService implements Service {
       const app = express()
       const staticPath = join(__dirname, '../renderer')
 
+      // CORS and Security Headers
+      app.use((req, res, next) => {
+        res.header('Access-Control-Allow-Origin', '*')
+        res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        res.header('Access-Control-Allow-Private-Network', 'true')
+        next()
+      })
+
       app.use(express.static(staticPath))
+
+      // Auth Callback Route
+      app.get('/api/auth/callback', (req, res) => {
+        const { ticket } = req.query
+        console.log('📨 [LocalServer] Received auth callback with ticket:', ticket ? 'Yes' : 'No')
+
+        if (ticket && typeof ticket === 'string') {
+          // Focus the window
+          if (this.mainWindow) {
+            if (this.mainWindow.isMinimized()) this.mainWindow.restore()
+            this.mainWindow.show()
+            this.mainWindow.focus()
+
+            // Send to renderer
+            this.mainWindow.webContents.send('deep-link', `shakra-app://auth/callback?ticket=${ticket}`)
+            console.log('✅ [LocalServer] Ticket sent to renderer via deep-link channel')
+          }
+
+          // Return JSON for background fetch (keeps user on branded page)
+          res.json({ success: true, message: 'Authentication successful' })
+        } else {
+          res.status(400).json({ success: false, message: 'Missing ticket' })
+        }
+      })
+
+      // Status check endpoint
+      app.get('/status', (req, res) => {
+        res.json({ status: 'ok', app: 'StartUp' })
+      })
 
       // Handle SPA routing - serve index.html for all non-file requests
       app.use((req, res, next) => {
+        // Skip API routes
+        if (req.url.startsWith('/api')) {
+          return next()
+        }
         console.log(`📡 [LocalServer] Request: ${req.method} ${req.url}`)
         next()
       })
@@ -234,17 +276,25 @@ export class WindowService implements Service {
       // Use a custom middleware for fallback instead of wildcard route to avoid path-to-regexp errors
       app.use((req, res) => {
         if (req.accepts('html')) {
-          console.log('📄 [LocalServer] Serving index.html for:', req.url)
+          // console.log('📄 [LocalServer] Serving index.html for:', req.url)
           res.sendFile(join(staticPath, 'index.html'))
         } else {
           res.sendStatus(404)
         }
       })
 
-      app.listen(port, () => {
+      const server = app.listen(port, '127.0.0.1', () => {
         resolve()
-      }).on('error', (err) => {
-        reject(err)
+      })
+
+      server.on('error', (err: any) => {
+        if (err.code === 'EADDRINUSE') {
+          console.warn(`⚠️ [LocalServer] Port ${port} is busy. Local server auth will not work. Fallback to deep link.`)
+          // We resolve anyway so the app continues to boot, but we log the error
+          resolve()
+        } else {
+          reject(err)
+        }
       })
     })
 
