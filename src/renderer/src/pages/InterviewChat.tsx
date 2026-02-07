@@ -9,7 +9,6 @@ import { ResumeUpload } from '../components/interview/ResumeUpload';
 import { InfoCollection } from '../components/interview/InfoCollection';
 import { InterviewSession } from '../components/interview/InterviewSession';
 import VoiceInterviewSession from './VoiceInterviewSession';
-import { WelcomeBackModal } from '../components/interview/WelcomeBackModal';
 import { ConfirmationModal } from '../components/interview/ConfirmationModal';
 import { useResumeUpload } from '../hooks/api/useResumeUpload';
 import { useInterview } from '../hooks/api/useInterview';
@@ -25,14 +24,11 @@ export const InterviewChat: React.FC = () => {
   const location = useLocation();
   const dispatch = useDispatch();
   const [currentStep, setCurrentStep] = useState<Step>('upload');
-  const [showWelcomeBack, setShowWelcomeBack] = useState(false);
   const [processingResume, setProcessingResume] = useState(false);
   const [collectingInfo, setCollectingInfo] = useState(false);
-  const [userHasChosen, setUserHasChosen] = useState(false); // Track if user made a choice about session
   const [resumeRequested, setResumeRequested] = useState(false); // Track if user chose to resume
-  const [interviewState, setInterviewState] = useState<string | null>(null); // Track voice session state for UI
+
   const [showQuitConfirm, setShowQuitConfirm] = useState(false); // Confirm before quitting interview
-  const modalDismissedRef = React.useRef(false); // Ref to track if modal was explicitly dismissed
 
   const handleBack = () => {
     const from = (location.state as any)?.from;
@@ -87,152 +83,48 @@ export const InterviewChat: React.FC = () => {
 
   const {
     resumeData: existingResumeData,
-    hasResume
   } = useResumeData();
 
   // Redux-only session management
   const {
     currentSession,
-    resumeData: sessionResumeData,
-    shouldShowWelcomeBack,
-    sessionSummary,
     clearAllSessions,
-    resetPageVisibilityTracking
   } = useSession();
 
-  // Effect 1: Handle welcome back modal display
+  // Effect to set initial step
   useEffect(() => {
-    console.log('=== WELCOME BACK MODAL CHECK ===');
-    console.log('Should show welcome back:', shouldShowWelcomeBack);
-    console.log('User has chosen:', userHasChosen);
-    console.log('Current session exists:', !!currentSession);
-    console.log('Session summary exists:', !!sessionSummary);
-    console.log('Modal dismissed ref:', modalDismissedRef.current);
-
-    // CRITICAL: Never show modal again if user explicitly dismissed it
-    if (modalDismissedRef.current) {
-      console.log('Modal was explicitly dismissed - never showing again');
-      setShowWelcomeBack(false);
-      return;
-    }
-
-    // Check if we're navigating from CandidateDashboard with flag to check existing session
-    const checkExistingSession = (location.state as any)?.checkExistingSession;
+    // Check if we are coming from JoinInterview with a fresh session
     const fromLink = (location.state as any)?.fromLink;
-    console.log('Check existing session flag:', checkExistingSession);
-    console.log('From link:', fromLink);
+    const sessionId = (location.state as any)?.sessionId;
 
-    // Don't show modal if coming from a link (fresh interview start)
-    if (fromLink) {
-      console.log('Coming from link - not showing welcome back modal');
-      setShowWelcomeBack(false);
-      setUserHasChosen(true); // Mark as chosen to proceed
-      modalDismissedRef.current = true; // Mark as dismissed
-      // Clear the navigation state to prevent re-triggering
-      window.history.replaceState({}, document.title);
-      return;
-    }
-
-    // Don't show modal if user has already made a choice (unless explicitly checking from dashboard)
-    if (userHasChosen && !checkExistingSession) {
-      console.log('User has already made a choice, skipping modal check');
-      return;
-    }
-
-    // Show welcome back modal for unfinished/interrupted interviews
-    // Case A: Explicit detection (page hidden/reload) from shouldShowWelcomeBack
-    // Case B: Fresh navigation to interview route with an unfinished session (answers exist)
-    // Case C: Navigation from CandidateDashboard with checkExistingSession flag AND session exists
-    const hasUnfinished = !!(currentSession && Array.isArray((currentSession as any).answers) && (currentSession as any).answers.length > 0);
-    const shouldCheckExisting = checkExistingSession && currentSession;
-
-    if ((shouldShowWelcomeBack && currentSession && sessionSummary) || hasUnfinished || shouldCheckExisting) {
-      const summary = sessionSummary || {
-        questionsAnswered: (currentSession as any)?.answers?.length || 0,
-        totalQuestions: (currentSession as any)?.questions?.length || 6,
-        timeAway: 0
-      };
-      console.log('Unfinished session detected - showing welcome back modal:', {
-        answered: summary.questionsAnswered,
-        total: summary.totalQuestions,
-        timeAway: summary.timeAway,
-        fromDashboard: checkExistingSession
-      });
-      setShowWelcomeBack(true);
-
-      // Reset the userHasChosen flag when coming from dashboard
-      if (checkExistingSession) {
-        setUserHasChosen(false);
-        // Clear the navigation state to prevent re-triggering
-        window.history.replaceState({}, document.title);
-      }
-    } else {
-      console.log('No interrupted session found - not showing modal');
-      setShowWelcomeBack(false);
-
-      // If coming from dashboard but no session exists, mark as chosen to allow new interview
-      if (checkExistingSession && !currentSession) {
-        console.log('No existing session - proceeding with new interview');
-        setUserHasChosen(true);
-      }
-    }
-  }, [shouldShowWelcomeBack, currentSession, sessionSummary, userHasChosen, location.state]);
-
-  // Effect 2: Handle initial step determination (separate from modal logic)
-  useEffect(() => {
     console.log('=== INITIAL STEP DETERMINATION ===');
     console.log('Current step:', currentStep);
-    console.log('Has existing resume:', hasResume);
-    console.log('Current session resume data:', !!sessionResumeData);
-    console.log('Show welcome back modal:', showWelcomeBack);
+    console.log('From link:', fromLink);
+    console.log('Session ID from nav:', sessionId);
+    console.log('Current session in Redux:', currentSession?.sessionId);
 
-    // Only set initial step if we're still on upload (initial state)
-    if (currentStep !== 'upload') {
-      console.log('Already on step:', currentStep, '- not changing');
-      return;
-    }
-
-    // CRITICAL: If welcome back modal is showing, wait for user choice
-    if (showWelcomeBack) {
-      console.log('Welcome back modal is showing - waiting for user choice');
-      return;
-    }
-
-    // Check if there's already a current session in progress
+    // If we have a current session (just started or restored)
     if (currentSession && currentSession.sessionId) {
-      const answersCount = (currentSession as any)?.answers?.length || 0;
-      if (answersCount > 0 && !userHasChosen) {
-        console.log('Found unfinished session, awaiting user choice before entering interview');
-        // Do not auto-enter interview; modal will prompt the user
-        return;
-      }
-
-      // Only proceed to interview if user has made their choice
-      if (userHasChosen) {
-        console.log('User chose to continue, starting with interview step');
-        console.log('Session details:', currentSession);
+      // If we just came from JoinInterview (fresh start), go straight to interview
+      if (fromLink && currentSession.sessionId === sessionId) {
+        console.log('🚀 Fresh interview started from link - going to interview step');
         setCurrentStep('interview');
         return;
       }
+
+
+    }
+
+    // Only set initial step if we're still on upload (initial state)
+    if (currentStep !== 'upload') {
+      return;
     }
 
     // Always start with upload page - enhanced to show existing resume with replace option
     console.log('Starting with upload page (enhanced for existing resumes)');
     setCurrentStep('upload');
 
-    // ENHANCED: Resume Data Persistence with Better UX
-    // Problem: When the same user gives multiple interviews, their previously provided resume data
-    // is not being retrieved, causing them to upload a PDF every time they give an interview.
-    // 
-    // SOLUTION IMPLEMENTED:
-    // 1. Session cleanup on logout/login to prevent data leakage between different users
-    // 2. Resume data is now saved to user profile during info collection step
-    // 3. useResumeData hook syncs data between backend and Redux state
-    // 4. SessionCleanup component clears data when different users log in
-    // 5. Each user now gets their own isolated resume data
-    // 6. ENHANCED: Upload page now shows existing resume with option to replace
-
-  }, [hasResume, existingResumeData, sessionResumeData, currentStep, currentSession, userHasChosen, showWelcomeBack]);
+  }, [currentStep, currentSession, location.state]);
 
 
   // Real-time tracking is now handled by useSessionManager hook
@@ -280,9 +172,6 @@ export const InterviewChat: React.FC = () => {
     console.log('=== STARTING NEW INTERVIEW ===');
 
     try {
-      // Mark modal as dismissed permanently
-      modalDismissedRef.current = true;
-
       // Clear all session data using unified method
       clearAllSessions();
 
@@ -291,21 +180,16 @@ export const InterviewChat: React.FC = () => {
 
       // Reset local component state
       setCurrentStep('upload');
-      setShowWelcomeBack(false); // Hide modal
       setProcessingResume(false);
       setCollectingInfo(false);
-      setUserHasChosen(true); // Mark that user has made a choice
       setResumeRequested(false);
-      setInterviewState(null);
 
-      // Reset page visibility tracking for new session
-      resetPageVisibilityTracking();
 
       console.log('=== NEW INTERVIEW SETUP COMPLETE ===');
     } catch (error) {
       console.error('Failed to start new interview:', error);
     }
-  }, [dispatch, clearAllSessions, resetPageVisibilityTracking]);
+  }, [dispatch, clearAllSessions]);
 
   const handleInterviewComplete = useCallback(async (result?: { cancelled?: boolean }) => {
     console.log('Interview completed/cancelled - clearing all data and redirecting', result);
@@ -347,39 +231,7 @@ export const InterviewChat: React.FC = () => {
     }
   }, [navigate, dispatch, clearAllSessions]);
 
-  const handleContinueSession = useCallback(() => {
-    console.log('User chose to continue session');
 
-    // Mark modal as dismissed permanently
-    modalDismissedRef.current = true;
-
-    // Close modal FIRST before any other state changes
-    setShowWelcomeBack(false);
-
-    // Then update other states
-    setUserHasChosen(true); // Mark that user has made a choice
-    setResumeRequested(true);
-    setCurrentStep('interview');
-
-    // Reset page visibility tracking since user is continuing
-    resetPageVisibilityTracking();
-
-    // No need to restore - data is already in Redux
-    console.log('Session data already available in Redux');
-  }, [resetPageVisibilityTracking]);
-
-  const handleWelcomeBackClose = useCallback(() => {
-    console.log('User closed welcome back modal');
-
-    // Mark modal as dismissed permanently
-    modalDismissedRef.current = true;
-
-    setUserHasChosen(true); // Mark that user has made a choice (by closing)
-    setShowWelcomeBack(false);
-
-    // Reset page visibility tracking since user dismissed the modal
-    resetPageVisibilityTracking();
-  }, [resetPageVisibilityTracking]);
 
 
   const renderCurrentStep = useCallback(() => {
@@ -506,7 +358,7 @@ export const InterviewChat: React.FC = () => {
               roomName={(currentSession as any)?.roomName}
               onComplete={handleInterviewComplete}
               onSaveResults={saveResults}
-              onStateChange={setInterviewState}
+
               onQuitInterview={() => setShowQuitConfirm(true)}
             />
           );
@@ -580,16 +432,7 @@ export const InterviewChat: React.FC = () => {
         {renderCurrentStep()}
       </Space>
 
-      {/* Welcome Back Modal */}
-      <WelcomeBackModal
-        visible={showWelcomeBack}
-        questionsAnswered={sessionSummary?.questionsAnswered || 0}
-        totalQuestions={sessionSummary?.totalQuestions || 6}
-        timeAway={sessionSummary?.timeAway || 0}
-        onContinue={handleContinueSession}
-        onStartNew={handleStartNew}
-        onClose={handleWelcomeBackClose}
-      />
+
 
       {/* Quit confirmation */}
       <ConfirmationModal

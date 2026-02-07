@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { useAuth as useClerkAuth, useUser } from '@clerk/clerk-react';
 import { useAppDispatch } from '../store';
-import { loginSuccess, logout } from '../store/slices/authSlice';
+import { loginSuccess, logout, setAuthSynced } from '../store/slices/authSlice';
 import api from '../services/api';
 
 export const AuthInitializer: React.FC = () => {
@@ -42,6 +42,8 @@ export const AuthInitializer: React.FC = () => {
           // If backend sync fails (e.g. 500), consider what to do.
           // For now, allow retry or keep logged in (Clerk is valid).
           // But if we can't get backend user, app might break.
+        } finally {
+          dispatch(setAuthSynced(true));
         }
       } else if (isLoaded && !isSignedIn) {
         // Handle Logout
@@ -50,6 +52,7 @@ export const AuthInitializer: React.FC = () => {
         if (window.electronAPI?.setAuthToken) {
           window.electronAPI.setAuthToken(null).catch(() => { });
         }
+        dispatch(setAuthSynced(true));
       }
     };
 

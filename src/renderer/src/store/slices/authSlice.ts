@@ -9,6 +9,7 @@ const initialState: AuthState = {
   isAuthenticated: false, // Always start as false, will be validated by getCurrentUser
   loading: false,
   error: null,
+  isSynced: false, // Indicates if auth state has been synced with backend/Clerk on startup
 };
 
 const authSlice = createSlice({
@@ -21,12 +22,16 @@ const authSlice = createSlice({
     setError: (state, action: PayloadAction<string | null>) => {
       state.error = action.payload;
     },
+    setAuthSynced: (state, action: PayloadAction<boolean>) => {
+      state.isSynced = action.payload;
+    },
     loginSuccess: (state, action: PayloadAction<{ user: User; token: string }>) => {
       state.user = action.payload.user;
       state.token = action.payload.token;
       state.isAuthenticated = true;
       state.loading = false;
       state.error = null;
+      state.isSynced = true; // Auth state is now synced after successful login
       // Store token in localStorage
       localStorage.setItem('authToken', action.payload.token);
       // Clear any existing session data to ensure fresh start for new user
@@ -38,6 +43,7 @@ const authSlice = createSlice({
       state.isAuthenticated = true;
       state.loading = false;
       state.error = null;
+      state.isSynced = true; // Auth state is now synced after successful registration
       // Store token in localStorage
       localStorage.setItem('authToken', action.payload.token);
       // Clear any existing session data to ensure fresh start for new user
@@ -46,6 +52,7 @@ const authSlice = createSlice({
     setUser: (state, action: PayloadAction<User>) => {
       state.user = action.payload;
       state.isAuthenticated = true;
+      state.isSynced = true; // User data has been set, state is synced
     },
     logout: (state) => {
       state.user = null;
@@ -53,6 +60,7 @@ const authSlice = createSlice({
       state.isAuthenticated = false;
       state.loading = false;
       state.error = null;
+      state.isSynced = true; // Logout is a definitive state, so it's synced
       // Remove token from localStorage
       localStorage.removeItem('authToken');
       // Clear all interview session data to prevent data leakage between users
@@ -68,6 +76,7 @@ export const {
   registerSuccess,
   setUser,
   logout,
+  setAuthSynced
 } = authSlice.actions;
 
 export default authSlice.reducer;

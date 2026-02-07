@@ -8,7 +8,6 @@ import {
   Row,
   Col,
   Empty,
-  Tooltip,
   Input,
 } from 'antd';
 import {
@@ -27,7 +26,7 @@ import { useNavigate } from 'react-router-dom';
 import { colors } from '../styles';
 import { API_BASE_URL } from '../constants/api';
 import { useAppSelector } from '../store';
-import { RestartModal } from '../components/interview/RestartModal';
+
 import './CandidateDashboard.css';
 
 const { Title, Text } = Typography;
@@ -51,7 +50,7 @@ interface InterviewAttempt {
 export const CandidateDashboard: React.FC = () => {
   const { user, logout, loading: authLoading } = useAuth();
   const navigate = useNavigate();
-  const { token } = useAppSelector((state) => state.auth);
+  const { token, isSynced } = useAppSelector((state) => state.auth);
 
   console.log('🎯 [CandidateDashboard] Rendering with user:', user?.fullName);
 
@@ -60,7 +59,7 @@ export const CandidateDashboard: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastFetched, setLastFetched] = useState<Date | null>(null);
-  const [showRestartModal, setShowRestartModal] = useState(false);
+
 
   // Safety check: Redirect if no user data is available
   useEffect(() => {
@@ -75,6 +74,12 @@ export const CandidateDashboard: React.FC = () => {
     try {
       setLoading(true);
       setError(null);
+
+      if (!isSynced) {
+        console.log('⏳ [CandidateDashboard] Waiting for auth sync...');
+        setLoading(true);
+        return;
+      }
 
       if (!token) {
         throw new Error('No authentication token found');
@@ -114,7 +119,7 @@ export const CandidateDashboard: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [token]); // Include token in dependency array
+  }, [token, isSynced]); // Include token and isSynced in dependency array
 
   // Manual refetch function
   const refetch = useCallback(() => {
@@ -126,7 +131,13 @@ export const CandidateDashboard: React.FC = () => {
     fetchAttempts();
   }, [fetchAttempts]);
 
-  // Listen for refresh events (triggered after interview completion)
+  // Listen for auth sync completion
+  useEffect(() => {
+    if (isSynced && token) {
+      console.log('✨ [CandidateDashboard] Auth synced, fetching data...');
+      fetchAttempts();
+    }
+  }, [isSynced, token, fetchAttempts]);
   useEffect(() => {
     const handleRefresh = () => {
       console.log('🔄 Dashboard refresh triggered');
@@ -186,11 +197,6 @@ export const CandidateDashboard: React.FC = () => {
     return companyIds.size + companyNames.size;
   }, [attempts]);
 
-  const isStale = useMemo(() => {
-    if (!lastFetched) return true;
-    return Date.now() - lastFetched.getTime() > 300000; // 5 minutes
-  }, [lastFetched]);
-
   const handleLogout = useCallback(async () => {
     await logout();
     navigate('/');
@@ -198,16 +204,7 @@ export const CandidateDashboard: React.FC = () => {
 
   const handleJoinInterview = useCallback(() => {
     // Check if an interview was completed in this app session
-    const interviewCompleted = sessionStorage.getItem('interviewCompletedInSession');
-
-    if (interviewCompleted === 'true') {
-      // Show modal to prevent starting new interview
-      setShowRestartModal(true);
-      return;
-    }
-
-    // Pass a flag to tell InterviewChat to check for existing session
-    navigate('/interview', { state: { checkExistingSession: true } });
+    navigate('/interview');
   }, [navigate]);
 
   // Search state
@@ -617,14 +614,6 @@ export const CandidateDashboard: React.FC = () => {
           </Card>
         </div>
       </div>
-
-      {/* Restart App Modal */}
-      <RestartModal
-        open={showRestartModal}
-        onClose={() => setShowRestartModal(false)}
-      />
     </div>
   );
 };
-
-
