@@ -97,7 +97,7 @@ app.whenReady().then(async () => {
         ...details.responseHeaders,
         'Content-Security-Policy': [
           "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; " +
-          "connect-src 'self' http://localhost:3000 https://localhost:3000 https://crisp-server-n0r1.onrender.com https://localhost:3001 http://localhost:3001 https://cdn.jsdelivr.net https://storage.googleapis.com https://*.livekit.cloud wss://*.livekit.cloud ws://*.livekit.cloud https://*.clerk.accounts.dev https://clerk-telemetry.com; " +
+          "connect-src 'self' http://localhost:42424 https://localhost:42424 https://crisp-server-n0r1.onrender.com https://cdn.jsdelivr.net https://storage.googleapis.com https://*.livekit.cloud wss://*.livekit.cloud ws://*.livekit.cloud https://*.clerk.accounts.dev https://clerk-telemetry.com; " +
           "img-src 'self' data: https:; " +
           "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com https://*.clerk.accounts.dev; " +
           "script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com https://*.clerk.accounts.dev; " +
@@ -118,8 +118,8 @@ app.whenReady().then(async () => {
       console.log('🔒 [Main] Intercepting Clerk Request:', details.url)
       console.log('🔒 [Main] Original Headers:', JSON.stringify(details.requestHeaders, null, 2))
 
-      // Force Origin to localhost:3000 to match Clerk's allowed_origins
-      details.requestHeaders['Origin'] = 'http://localhost:3000';
+      // Force Origin to localhost:42424 to match Clerk's allowed_origins
+      details.requestHeaders['Origin'] = 'http://localhost:42424';
       // details.requestHeaders['Referer'] = 'http://localhost:3000'; // Optional, sometimes needed
 
       console.log('🔒 [Main] Modified Headers:', JSON.stringify(details.requestHeaders, null, 2))

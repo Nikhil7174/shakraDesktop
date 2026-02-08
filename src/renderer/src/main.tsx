@@ -46,7 +46,7 @@ if (!rootElement) {
         <ClerkProvider
           publishableKey={PUBLISHABLE_KEY}
           afterSignOutUrl="/"
-          allowedRedirectOrigins={['http://localhost:3000', 'shakra-app://*']}
+          allowedRedirectOrigins={['http://localhost:42424', 'shakra-app://*']}
         >
           <App />
         </ClerkProvider>

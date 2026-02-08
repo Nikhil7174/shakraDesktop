@@ -24,7 +24,7 @@ export default defineConfig(({ mode }) => {
         'import.meta.env.VITE_CLERK_PUBLISHABLE_KEY': JSON.stringify(env.VITE_CLERK_PUBLISHABLE_KEY)
       },
       server: {
-        port: 3000
+        port: 42424
       }
     }
   }

@@ -133,7 +133,7 @@ export class WindowService implements Service {
       fullscreen: false,
       maximizable: true,
       resizable: true,
-      // autoHideMenuBar: true,
+      autoHideMenuBar: true,
       webPreferences: {
         preload: join(__dirname, '../preload/index.js'),
         nodeIntegration: false,
@@ -201,7 +201,7 @@ export class WindowService implements Service {
     } else {
       // In production, start a local server to serve the renderer
       // This is needed for Clerk authentication (requires localhost origin)
-      const port = 3000 // You might want to find a free port dynamically
+      const port = 42424 // Used to be 3000, changed to avoid conflicts
       const serverUrl = `http://localhost:${port}`
 
       this.startLocalServer(port).then(() => {
@@ -225,7 +225,7 @@ export class WindowService implements Service {
 
       // CORS and Security Headers
       app.use((req, res, next) => {
-        res.header('Access-Control-Allow-Origin', '*')
+        res.header('Access-Control-Allow-Origin', 'https://shakra.io')
         res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         res.header('Access-Control-Allow-Private-Network', 'true')
@@ -298,17 +298,17 @@ export class WindowService implements Service {
       })
     })
 
-    this.mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    this.mainWindow?.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
       console.error('❌ [Main] Page failed to load:', { errorCode, errorDescription, validatedURL })
     })
 
-    this.mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    this.mainWindow?.webContents.on('console-message', (event, level, message, line, sourceId) => {
       if (level >= 2) {
         console.log(`[Renderer ${level === 2 ? 'WARN' : 'ERROR'}]`, message, `(${sourceId}:${line})`)
       }
     })
 
-    this.mainWindow.webContents.once('did-finish-load', () => {
+    this.mainWindow?.webContents.once('did-finish-load', () => {
       console.log('✅ [Main] Page loaded successfully')
       if (this.iconPath && this.mainWindow && !this.mainWindow.isDestroyed()) {
         const setIconAttempts = [0, 100, 300, 500, 1000]
@@ -330,7 +330,7 @@ export class WindowService implements Service {
     })
 
     if (process.platform === 'linux' && this.iconPath) {
-      this.mainWindow.on('focus', () => {
+      this.mainWindow?.on('focus', () => {
         if (this.mainWindow && !this.mainWindow.isDestroyed() && this.iconPath) {
           setTimeout(() => {
             try {
@@ -346,7 +346,7 @@ export class WindowService implements Service {
       })
     }
 
-    this.mainWindow.on('close', (event) => {
+    this.mainWindow?.on('close', (event) => {
       if (process.platform !== 'darwin') {
         event.preventDefault()
         console.log('Window closed, quitting...')
