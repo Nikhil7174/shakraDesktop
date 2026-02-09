@@ -72,7 +72,11 @@ export class ConfigService {
     // Use provided server URL or fallback to default
     // For testing: use localhost:3001
     // For production: use https://crisp-server-n0r1.onrender.com
-    this.serverUrl = serverUrl || process.env.SERVER_URL || 'http://localhost:3001'
+    const defaultUrl = app.isPackaged
+      ? 'https://crisp-server-n0r1.onrender.com'
+      : 'http://localhost:3001'
+
+    this.serverUrl = serverUrl || process.env.SERVER_URL || defaultUrl
     this.encryptionKey = getEncryptionKey()
   }
 
@@ -81,7 +85,7 @@ export class ConfigService {
    */
   setAuthToken(token: string | null): void {
     this.authToken = token
-    
+
     // Clear config on logout
     if (!token) {
       this.config = null
@@ -89,7 +93,7 @@ export class ConfigService {
       this.refreshPromise = null
       return
     }
-    
+
     // If we have token but no config, fetch it (background, non-blocking)
     if (token && !this.config) {
       this.fetchFromServer(token).catch(err => {
@@ -113,7 +117,7 @@ export class ConfigService {
     if (!config.lastFetched) {
       return true // Never fetched = expired
     }
-    
+
     const age = Date.now() - config.lastFetched
     const expirationTime = 23 * 60 * 60 * 1000 // 23 hours
     return age > expirationTime
@@ -165,7 +169,7 @@ export class ConfigService {
     try {
       const configPath = getConfigPath()
       const userDataPath = app.getPath('userData')
-      
+
       // Ensure userData directory exists
       if (!existsSync(userDataPath)) {
         mkdirSync(userDataPath, { recursive: true })
@@ -283,7 +287,7 @@ export class ConfigService {
       livekitApiKey: process.env.LIVEKIT_API_KEY || '',
       livekitApiSecret: process.env.LIVEKIT_API_SECRET || '',
     }
-    
+
     this.config = envConfig
     return envConfig
   }
@@ -314,7 +318,7 @@ export class ConfigService {
       livekitApiKey: process.env.LIVEKIT_API_KEY || '',
       livekitApiSecret: process.env.LIVEKIT_API_SECRET || '',
     }
-    
+
     this.config = envConfig
     return envConfig
   }

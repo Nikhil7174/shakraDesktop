@@ -24,8 +24,8 @@ import dayjs from 'dayjs';
 import { useAuth } from '../hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
 import { colors } from '../styles';
-import { API_BASE_URL } from '../constants/api';
 import { useAppSelector } from '../store';
+import api from '../services/api';
 
 import './CandidateDashboard.css';
 
@@ -50,7 +50,7 @@ interface InterviewAttempt {
 export const CandidateDashboard: React.FC = () => {
   const { user, logout, loading: authLoading } = useAuth();
   const navigate = useNavigate();
-  const { token, isSynced } = useAppSelector((state) => state.auth);
+  const { isSynced } = useAppSelector((state) => state.auth);
 
   console.log('🎯 [CandidateDashboard] Rendering with user:', user?.fullName);
 
@@ -81,45 +81,32 @@ export const CandidateDashboard: React.FC = () => {
         return;
       }
 
-      if (!token) {
-        throw new Error('No authentication token found');
-      }
+      // api instance handles token from localStorage automatically via interceptor
+      console.log('Fetching interviews via Axios...');
 
-      console.log('Fetching interviews with token:', token.substring(0, 20) + '...');
-      console.log('API URL:', `${API_BASE_URL}/auth/interviews`);
-
-      const response = await fetch(`${API_BASE_URL}/auth/interviews`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-      });
+      const response = await api.get('/auth/interviews');
 
       console.log('Response status:', response.status);
-      console.log('Response headers:', Object.fromEntries(response.headers.entries()));
 
-      if (response.ok) {
-        const data = await response.json();
-        console.log('Response data:', data);
-        if (data.success) {
-          setAttempts(data.interviews || []);
-          setLastFetched(new Date());
-          console.log('Successfully fetched', data.interviews?.length || 0, 'interviews');
-        } else {
-          throw new Error(data.error || 'Failed to fetch interviews');
-        }
+      if (response.data.success) {
+        setAttempts(response.data.interviews || []);
+        setLastFetched(new Date());
+        console.log('Successfully fetched', response.data.interviews?.length || 0, 'interviews');
       } else {
-        const errorText = await response.text();
-        console.error('API Error:', response.status, errorText);
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
+        throw new Error(response.data.error || 'Failed to fetch interviews');
       }
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to fetch interviews';
+    } catch (err: any) {
+      console.error('API Error:', err);
+      const errorMessage = err.response?.data?.message || err.message || 'Failed to fetch interviews';
       setError(errorMessage);
+      // Handle 401 specifically if needed, though interceptor might do it
+      if (err.response?.status === 401) {
+        console.warn('Unauthorized access - token might be invalid/expired');
+      }
     } finally {
       setLoading(false);
     }
-  }, [token, isSynced]); // Include token and isSynced in dependency array
+  }, [isSynced]); // Reduced dependencies as token is handled internally by api interceptor
 
   // Manual refetch function
   const refetch = useCallback(() => {
@@ -133,11 +120,11 @@ export const CandidateDashboard: React.FC = () => {
 
   // Listen for auth sync completion
   useEffect(() => {
-    if (isSynced && token) {
+    if (isSynced) {
       console.log('✨ [CandidateDashboard] Auth synced, fetching data...');
       fetchAttempts();
     }
-  }, [isSynced, token, fetchAttempts]);
+  }, [isSynced, fetchAttempts]);
   useEffect(() => {
     const handleRefresh = () => {
       console.log('🔄 Dashboard refresh triggered');

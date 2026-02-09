@@ -133,7 +133,7 @@ export class WindowService implements Service {
       fullscreen: false,
       maximizable: true,
       resizable: true,
-      autoHideMenuBar: true,
+      // autoHideMenuBar: true,
       webPreferences: {
         preload: join(__dirname, '../preload/index.js'),
         nodeIntegration: false,
@@ -225,7 +225,19 @@ export class WindowService implements Service {
 
       // CORS and Security Headers
       app.use((req, res, next) => {
-        res.header('Access-Control-Allow-Origin', 'https://shakra.io')
+        const allowedOrigins = [
+          'https://shakra.io',
+          'https://www.shakra.io',
+        ];
+        const origin = req.headers.origin;
+        if (origin && allowedOrigins.includes(origin)) {
+          res.header('Access-Control-Allow-Origin', origin);
+        } else {
+          // Default to main domain if no match or no origin (though browsers won't like it for mismatch)
+          // or just don't set it, effectively blocking it
+          // For now, let's just default to the most critical one if it's missing, or maybe shakra.io
+          res.header('Access-Control-Allow-Origin', 'https://shakra.io');
+        }
         res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
         res.header('Access-Control-Allow-Private-Network', 'true')

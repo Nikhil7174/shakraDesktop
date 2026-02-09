@@ -111,7 +111,11 @@ const interviewAPI = {
 
   // Deep Link
   onDeepLink: (callback: (url: string) => void) => {
-    ipcRenderer.on('deep-link', (_event, url) => callback(url))
+    const subscription = (_event: any, url: string) => callback(url)
+    ipcRenderer.on('deep-link', subscription)
+    return () => {
+      ipcRenderer.removeListener('deep-link', subscription)
+    }
   },
   openExternal: (url: string) => ipcRenderer.send('open-external', url)
 }

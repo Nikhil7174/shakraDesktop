@@ -56,7 +56,7 @@ const App: React.FC = () => {
     // @ts-ignore
     if (window.electronAPI?.onDeepLink) {
       // @ts-ignore
-      window.electronAPI.onDeepLink(async (url: string) => {
+      const cleanup = window.electronAPI.onDeepLink(async (url: string) => {
         try {
           console.log("📢 [Renderer] Received deep link:", url);
 
@@ -112,6 +112,12 @@ const App: React.FC = () => {
           console.error("📢 [Renderer] Deep link auth error:", err);
         }
       });
+
+      return () => {
+        if (typeof cleanup === 'function') {
+          cleanup();
+        }
+      };
     }
   }, [isLoaded, signIn, isSignedIn]);
 

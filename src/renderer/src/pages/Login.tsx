@@ -1,11 +1,21 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { Spin } from 'antd';
+import { LoadingOutlined } from '@ant-design/icons';
 import icon from '../assets/icon.png';
+import { useAuth } from '../hooks/useAuth';
 
 export const Login: React.FC = () => {
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const { loading: authLoading, isAuthenticated } = useAuth();
+
+  // If auth is loading or we are authenticated (waiting for redirect), show loader
+  const isLoading = isLoggingIn || authLoading || isAuthenticated;
+
   const handleLogin = () => {
+    setIsLoggingIn(true);
     // Redirect to local web client's dedicated desktop login page
     // This page enforces candidate role and redirects to deep link
-    const webClientUrl = 'http://localhost:5173/auth/desktop-login';
+    const webClientUrl = 'https://shakra.io/auth/desktop-login';
 
     // @ts-ignore
     if (window.electronAPI?.openExternal) {
@@ -15,6 +25,14 @@ export const Login: React.FC = () => {
       console.warn('openExternal not available');
       window.location.href = webClientUrl;
     }
+
+    // Reset button state after a delay if user cancels/fails to login, 
+    // but keep it loading long enough for the browser flow to start
+    setTimeout(() => {
+      // We generally want to keep showing loading if the user is actually logging in via browser
+      // But if they just close the browser, we might want to reset?
+      // For now, let's keep it 'loading' to indicate "Check your browser"
+    }, 5000);
   };
 
   return (
@@ -86,33 +104,42 @@ export const Login: React.FC = () => {
         `}
       </style>
 
-      <button
-        onClick={handleLogin}
-        style={{
-          marginTop: '2rem',
-          backgroundColor: '#2d333b',
-          color: 'white',
-          fontWeight: '600',
-          height: '36px',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '8px 20px',
-          borderRadius: '6px',
-          border: '1px solid rgba(255,255,255,0.1)',
-          cursor: 'pointer',
-          transition: 'all 0.2s',
-          fontSize: '14px',
-          boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
-        }}
-        onMouseOver={(e) => {
-          e.currentTarget.style.backgroundColor = '#373e47';
-        }}
-        onMouseOut={(e) => {
-          e.currentTarget.style.backgroundColor = '#2d333b';
-        }}
-      >
-        Sign In
-      </button>
+      {isLoading ? (
+        <div style={{ marginTop: '2rem', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
+          <Spin indicator={<LoadingOutlined style={{ fontSize: 24, color: '#fff' }} spin />} />
+          <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: '14px' }}>
+            {isAuthenticated ? 'Redirecting...' : 'Signing you in...'}
+          </span>
+        </div>
+      ) : (
+        <button
+          onClick={handleLogin}
+          style={{
+            marginTop: '2rem',
+            backgroundColor: '#2d333b',
+            color: 'white',
+            fontWeight: '600',
+            height: '36px',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '8px 20px',
+            borderRadius: '6px',
+            border: '1px solid rgba(255,255,255,0.1)',
+            cursor: 'pointer',
+            transition: 'all 0.2s',
+            fontSize: '14px',
+            boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+          }}
+          onMouseOver={(e) => {
+            e.currentTarget.style.backgroundColor = '#373e47';
+          }}
+          onMouseOut={(e) => {
+            e.currentTarget.style.backgroundColor = '#2d333b';
+          }}
+        >
+          Sign In
+        </button>
+      )}
     </div>
   );
 };

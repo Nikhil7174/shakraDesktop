@@ -97,7 +97,7 @@ app.whenReady().then(async () => {
         ...details.responseHeaders,
         'Content-Security-Policy': [
           "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; " +
-          "connect-src 'self' http://localhost:42424 https://localhost:42424 https://crisp-server-n0r1.onrender.com https://cdn.jsdelivr.net https://storage.googleapis.com https://*.livekit.cloud wss://*.livekit.cloud ws://*.livekit.cloud https://*.clerk.accounts.dev https://clerk-telemetry.com; " +
+          "connect-src 'self' http://localhost:42424 https://localhost:42424 http://localhost:3001 https://crisp-server-n0r1.onrender.com https://cdn.jsdelivr.net https://storage.googleapis.com https://*.livekit.cloud wss://*.livekit.cloud ws://*.livekit.cloud https://*.clerk.accounts.dev https://clerk-telemetry.com; " +
           "img-src 'self' data: https:; " +
           "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com https://*.clerk.accounts.dev; " +
           "script-src-elem 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://storage.googleapis.com https://*.clerk.accounts.dev; " +

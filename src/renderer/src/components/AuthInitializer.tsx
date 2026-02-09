@@ -2,12 +2,17 @@ import React, { useEffect } from 'react';
 import { useAuth as useClerkAuth, useUser } from '@clerk/clerk-react';
 import { useAppDispatch } from '../store';
 import { loginSuccess, logout, setAuthSynced } from '../store/slices/authSlice';
-import api from '../services/api';
+import api, { setTokenGetter } from '../services/api';
 
 export const AuthInitializer: React.FC = () => {
   const { isSignedIn, user, isLoaded } = useUser();
   const { getToken } = useClerkAuth();
   const dispatch = useAppDispatch();
+
+  // Inject getToken into API service for just-in-time refresh
+  useEffect(() => {
+    setTokenGetter(getToken);
+  }, [getToken]);
 
   useEffect(() => {
     const syncAuth = async () => {

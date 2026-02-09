@@ -125,6 +125,44 @@ export class InterviewService implements Service {
       }
     })
 
+    // Config Handlers
+    ipcMain.handle('fetch-config', async (_event, authToken) => {
+      try {
+        return await this.configService.fetchFromServer(authToken)
+      } catch (error) {
+        console.error('❌ [Interview] Fetch config error:', error)
+        return { success: false, error: String(error) }
+      }
+    })
+
+    ipcMain.handle('get-config', async () => {
+      try {
+        return await this.configService.getConfig()
+      } catch (error) {
+        console.error('❌ [Interview] Get config error:', error)
+        return null
+      }
+    })
+
+    ipcMain.handle('refresh-config', async (_event, authToken) => {
+      try {
+        return await this.configService.refresh(authToken)
+      } catch (error) {
+        console.error('❌ [Interview] Refresh config error:', error)
+        return null
+      }
+    })
+
+    ipcMain.handle('set-auth-token', async (_event, token) => {
+      try {
+        this.configService.setAuthToken(token)
+        return true
+      } catch (error) {
+        console.error('❌ [Interview] Set auth token error:', error)
+        return false
+      }
+    })
+
     console.log('✓ Interview IPC handlers registered')
   }
 }
