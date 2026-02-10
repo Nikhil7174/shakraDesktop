@@ -133,7 +133,7 @@ export class WindowService implements Service {
       fullscreen: false,
       maximizable: true,
       resizable: true,
-      // autoHideMenuBar: true,
+      autoHideMenuBar: true,
       webPreferences: {
         preload: join(__dirname, '../preload/index.js'),
         nodeIntegration: false,
