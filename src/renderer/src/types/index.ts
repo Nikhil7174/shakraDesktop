@@ -32,6 +32,7 @@ export interface AuthState {
   isAuthenticated: boolean;
   loading: boolean;
   error: string | null;
+  isSynced: boolean; // Indicates if auth state has been synced with backend/Clerk on startup
 }
 
 export interface ResumeData {
@@ -113,11 +114,11 @@ export interface StoredSession {
   timestamp: number;
   lastActivity: number;
   sessionType: 'new' | 'interrupted' | 'completed';
-  
+
   // Resume data
   resumeData?: ResumeData;
   detailedResumeData?: DetailedResumeData;
-  
+
   // Interview data (flattened from currentSession)
   status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
   questions?: Question[]; // Optional - session might be created before questions are generated
@@ -127,10 +128,10 @@ export interface StoredSession {
   duration?: number;
   score?: number;
   summary?: string;
-  
+
   // Chat messages
   chatMessages?: ChatMessage[]; // Optional - new sessions might not have chat messages yet
-  
+
   // Additional metadata
   candidateId?: string;
   success?: boolean;
@@ -164,7 +165,7 @@ export interface InterviewSession {
   timestamp?: number;
   lastActivity?: number;
   chatMessages?: ChatMessage[];
-  
+
   // Enhanced session tracking
   currentStep?: 'upload' | 'info' | 'interview' | 'completed';
   lastUserInteraction?: number; // Timestamp of last user action

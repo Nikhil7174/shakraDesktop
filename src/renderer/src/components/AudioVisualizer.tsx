@@ -3,12 +3,14 @@ import React, { useEffect, useRef, useState } from 'react'
 interface AudioVisualizerProps {
   isListening: boolean
   isSpeaking: boolean
+  isMuted?: boolean
   audioData?: Uint8Array
 }
 
 export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
   isListening,
   isSpeaking,
+  isMuted = false,
   audioData
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -30,7 +32,7 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
       ctx.fillStyle = 'rgba(0, 0, 0, 0.1)'
       ctx.fillRect(0, 0, width, height)
 
-      if (isListening || isSpeaking) {
+      if ((isListening || isSpeaking) && !isMuted) {
         // Create audio visualization
         const barCount = 32
         const barWidth = width / barCount
@@ -38,8 +40,8 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
 
         for (let i = 0; i < barCount; i++) {
           // Simulate audio data if not provided
-          const audioValue = audioData ? 
-            (audioData[i] || 0) / 255 : 
+          const audioValue = audioData ?
+            (audioData[i] || 0) / 255 :
             Math.random() * (isListening ? 0.8 : 0.6)
 
           const barHeight = audioValue * maxBarHeight
@@ -48,26 +50,26 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
 
           // Create gradient
           const gradient = ctx.createLinearGradient(0, y, 0, height)
-          if (isListening) {
-            gradient.addColorStop(0, '#4caf50')
-            gradient.addColorStop(1, '#2e7d32')
-          } else if (isSpeaking) {
+          if (isSpeaking) {
             gradient.addColorStop(0, '#2196f3')
             gradient.addColorStop(1, '#1565c0')
+          } else if (isListening) {
+            gradient.addColorStop(0, '#4caf50')
+            gradient.addColorStop(1, '#2e7d32')
           }
 
           ctx.fillStyle = gradient
           ctx.fillRect(x, y, barWidth - 2, barHeight)
 
           // Add glow effect
-          ctx.shadowColor = isListening ? '#4caf50' : '#2196f3'
+          ctx.shadowColor = isSpeaking ? '#2196f3' : '#4caf50'
           ctx.shadowBlur = 10
           ctx.fillRect(x, y, barWidth - 2, barHeight)
           ctx.shadowBlur = 0
         }
 
         // Update audio level for pulse effect
-        const currentLevel = audioData ? 
+        const currentLevel = audioData ?
           Array.from(audioData).reduce((sum, val) => sum + val, 0) / audioData.length / 255 :
           Math.random() * 0.5 + 0.3
         setAudioLevel(currentLevel)
@@ -83,15 +85,17 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
         cancelAnimationFrame(animationFrameRef.current)
       }
     }
-  }, [isListening, isSpeaking, audioData])
+  }, [isListening, isSpeaking, isMuted, audioData])
 
   const getStatusText = () => {
-    if (isSpeaking) return 'AI Speaking'
+    if (isMuted) return 'Muted'
+    if (isSpeaking) return 'Interviewer'
     if (isListening) return 'Listening...'
     return 'Ready'
   }
 
   const getStatusColor = () => {
+    if (isMuted) return '#666666'
     if (isSpeaking) return '#2196f3'
     if (isListening) return '#4caf50'
     return '#666666'
@@ -107,7 +111,7 @@ export const AudioVisualizer: React.FC<AudioVisualizerProps> = ({
           className="visualizer-canvas"
         />
         <div className="status-indicator">
-          <div 
+          <div
             className="status-dot"
             style={{
               backgroundColor: getStatusColor(),

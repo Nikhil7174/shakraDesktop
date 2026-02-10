@@ -5,6 +5,7 @@ import { CodingProblem } from '../../../shared/types'
 interface CodeEditorProps {
   problem: CodingProblem
   onCodeChange?: (code: string) => void
+  onNotepadChange?: (notepad: string) => void
   onAnalysisRequest?: (code: string, problemId: string) => void
   onSubmit?: (code: string, timeComplexity?: string, spaceComplexity?: string) => void
   isMonitoring?: boolean
@@ -20,6 +21,7 @@ interface CodeEditorProps {
 export const CodeEditor: React.FC<CodeEditorProps> = ({
   problem,
   onCodeChange,
+  onNotepadChange,
   onAnalysisRequest,
   onSubmit,
   isMonitoring = true,
@@ -40,14 +42,17 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   const [isEditorReady, setIsEditorReady] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [selectedLanguage, setSelectedLanguage] = useState<string>(problem.language || 'cpp')
+  const [activeTab, setActiveTab] = useState<'code' | 'notepad'>('code')
+  const [notepadContent, setNotepadContent] = useState('')
   // Initialize timer state - only reset when problem.id changes
   const [timeRemaining, setTimeRemaining] = useState<number>(getTimeLimit(problem.difficulty))
-  
+
   // Reset timer only when problem.id changes (not on every render)
   useEffect(() => {
     if (showTimer && !readOnly) {
       setTimeRemaining(getTimeLimit(problem.difficulty))
     }
+    setNotepadContent('') // Reset notepad content for new problem
   }, [problem.id]) // Only reset when problem.id changes
 
   // Available languages
@@ -164,7 +169,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
     }
 
     console.log('⏰ [CodeEditor] Starting 60-second timer')
-    
+
     // Send code every 60 seconds
     monitoringIntervalRef.current = setInterval(() => {
       if (monacoEditorRef.current) {
@@ -222,10 +227,10 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   // Preserve user's language choice if the new problem supports it, otherwise reset to problem's default
   useEffect(() => {
     const problemDefaultLanguage = problem.language || 'cpp'
-    
+
     // Check if current selected language has starter code in the new problem
     const hasStarterCodeForSelectedLang = problem.starterCodes && problem.starterCodes[selectedLanguage]
-    
+
     // If selected language doesn't have starter code in new problem, reset to problem's default
     if (!hasStarterCodeForSelectedLang && selectedLanguage !== problemDefaultLanguage) {
       setSelectedLanguage(problemDefaultLanguage)
@@ -235,7 +240,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   // Update editor content when problem or selected language changes
   useEffect(() => {
     if (!monacoEditorRef.current) return
-    
+
     // Get starter code for the selected language
     const getStarterCode = () => {
       if (problem.starterCodes && problem.starterCodes[selectedLanguage]) {
@@ -243,7 +248,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       }
       return problem.starterCode || ''
     }
-    
+
     const starterCode = getStarterCode()
     if (starterCode) {
       const currentValue = monacoEditorRef.current.getValue()
@@ -265,10 +270,10 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       console.log('⚠️ [CodeEditor] Editor not ready, cannot change language')
       return
     }
-    
+
     console.log('🔄 [CodeEditor] Changing language from', selectedLanguage, 'to', newLanguage)
     setSelectedLanguage(newLanguage)
-    
+
     // Get starter code for the new language
     let newStarterCode = ''
     if (problem.starterCodes && problem.starterCodes[newLanguage]) {
@@ -281,17 +286,17 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       newStarterCode = ''
       console.log('⚠️ [CodeEditor] No starter code available for', newLanguage)
     }
-    
+
     // Get current code to check if user has modified it
     const currentCode = monacoEditorRef.current.getValue()
     // Get the starter code for the OLD language (before change) to compare
     const oldStarterCode = problem.starterCodes?.[selectedLanguage] || problem.starterCode || ''
-    
+
     // Check if current code matches the old starter code (user hasn't modified it)
-    const isUnmodified = currentCode.trim() === '' || 
-                         currentCode.trim() === oldStarterCode.trim() ||
-                         (oldStarterCode === '' && currentCode.trim() === '')
-    
+    const isUnmodified = currentCode.trim() === '' ||
+      currentCode.trim() === oldStarterCode.trim() ||
+      (oldStarterCode === '' && currentCode.trim() === '')
+
     if (isUnmodified || newStarterCode === '') {
       // User hasn't started coding, hasn't modified, or no starter code available - safe to replace
       console.log('✅ [CodeEditor] Replacing code with new language starter code')
@@ -332,7 +337,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         return
       }
     }
-    
+
     // Update editor language (syntax highlighting)
     const model = monacoEditorRef.current.getModel()
     if (model) {
@@ -404,7 +409,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
             glyphMarginClassName: 'highlight-glyph'
           }
         }])
-        
+
         // Remove highlight after 3 seconds
         setTimeout(() => {
           monacoEditorRef.current?.deltaDecorations(decoration, [])
@@ -418,8 +423,8 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       const model = monacoEditorRef.current.getModel()
       if (model) {
         const markerSeverity = severity === 'error' ? monaco.MarkerSeverity.Error :
-                              severity === 'warning' ? monaco.MarkerSeverity.Warning :
-                              monaco.MarkerSeverity.Info
+          severity === 'warning' ? monaco.MarkerSeverity.Warning :
+            monaco.MarkerSeverity.Info
 
         monaco.editor.setModelMarkers(model, 'interview', [{
           startLineNumber: lineNumber,
@@ -445,7 +450,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   // Handle submit button click
   const handleSubmit = useCallback(async () => {
     if (!monacoEditorRef.current || !onSubmit || isSubmitting) return
-    
+
     // Read code directly from editor (like we always do)
     const code = monacoEditorRef.current.getValue()
     if (!code.trim()) {
@@ -458,7 +463,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
     const timeComplexityValue = timeComplexityInputRef.current?.value?.trim() || undefined
     const spaceComplexityValue = spaceComplexityInputRef.current?.value?.trim() || undefined
 
-    console.log('📝 [CodeEditor] Submitting - reading from inputs:', { 
+    console.log('📝 [CodeEditor] Submitting - reading from inputs:', {
       codeLength: code.length,
       timeComplexity: timeComplexityValue || 'NOT PROVIDED',
       spaceComplexity: spaceComplexityValue || 'NOT PROVIDED'
@@ -502,27 +507,31 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
       <div className="coding-layout">
         {/* Left Column: Question Description */}
         <div className="question-panel">
-        <div className="question-header">
-          <h3>{problem.title}</h3>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            {showTimer && !readOnly && (
-              <div className="timer-display">
-                <span className="timer-icon">⏱️</span>
-                <span>{formatTime(timeRemaining)}</span>
-              </div>
-            )}
-            {isMonitoring && (
-              <span className="monitoring-indicator">
-                <div className="pulse-dot"></div>
-                Monitoring
-              </span>
-            )}
+          <div className="question-header">
+            <h3>{problem.title || (problem as any).question?.split('.')[0] || 'Coding Problem'}</h3>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+              {showTimer && !readOnly && (
+                <div className="timer-display">
+                  <svg className="timer-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 8V12L15 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" />
+                    <path d="M10 2H14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                  </svg>
+                  <span>{formatTime(timeRemaining)}</span>
+                </div>
+              )}
+              {isMonitoring && (
+                <span className="monitoring-indicator">
+                  <div className="pulse-dot"></div>
+                  Monitoring
+                </span>
+              )}
+            </div>
           </div>
-        </div>
           <div className="question-content">
             <div className="question-section">
               <h4>Problem Description</h4>
-              <p>{problem.description}</p>
+              <p>{problem.description || (problem as any).problemStatement || (problem as any).instructions || (problem as any).question || ''}</p>
             </div>
             {problem.constraints && (
               <div className="question-section">
@@ -565,65 +574,105 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           </div>
         </div>
 
-        {/* Right Column: Code Editor */}
+        {/* Right Column: Editor Panel */}
         <div className="editor-panel">
+          {/* Editor Header with Tabs */}
           <div className="editor-header">
-            <div className="editor-controls">
-              <select 
-                className="language-selector"
-                value={selectedLanguage}
-                onChange={(e) => handleLanguageChange(e.target.value)}
-                disabled={readOnly}
+            <div className="editor-tabs">
+              <button
+                className={`editor-tab ${activeTab === 'code' ? 'active' : ''}`}
+                onClick={() => setActiveTab('code')}
               >
-                {availableLanguages.map(lang => (
-                  <option key={lang} value={lang}>
-                    {lang === 'cpp' ? 'C++' : 
-                     lang === 'python' ? 'Python 3' : 
-                     lang === 'java' ? 'Java' : 
-                     'JavaScript'}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <div 
-            ref={editorRef} 
-            className="monaco-editor"
-            style={{ height: 'calc(100vh - 200px)', width: '100%' }}
-          />
-          {onSubmit && !readOnly && (
-            <div className="code-editor-footer">
-              <div className="complexity-inputs">
-                <div className="complexity-input">
-                  <label htmlFor="time-complexity">Time Complexity</label>
-                  <input
-                    ref={timeComplexityInputRef}
-                    id="time-complexity"
-                    type="text"
-                    placeholder="e.g. O(n log n)"
-                    value={timeComplexity}
-                    onChange={(e) => onTimeComplexityChange?.(e.target.value)}
-                  />
-                </div>
-                <div className="complexity-input">
-                  <label htmlFor="space-complexity">Space Complexity</label>
-                  <input
-                    ref={spaceComplexityInputRef}
-                    id="space-complexity"
-                    type="text"
-                    placeholder="e.g. O(n)"
-                    value={spaceComplexity}
-                    onChange={(e) => onSpaceComplexityChange?.(e.target.value)}
-                  />
-                </div>
-              </div>
-              <button 
-                className="submit-button"
-                onClick={handleSubmit}
-                disabled={isSubmitting}
-              >
-                {isSubmitting ? 'Submitting...' : 'Submit Solution'}
+                Code
               </button>
+              <button
+                className={`editor-tab ${activeTab === 'notepad' ? 'active' : ''}`}
+                onClick={() => setActiveTab('notepad')}
+              >
+                Notepad
+              </button>
+            </div>
+
+            {activeTab === 'code' && (
+              <div className="editor-controls">
+                <select
+                  className="language-selector"
+                  value={selectedLanguage}
+                  onChange={(e) => handleLanguageChange(e.target.value)}
+                  disabled={readOnly}
+                >
+                  {availableLanguages.map(lang => (
+                    <option key={lang} value={lang}>
+                      {lang === 'cpp' ? 'C++' :
+                        lang === 'python' ? 'Python 3' :
+                          lang === 'java' ? 'Java' :
+                            'JavaScript'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
+          {/* Code Editor View */}
+          <div style={{ display: activeTab === 'code' ? 'flex' : 'none', flexDirection: 'column', flex: 1, overflow: 'hidden', minHeight: 0 }}>
+            <div className="monaco-wrapper" style={{ flex: 1, minHeight: 0, width: '100%' }}>
+              <div
+                ref={editorRef}
+                className="monaco-editor"
+                style={{ height: 'calc(100% - 40px)', width: '100%' }}
+              />
+            </div>
+            {onSubmit && !readOnly && (
+              <div className="code-editor-footer">
+                <div className="complexity-inputs">
+                  <div className="complexity-input">
+                    <label htmlFor="time-complexity">Time Complexity</label>
+                    <input
+                      ref={timeComplexityInputRef}
+                      id="time-complexity"
+                      type="text"
+                      placeholder="e.g. O(n log n)"
+                      value={timeComplexity}
+                      onChange={(e) => onTimeComplexityChange?.(e.target.value)}
+                    />
+                  </div>
+                  <div className="complexity-input">
+                    <label htmlFor="space-complexity">Space Complexity</label>
+                    <input
+                      ref={spaceComplexityInputRef}
+                      id="space-complexity"
+                      type="text"
+                      placeholder="e.g. O(n)"
+                      value={spaceComplexity}
+                      onChange={(e) => onSpaceComplexityChange?.(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <button
+                  className="submit-button"
+                  onClick={handleSubmit}
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? 'Submitting...' : 'Submit Solution'}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Notepad View */}
+          {activeTab === 'notepad' && (
+            <div className="notepad-container">
+              <textarea
+                className="notepad-textarea"
+                placeholder="Use this space for scratchpad notes, pseudocode, or thinking through the problem."
+                value={notepadContent}
+                onChange={(e) => {
+                  setNotepadContent(e.target.value)
+                  onNotepadChange?.(e.target.value)
+                }}
+                disabled={readOnly}
+              />
             </div>
           )}
         </div>
@@ -635,6 +684,8 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           display: flex;
           flex-direction: column;
           background: #1e1e1e;
+          border-radius: 12px;
+          overflow: hidden;
         }
         
         .coding-layout {
@@ -652,15 +703,18 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           display: flex;
           flex-direction: column;
           overflow: hidden;
+          border-top-left-radius: 12px;
+          border-bottom-left-radius: 12px;
         }
         
         .question-header {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          padding: 16px 16px;
+          padding: 12px 16px;
           background: #2d2d30;
           border-bottom: 1px solid #333;
+          border-top-left-radius: 12px;
         }
         
         .question-header h3 {
@@ -677,10 +731,14 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           font-size: 16px;
           font-weight: 600;
           color: ${timeRemaining > 300 ? '#4caf50' : timeRemaining > 60 ? '#ff9800' : '#f44336'};
+          min-width: 80px;
+          font-variant-numeric: tabular-nums;
         }
         
         .timer-icon {
-          font-size: 18px;
+          width: 18px;
+          height: 18px;
+          flex-shrink: 0;
         }
         
         .question-content {
@@ -760,21 +818,78 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
           flex-direction: column;
           background: #1e1e1e;
           overflow: hidden;
+          border-top-right-radius: 12px;
+          border-bottom-right-radius: 12px;
         }
         
         .editor-header {
           display: flex;
-          justify-content: flex-end;
+          justify-content: space-between;
           align-items: center;
-          padding: 16px 16px;
           background: #2d2d30;
           border-bottom: 1px solid #333;
+          height: 52px;
+          border-top-right-radius: 12px;
+        }
+
+        .editor-tabs {
+          display: flex;
+          height: 100%;
+          align-items: flex-end; 
+          padding-left: 16px; 
+        }
+
+        .editor-tab {
+          background: transparent;
+          color: #969696;
+          border: none;
+          padding: 10px 16px; /* Added top/bottom padding to center vertically or position correctly */
+          height: 100%;
+          cursor: pointer;
+          font-size: 13px;
+          outline: none;
+          border-bottom: 2px solid transparent; /* Use bottom border for active state to look cleaner */
+          display: flex;
+          align-items: center;
+        }
+
+        .editor-tab:hover {
+          color: #e0e0e0;
+        }
+
+        .editor-tab.active {
+          color: #ffffff;
+          border-bottom: 2px solid #007acc; 
+          border-right: none;
+          border-top: none; 
+          /* Removing previous borders to look more like standard tabs */
+        }
+        
+        .notepad-container {
+          flex: 1;
+          display: flex;
+          background: #1e1e1e;
+          overflow: hidden;
+        }
+
+        .notepad-textarea {
+          flex: 1;
+          background: #1e1e1e;
+          color: #d4d4d4;
+          border: none;
+          resize: none;
+          padding: 16px;
+          font-family: 'Consolas', 'Courier New', monospace;
+          font-size: 14px;
+          line-height: 1.5;
+          outline: none;
         }
         
         .editor-controls {
           display: flex;
           align-items: center;
           gap: 12px;
+          padding-right: 16px;
         }
         
         .language-selector {
@@ -985,7 +1100,7 @@ function getMonacoLanguage(language: string): string {
     'yaml': 'yaml',
     'markdown': 'markdown'
   }
-  
+
   return languageMap[language.toLowerCase()] || 'plaintext'
 }
 

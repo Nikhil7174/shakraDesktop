@@ -5,11 +5,10 @@ import { LinkOutlined, UserOutlined, LeftOutlined } from '@ant-design/icons';
 import { colors, spacing } from '../styles';
 import { useAppDispatch, useAppSelector } from '../store';
 import { useNavigate, useLocation } from 'react-router-dom';
-// import { loginSuccess } from '../store/slices/authSlice';
-import { setCurrentSession } from '../store/slices/interviewSlice';
+import { startInterviewAsync } from '../store/slices/interviewSlice';
 import { API_BASE_URL } from '../constants/api';
 import { extractToken, extractTokenFromHash, extractTokenFromSearch } from '../utils/tokenExtractor';
-import { RestartModal } from '../components/interview/RestartModal';
+
 import axios from 'axios';
 
 const { Title, Paragraph, Text } = Typography;
@@ -25,7 +24,7 @@ export const JoinInterview: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [validating, setValidating] = useState(false);
   const [linkInfo, setLinkInfo] = useState<any>(null);
-  const [showRestartModal, setShowRestartModal] = useState(false);
+
 
   const handleBack = () => {
     const from = (location.state as any)?.from;
@@ -41,22 +40,22 @@ export const JoinInterview: React.FC = () => {
     // For Electron apps, we need to handle hash-based routing
     const hash = window.location.hash;
     const search = window.location.search;
-    
+
     let token: string | null = null;
-    
+
     // Try to get token from search parameters first
     token = extractTokenFromSearch(search);
-    
+
     // If not found in search, try to extract from hash
     if (!token) {
       token = extractTokenFromHash(hash);
     }
-    
+
     // Debug logging (can be removed in production)
     // console.log('URL hash:', hash);
     // console.log('URL search:', search);
     // console.log('Extracted token:', token);
-    
+
     if (token) {
       setLinkToken(token);
       handleValidateLink(token);
@@ -77,15 +76,6 @@ export const JoinInterview: React.FC = () => {
       return;
     }
 
-    // Check if an interview was completed in this app session
-    const interviewCompleted = sessionStorage.getItem('interviewCompletedInSession');
-    
-    if (interviewCompleted === 'true') {
-      // Show modal to prevent validating link
-      setShowRestartModal(true);
-      return;
-    }
-
     // Extract just the token from the input (in case full URL is provided)
     const cleanToken = extractToken(token);
 
@@ -93,11 +83,11 @@ export const JoinInterview: React.FC = () => {
     // console.log('Original token:', token);
     // console.log('Cleaned token:', cleanToken);
     // console.log('API URL:', `${API_BASE_URL}/interview/link/${cleanToken}`);
-    
+
     setValidating(true);
     try {
       const response = await axios.get(`${API_BASE_URL}/interview/link/${cleanToken}`);
-      
+
       if (response.data.success) {
         // Server returns 'link' not 'linkInfo', and we need to add the token
         setLinkInfo({ ...response.data.link, token: cleanToken });
@@ -125,7 +115,7 @@ export const JoinInterview: React.FC = () => {
 
     try {
       setLoading(true);
-      
+
       const candidateData = {
         id: user?.id,
         email: user?.email,
@@ -135,29 +125,19 @@ export const JoinInterview: React.FC = () => {
         detailedResumeData: detailedResumeData,
       };
 
-      const response = await axios.post(`${API_BASE_URL}/interview/start`, {
+      // Use centralized async thunk - single source of truth
+      const result = await dispatch(startInterviewAsync({
         candidateData,
         linkToken: linkInfo.token
-      }, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('authToken')}`
-        }
-      });
+      })).unwrap();
 
-      if (response.data.success) {
-        const session = response.data;
-        
-        console.log('Interview started successfully, session data:', session);
-        
-        // Save session to Redux
-        dispatch(setCurrentSession(session));
-        
-        message.success('Interview started successfully!');
-        // Navigate to interview chat (new flow with resume upload)
-        navigate('/interview', { state: { fromLink: true, sessionId: session.sessionId } });
-      }
+      console.log('🚀 [JoinInterview] Interview started via async thunk');
+
+      message.success('Interview started successfully!');
+      // Navigate to interview chat (new flow with resume upload)
+      navigate('/interview', { state: { fromLink: true, sessionId: result.sessionId } });
     } catch (error: any) {
-      message.error(error.response?.data?.message || 'Failed to start interview');
+      message.error(error.message || 'Failed to start interview');
     } finally {
       setLoading(false);
     }
@@ -170,20 +150,21 @@ export const JoinInterview: React.FC = () => {
       alignItems: 'center',
       justifyContent: 'center',
       backgroundColor: colors.background.secondary,
-      padding: spacing.lg
+      padding: spacing.lg,
+      position: 'relative'
     }}>
+      <div style={{ position: 'absolute', top: 24, left: 24 }}>
+        <Button type="text" onClick={handleBack} icon={<LeftOutlined />} style={{ padding: '0 8px' }}>
+          Back
+        </Button>
+      </div>
       <Card style={{ maxWidth: 500, width: '100%' }}>
-        <div style={{ marginBottom: spacing.md }}>
-          <Button type="text" onClick={handleBack} icon={<LeftOutlined />} style={{ padding: 0 }}>
-            Back
-          </Button>
-        </div>
         <Space direction="vertical" size="large" style={{ width: '100%' }}>
           <div style={{ textAlign: 'center' }}>
-            <UserOutlined style={{ fontSize: 48, color: colors.primary.main }} />
+            <UserOutlined style={{ fontSize: 48, color: colors.primary.main, marginBottom: spacing.sm }} />
             <Title level={2}>Join Interview</Title>
             <Paragraph>
-              Enter your interview link to get started with your AI interview session.
+              Enter your interview link to start the interview.
             </Paragraph>
           </div>
 
@@ -242,11 +223,6 @@ export const JoinInterview: React.FC = () => {
         </Space>
       </Card>
 
-      {/* Restart App Modal */}
-      <RestartModal
-        open={showRestartModal}
-        onClose={() => setShowRestartModal(false)}
-      />
     </div>
   );
 };

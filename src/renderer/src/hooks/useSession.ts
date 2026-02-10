@@ -1,12 +1,11 @@
 // src/hooks/useSession.ts
 // Redux-only session management hook - replaces SessionManager
-import { useCallback, useMemo, useState, useEffect } from 'react';
+import { useCallback } from 'react';
 import { useAppDispatch, useAppSelector } from '../store';
-import { 
-  setCurrentSession, 
-  updateSession, 
-  setChatMessages, 
-  setResumeData, 
+import {
+  updateSession,
+  setChatMessages,
+  setResumeData,
   setDetailedResumeData,
   restoreSession,
   clearSession,
@@ -17,153 +16,21 @@ import type { StoredSession, InterviewSession, ResumeData, DetailedResumeData, C
 
 export const useSession = () => {
   const dispatch = useAppDispatch();
-  const { 
-    currentSession, 
-    chatMessages, 
-    resumeData, 
+  const {
+    currentSession,
+    chatMessages,
+    resumeData,
     detailedResumeData,
-    sessionHistory 
+    sessionHistory
   } = useAppSelector(state => state.interview);
 
-  // Page visibility tracking
-  const [pageVisibility, setPageVisibility] = useState(!document.hidden);
-  const [wasPageHidden, setWasPageHidden] = useState(false);
-  const [hasUserInteracted, setHasUserInteracted] = useState(false);
-  const [isActivelyInInterview, setIsActivelyInInterview] = useState(false);
-  
-  // More accurate page reload detection
-  const isPageReload = useMemo(() => {
-    // Check if page was reloaded using Performance Navigation API
-    if (typeof performance !== 'undefined' && performance.navigation) {
-      const navType = performance.navigation.type;
-      console.log('Performance navigation type:', navType);
-      return navType === 1; // TYPE_RELOAD
-    }
-    // Fallback for modern browsers
-    if (typeof performance !== 'undefined' && performance.getEntriesByType) {
-      const navEntries = performance.getEntriesByType('navigation') as PerformanceNavigationTiming[];
-      if (navEntries.length > 0) {
-        const navType = navEntries[0].type;
-        console.log('Navigation timing type:', navType);
-        return navType === 'reload';
-      }
-    }
-    console.log('No page reload detected');
-    return false;
-  }, []);
-
-  // Track page visibility changes
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      const isVisible = !document.hidden;
-      setPageVisibility(isVisible);
-      
-      // Track if page was hidden (for welcome back modal logic)
-      if (!isVisible) {
-        setWasPageHidden(true);
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, []);
-
-  // Track when user is actively in interview
-  useEffect(() => {
-    if (currentSession && currentSession.answers && currentSession.answers.length > 0) {
-      setIsActivelyInInterview(true);
-    } else {
-      setIsActivelyInInterview(false);
-    }
-  }, [currentSession?.answers?.length]);
 
 
 
-  // Check if there's an interrupted session that should show welcome back modal
-  const shouldShowWelcomeBack = useMemo(() => {
-    console.log('=== WELCOME BACK MODAL LOGIC ===');
-    console.log('Current session:', !!currentSession);
-    console.log('Has answers:', currentSession?.answers?.length || 0);
-    console.log('Page visibility:', pageVisibility);
-    console.log('Was page hidden:', wasPageHidden);
-    console.log('Is page reload:', isPageReload);
-    console.log('Has user interacted:', hasUserInteracted);
-    
-    if (!currentSession || !currentSession.answers || currentSession.answers.length === 0) {
-      console.log('No session or no answers - not showing modal');
-      return false;
-    }
-    
-    // Don't show modal if user is actively in interview and hasn't left the page
-    if (isActivelyInInterview && !wasPageHidden && !isPageReload) {
-      console.log('User is actively in interview - not showing modal');
-      return false;
-    }
-    
-    // Show welcome back if:
-    // 1. Session has answers (interrupted)
-    // 2. AND either:
-    //    - Page was previously hidden (user left and came back)
-    //    - Page was reloaded (refresh scenario)
-    const shouldShow = currentSession.answers.length > 0 && (wasPageHidden || isPageReload);
-    console.log('Should show welcome back modal:', shouldShow);
-    return shouldShow;
-  }, [currentSession?.answers?.length, wasPageHidden, isPageReload, pageVisibility, hasUserInteracted, isActivelyInInterview]);
 
-  // Get session summary for welcome back modal
-  const sessionSummary = useMemo(() => {
-    if (!currentSession) return null;
-    
-    const questionsAnswered = currentSession.answers?.length || 0;
-    const totalQuestions = currentSession.questions?.length || 6;
-    const timeAway = currentSession.startTime ? 
-      Math.floor((Date.now() - new Date(currentSession.startTime).getTime()) / 1000 / 60) : 0;
-    
-    return {
-      questionsAnswered,
-      totalQuestions,
-      timeAway,
-      sessionDuration: timeAway,
-      startTime: currentSession.startTime
-    };
-  }, [currentSession?.answers?.length, currentSession?.questions?.length, currentSession?.startTime]);
 
-  /**
-   * Save session data to Redux (automatically persisted by redux-persist)
-   */
-  const saveSession = useCallback((sessionData: {
-    sessionId: string;
-    resumeData?: ResumeData;
-    detailedResumeData?: DetailedResumeData;
-    currentSession: InterviewSession;
-    chatMessages?: ChatMessage[];
-  }) => {
-    try {
-      // Save to Redux (automatically persisted)
-      dispatch(setCurrentSession(sessionData.currentSession));
-      
-      if (sessionData.resumeData) {
-        dispatch(setResumeData(sessionData.resumeData));
-      }
-      
-      if (sessionData.detailedResumeData) {
-        dispatch(setDetailedResumeData(sessionData.detailedResumeData));
-      }
-      
-      if (sessionData.chatMessages) {
-        dispatch(setChatMessages(sessionData.chatMessages));
-      }
-      
-      console.log('Session saved successfully to Redux:', sessionData.sessionId);
-    } catch (error) {
-      console.error('Failed to save session:', error);
-      dispatch(setError('Failed to save session data'));
-      throw error;
-    }
-  }, [dispatch]);
+
+  // saveSession removed - use startInterviewAsync thunk instead
 
   /**
    * Restore session data (for welcome back modal)
@@ -242,37 +109,16 @@ export const useSession = () => {
     }
   }, [dispatch]);
 
-  /**
-   * Mark user interaction (call when user submits answers or interacts with interview)
-   */
-  const markUserInteraction = useCallback(() => {
-    setHasUserInteracted(true);
-    console.log('User interaction marked');
-  }, []);
 
-  /**
-   * Reset page visibility tracking (call when user interacts with welcome back modal)
-   */
-  const resetPageVisibilityTracking = useCallback(() => {
-    setWasPageHidden(false);
-    setHasUserInteracted(false);
-    setIsActivelyInInterview(false);
-    console.log('Page visibility tracking reset');
-  }, []);
 
-  /**
-   * Check if interview is active
-   */
-  const isInterviewActive = useMemo(() => {
-    return !!currentSession && currentSession.status === 'in_progress';
-  }, [currentSession]);
+
 
   /**
    * Get stored session (for backward compatibility)
    */
   const getStoredSession = useCallback((): StoredSession | null => {
     if (!currentSession) return null;
-    
+
     return {
       sessionId: currentSession.id || 'unknown',
       timestamp: Date.now(),
@@ -302,24 +148,15 @@ export const useSession = () => {
     resumeData,
     detailedResumeData,
     sessionHistory,
-    
-    // Computed values
-    shouldShowWelcomeBack,
-    sessionSummary,
-    isInterviewActive,
-    
+
     // Actions
-    saveSession,
+    // saveSession removed - use startInterviewAsync thunk instead
     restoreSession: restoreSessionData,
     updateSession: updateSessionData,
     addChatMessage,
     clearSession: clearCurrentSession,
     clearAllSessions: clearAllSessionData,
-    
-    // Page visibility tracking
-    resetPageVisibilityTracking,
-    markUserInteraction,
-    
+
     // Utilities
     getStoredSession
   };

@@ -10,7 +10,14 @@ interface PublicRouteProps {
 export const PublicRoute: React.FC<PublicRouteProps> = ({ children }) => {
   console.log('✅ [PublicRoute] Rendering...');
   const { isAuthenticated, user, loading, token } = useAuth();
-  console.log('✅ [PublicRoute] Auth state:', { isAuthenticated, hasUser: !!user, loading, hasToken: !!token });
+  // console.log('✅ [PublicRoute] Auth state:', {
+  //   isAuthenticated,
+  //   hasUser: !!user,
+  //   userType: user?.userType,
+  //   loading,
+  //   hasToken: !!token,
+  //   tokenLength: token?.length
+  // });
   const [initializing, setInitializing] = useState(true);
   const [maxWaitReached, setMaxWaitReached] = useState(false);
 
@@ -46,7 +53,7 @@ export const PublicRoute: React.FC<PublicRouteProps> = ({ children }) => {
   // 1. Actively loading with a token AND haven't exceeded max wait, OR
   // 2. Initializing with token but no user yet AND haven't exceeded max wait
   const shouldShowLoader = token && !maxWaitReached && (
-    (loading && !user) || 
+    (loading && !user) ||
     (initializing && !user)
   );
 

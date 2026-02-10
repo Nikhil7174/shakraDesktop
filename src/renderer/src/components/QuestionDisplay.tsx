@@ -10,10 +10,12 @@ interface QuestionDisplayProps {
   introMeta?: string
   isListening: boolean
   isSpeaking: boolean
+  isUserSpeaking?: boolean
   progress: { current: number, total: number }
   onVisionStatusChange?: (status: any) => void
   isHint?: boolean
   isClarification?: boolean
+  isFollowUp?: boolean
 }
 
 export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
@@ -23,13 +25,15 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
   introMeta = 'Ready to begin',
   isListening,
   isSpeaking,
+  isUserSpeaking = false,
   progress,
   onVisionStatusChange,
   isHint = false,
-  isClarification = false
+  isClarification = false,
+  isFollowUp = false
 }) => {
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null)
-  
+
   // Initialize vision security tracking
   const { status: visionStatus, isInitialized: visionInitialized, error: visionError } = useVisionSecurity({
     videoElement,
@@ -60,7 +64,7 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
       // Always update parent with latest status to ensure alerts are shown
       // The VisionSecurityAlert component will handle deduplication
       onVisionStatusChange(visionStatus)
-      
+
       // Log when suspicious events are detected for debugging
       if (visionStatus.suspiciousEvents && visionStatus.suspiciousEvents.length > 0) {
         console.log('📢 [QuestionDisplay] Passing suspicious events to parent:', {
@@ -102,68 +106,17 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
 
   // Determine display text and meta
   const isIntroMode = !question && !!introMessage
-  const displayText = question 
+  const isLoadingNoQuestion = !question && !introMessage
+
+  const displayText = question
     ? (followUpQuestionText || question.question)
     : (introMessage || null)
-  const displayMeta = question
-    ? `Question ${progress.current} of ${progress.total}`
-    : (introMeta || 'Loading...')
-  const isFollowUp = !!followUpQuestionText && !!question
 
-  // Show loading state only if no question and no intro message
-  if (!question && !introMessage) {
-    return (
-      <div className="meeting-display">
-        <div className="meeting-container">
-          <div className="video-window ai-video">
-            <div className="video-header">
-              <div className="video-header-info">
-                <div className="video-name">AI Interviewer</div>
-                <div className="video-meta">Loading...</div>
-              </div>
-            </div>
-            <div className="video-content">
-              <div className="video-background">
-                <div className="loading-state">
-                  <div className="spinner"></div>
-                  <p>Loading question...</p>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div className="video-window candidate-video">
-            <div className="video-header">
-              <div className="video-header-info">
-                <div className="video-name">You</div>
-                <div className="video-meta">Candidate</div>
-              </div>
-            </div>
-            <div className="video-content">
-              <VideoCapture
-                onStreamReady={() => {
-                  setTimeout(() => {
-                    const videoEl = document.querySelector('.candidate-video video') as HTMLVideoElement
-                    if (videoEl && (window as any).setVideoElementRef) {
-                      (window as any).setVideoElementRef(videoEl)
-                    }
-                  }, 200)
-                }}
-                onVideoElementReady={(videoEl) => {
-                  setVideoElement(videoEl)
-                  console.log('📹 [QuestionDisplay] Video element ready for vision tracking')
-                }}
-                onStreamError={(error) => {
-                  console.error('Video capture error:', error)
-                }}
-                className="candidate-video-capture"
-                autoStart={true}
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-    )
-  }
+  const displayMeta = question
+    ? `Live Interview`
+    : (isLoadingNoQuestion ? 'Loading question...' : (introMeta || 'Loading...'))
+
+  const showFollowUpBadge = isFollowUp || (!!followUpQuestionText && !!question)
 
   return (
     <div className="meeting-display">
@@ -175,7 +128,7 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
               <div className="video-name">AI Interviewer</div>
               <div className="video-meta">
                 {displayMeta}
-                {isFollowUp && <span className="follow-up-badge">Follow-up</span>}
+                {showFollowUpBadge && <span className="follow-up-badge">Follow-up</span>}
                 {isHint && <span className="hint-badge">Hint</span>}
                 {isClarification && <span className="clarification-badge">Clarification</span>}
               </div>
@@ -194,8 +147,8 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
             <div className="video-background">
               <div className="person-icon ai-icon">
                 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <circle cx="12" cy="8" r="4" fill="currentColor"/>
-                  <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor"/>
+                  <circle cx="12" cy="8" r="4" fill="currentColor" />
+                  <path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" fill="currentColor" />
                 </svg>
               </div>
             </div>
@@ -211,20 +164,26 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
         </div>
 
         {/* Candidate Video Window (Right Half) */}
-        <div className={`video-window candidate-video ${isListening ? 'speaking-active' : ''}`}>
+        <div className={`video-window candidate-video ${isUserSpeaking ? 'speaking-active' : ''}`}>
           <div className="video-header">
             <div className="video-header-info">
               <div className="video-name">You</div>
               <div className="video-meta">Candidate</div>
             </div>
             <div className="video-status">
-              {isListening && !isSpeaking && (
+              {isUserSpeaking && (
+                <div className="status-badge speaking-badge">
+                  <div className="status-dot"></div>
+                  <span>Speaking</span>
+                </div>
+              )}
+              {isListening && !isSpeaking && !isUserSpeaking && (
                 <div className="status-badge listening-badge">
                   <div className="status-dot"></div>
                   <span>{isIntroMode ? 'Ready' : 'Your turn'}</span>
                 </div>
               )}
-              {isSpeaking && (
+              {isSpeaking && !isUserSpeaking && (
                 <div className="status-badge waiting-badge">
                   <div className="status-dot"></div>
                   <span>AI speaking</span>
@@ -306,7 +265,7 @@ export const QuestionDisplay: React.FC<QuestionDisplayProps> = ({
           position: relative;
           transition: all 0.3s ease;
           min-height: 500px;
-          height: 80%;
+          height: 72%;
         }
 
         .meeting-container .video-window.speaking-active {

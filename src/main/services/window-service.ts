@@ -4,6 +4,7 @@ import { existsSync, writeFileSync, mkdirSync } from 'fs'
 import { homedir } from 'os'
 import { is } from '@electron-toolkit/utils'
 import { format } from 'url'
+import express from 'express'
 import { Service } from './lifecycle'
 import { optimizer } from '@electron-toolkit/utils'
 
@@ -15,7 +16,7 @@ export class WindowService implements Service {
 
   async initialize(): Promise<void> {
     this.resolveIconPath()
-    
+
     // Optimize window on macOS
     app.on('browser-window-created', (_, window) => {
       optimizer.watchWindowShortcuts(window)
@@ -23,11 +24,15 @@ export class WindowService implements Service {
 
     this.createWindow()
     this.registerShortcuts()
-    
-    // Linux/Wayland desktop file
-    if (process.platform === 'linux' && !app.isPackaged) {
-      this.createDesktopFile()
-      
+
+    // Linux/Wayland desktop file assignment
+    // We do this for:
+    // 1. Dev mode (to test deep links)
+    // 2. AppImage (to register protocol/icon since AppImage doesn't install itself)
+    const isAppImage = !!process.env.APPIMAGE;
+    if (process.platform === 'linux' && (!app.isPackaged || isAppImage)) {
+      this.createDesktopFile(isAppImage)
+
       if (this.iconPath && existsSync(this.iconPath)) {
         try {
           app.dock?.setIcon?.(this.appIcon || this.iconPath)
@@ -62,18 +67,28 @@ export class WindowService implements Service {
     return this.mainWindow
   }
 
+  public sendDeepLink(url: string): void {
+    if (this.mainWindow) {
+      if (this.mainWindow.isMinimized()) this.mainWindow.restore()
+      this.mainWindow.show()
+      this.mainWindow.focus()
+      this.mainWindow.webContents.send('deep-link', url)
+      console.log('🔗 [Window] Deep link sent to renderer:', url)
+    }
+  }
+
   private resolveIconPath(): void {
     const possiblePaths = app.isPackaged
       ? [
-          join(process.resourcesPath, 'icon.png'),
-          join(process.resourcesPath, 'resources', 'icon.png')
-        ]
+        join(process.resourcesPath, 'icon.png'),
+        join(process.resourcesPath, 'resources', 'icon.png')
+      ]
       : [
-          resolve(__dirname, '../../resources/icon.png'),
-          join(app.getAppPath(), 'resources/icon.png'),
-          resolve(process.cwd(), 'resources/icon.png'),
-          resolve(process.cwd(), 'crispDesktop/resources/icon.png')
-        ]
+        resolve(__dirname, '../../resources/icon.png'),
+        join(app.getAppPath(), 'resources/icon.png'),
+        resolve(process.cwd(), 'resources/icon.png'),
+        resolve(process.cwd(), 'crispDesktop/resources/icon.png')
+      ]
 
     console.log('🔍 [Icon] Searching for icon in paths:')
     for (const path of possiblePaths) {
@@ -107,7 +122,7 @@ export class WindowService implements Service {
 
   private createWindow(): void {
     const windowIcon = this.appIcon && !this.appIcon.isEmpty() ? this.appIcon : (this.iconPath || undefined)
-    
+
     this.mainWindow = new BrowserWindow({
       width: 1400,
       height: 900,
@@ -118,7 +133,7 @@ export class WindowService implements Service {
       fullscreen: false,
       maximizable: true,
       resizable: true,
-      autoHideMenuBar: true,
+      // autoHideMenuBar: true,
       webPreferences: {
         preload: join(__dirname, '../preload/index.js'),
         nodeIntegration: false,
@@ -141,7 +156,7 @@ export class WindowService implements Service {
       } catch (err) {
         console.warn('⚠️ [Icon] Failed to set icon via path:', err)
       }
-      
+
       if (this.appIcon && !this.appIcon.isEmpty()) {
         try {
           this.mainWindow.setIcon(this.appIcon)
@@ -154,7 +169,7 @@ export class WindowService implements Service {
     this.mainWindow.once('ready-to-show', () => {
       this.mainWindow?.show()
       this.mainWindow?.maximize()
-      
+
       if (this.iconPath) {
         setTimeout(() => {
           if (this.mainWindow && !this.mainWindow.isDestroyed()) {
@@ -165,7 +180,7 @@ export class WindowService implements Service {
             }
           }
         }, 100)
-        
+
         if (this.appIcon && !this.appIcon.isEmpty()) {
           setTimeout(() => {
             if (this.mainWindow && !this.mainWindow.isDestroyed()) {
@@ -184,32 +199,128 @@ export class WindowService implements Service {
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
       this.mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
     } else {
-      const htmlPath = join(__dirname, '../renderer/index.html')
-      
-      this.mainWindow.loadFile(htmlPath).catch((error) => {
-        console.error('❌ [Main] loadFile failed, trying loadURL with file:// protocol:', error)
-        const fileUrl = format({
-          pathname: htmlPath.replace(/\\/g, '/'),
-          protocol: 'file:',
-          slashes: true
+      // In production, start a local server to serve the renderer
+      // This is needed for Clerk authentication (requires localhost origin)
+      const port = 42424 // Used to be 3000, changed to avoid conflicts
+      const serverUrl = `http://localhost:${port}`
+
+      this.startLocalServer(port).then(() => {
+        console.log(`✅ [Main] Local server started at ${serverUrl}`)
+        this.mainWindow?.loadURL(serverUrl).catch((error) => {
+          console.error('❌ [Main] Failed to load local server URL:', error)
         })
-        this.mainWindow?.loadURL(fileUrl).catch((fallbackError) => {
-          console.error('❌ [Main] Fallback also failed:', fallbackError)
-        })
+      }).catch((err) => {
+        console.error('❌ [Main] Failed to start local server:', err)
+        // Fallback to file protocol if server fails (though auth likely won't work)
+        const htmlPath = join(__dirname, '../renderer/index.html')
+        this.mainWindow?.loadFile(htmlPath)
       })
     }
+  }
 
-    this.mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+  private startLocalServer(port: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const app = express()
+      const staticPath = join(__dirname, '../renderer')
+
+      // CORS and Security Headers
+      app.use((req, res, next) => {
+        const allowedOrigins = [
+          'https://shakra.io',
+          'https://www.shakra.io',
+        ];
+        const origin = req.headers.origin;
+        if (origin && allowedOrigins.includes(origin)) {
+          res.header('Access-Control-Allow-Origin', origin);
+        } else {
+          // Default to main domain if no match or no origin (though browsers won't like it for mismatch)
+          // or just don't set it, effectively blocking it
+          // For now, let's just default to the most critical one if it's missing, or maybe shakra.io
+          res.header('Access-Control-Allow-Origin', 'https://shakra.io');
+        }
+        res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        res.header('Access-Control-Allow-Private-Network', 'true')
+        next()
+      })
+
+      app.use(express.static(staticPath))
+
+      // Auth Callback Route
+      app.get('/api/auth/callback', (req, res) => {
+        const { ticket } = req.query
+        console.log('📨 [LocalServer] Received auth callback with ticket:', ticket ? 'Yes' : 'No')
+
+        if (ticket && typeof ticket === 'string') {
+          // Focus the window
+          if (this.mainWindow) {
+            if (this.mainWindow.isMinimized()) this.mainWindow.restore()
+            this.mainWindow.show()
+            this.mainWindow.focus()
+
+            // Send to renderer
+            this.mainWindow.webContents.send('deep-link', `shakra-app://auth/callback?ticket=${ticket}`)
+            console.log('✅ [LocalServer] Ticket sent to renderer via deep-link channel')
+          }
+
+          // Return JSON for background fetch (keeps user on branded page)
+          res.json({ success: true, message: 'Authentication successful' })
+        } else {
+          res.status(400).json({ success: false, message: 'Missing ticket' })
+        }
+      })
+
+      // Status check endpoint
+      app.get('/status', (req, res) => {
+        res.json({ status: 'ok', app: 'StartUp' })
+      })
+
+      // Handle SPA routing - serve index.html for all non-file requests
+      app.use((req, res, next) => {
+        // Skip API routes
+        if (req.url.startsWith('/api')) {
+          return next()
+        }
+        console.log(`📡 [LocalServer] Request: ${req.method} ${req.url}`)
+        next()
+      })
+
+      // Use a custom middleware for fallback instead of wildcard route to avoid path-to-regexp errors
+      app.use((req, res) => {
+        if (req.accepts('html')) {
+          // console.log('📄 [LocalServer] Serving index.html for:', req.url)
+          res.sendFile(join(staticPath, 'index.html'))
+        } else {
+          res.sendStatus(404)
+        }
+      })
+
+      const server = app.listen(port, '127.0.0.1', () => {
+        resolve()
+      })
+
+      server.on('error', (err: any) => {
+        if (err.code === 'EADDRINUSE') {
+          console.warn(`⚠️ [LocalServer] Port ${port} is busy. Local server auth will not work. Fallback to deep link.`)
+          // We resolve anyway so the app continues to boot, but we log the error
+          resolve()
+        } else {
+          reject(err)
+        }
+      })
+    })
+
+    this.mainWindow?.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
       console.error('❌ [Main] Page failed to load:', { errorCode, errorDescription, validatedURL })
     })
 
-    this.mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+    this.mainWindow?.webContents.on('console-message', (event, level, message, line, sourceId) => {
       if (level >= 2) {
         console.log(`[Renderer ${level === 2 ? 'WARN' : 'ERROR'}]`, message, `(${sourceId}:${line})`)
       }
     })
 
-    this.mainWindow.webContents.once('did-finish-load', () => {
+    this.mainWindow?.webContents.once('did-finish-load', () => {
       console.log('✅ [Main] Page loaded successfully')
       if (this.iconPath && this.mainWindow && !this.mainWindow.isDestroyed()) {
         const setIconAttempts = [0, 100, 300, 500, 1000]
@@ -231,7 +342,7 @@ export class WindowService implements Service {
     })
 
     if (process.platform === 'linux' && this.iconPath) {
-      this.mainWindow.on('focus', () => {
+      this.mainWindow?.on('focus', () => {
         if (this.mainWindow && !this.mainWindow.isDestroyed() && this.iconPath) {
           setTimeout(() => {
             try {
@@ -247,7 +358,7 @@ export class WindowService implements Service {
       })
     }
 
-    this.mainWindow.on('close', (event) => {
+    this.mainWindow?.on('close', (event) => {
       if (process.platform !== 'darwin') {
         event.preventDefault()
         console.log('Window closed, quitting...')
@@ -272,35 +383,50 @@ export class WindowService implements Service {
     })
   }
 
-  private createDesktopFile(): void {
-    if (!this.iconPath || !existsSync(this.iconPath)) {
-      console.warn('⚠️ [Desktop] Cannot create desktop file - icon not found')
+  private createDesktopFile(isAppImage: boolean = false): void {
+    if (!isAppImage && process.env.SKIP_DESKTOP_REGISTER) {
+      console.log('⚠️ [Desktop] Skipping desktop file creation (SKIP_DESKTOP_REGISTER set)')
       return
+    }
+
+    if (!this.iconPath || !existsSync(this.iconPath)) {
+      console.warn('⚠️ [Desktop] Icon not found, creating desktop file without icon to ensure Deep Linking works')
     }
 
     try {
       const desktopDir = join(homedir(), '.local', 'share', 'applications')
       mkdirSync(desktopDir, { recursive: true })
-      
-      const desktopFile = join(desktopDir, 'shakra-ai-interview-dev.desktop')
-      const execPath = process.execPath
-      const iconAbsolutePath = resolve(this.iconPath)
-      
+
+      const filename = isAppImage ? 'shakra-ai-interview.desktop' : 'shakra-ai-interview-dev.desktop';
+      const desktopFile = join(desktopDir, filename)
+
+      // For AppImage, use the AppImage file itself as the executable
+      // For Dev, use process.execPath (node/electron binary)
+      const execPath = isAppImage ? (process.env.APPIMAGE || process.execPath) : process.execPath;
+
+      const iconAbsolutePath = this.iconPath ? resolve(this.iconPath) : ''
+
+      // If AppImage, we need to correctly handle arguments. 
+      // AppImage requires %u to be passed if we want deep linking.
+      // But verify if the variable is already escaped?
+      const execCommand = `"${execPath}" %u`;
+
       const desktopContent = `[Desktop Entry]
-Name=Shakra AI Interview (Dev)
+Name=${isAppImage ? 'Shakra AI Interview' : 'Shakra AI Interview (Dev)'}
 Comment=AI-powered interview platform with security monitoring
-Exec=${execPath}
-Icon=${iconAbsolutePath}
+Exec=${execCommand}
+${iconAbsolutePath ? `Icon=${iconAbsolutePath}` : ''}
 Type=Application
 Categories=Utility;Development;
+MimeType=x-scheme-handler/shakra-app;
 StartupNotify=true
-StartupWMClass=electron
+StartupWMClass=${isAppImage ? 'shakra-ai-interview' : 'electron'}
 NoDisplay=false
 `
-      
+
       writeFileSync(desktopFile, desktopContent, { mode: 0o755 })
       console.log(`✅ [Desktop] Created desktop file: ${desktopFile}`)
-      
+
       try {
         const { exec } = require('child_process')
         exec('update-desktop-database ~/.local/share/applications', (error: any) => {
