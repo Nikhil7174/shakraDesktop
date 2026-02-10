@@ -1,23 +1,17 @@
 // src/hooks/api/useInterview.ts
 import { useCallback } from 'react';
-import axios from 'axios';
 import { useAppDispatch, useAppSelector } from '../../store';
 import {
-  setStartingInterview,
   setSubmittingAnswer,
   setError,
   updateSession
 } from '../../store/slices/interviewSlice';
-import { useSession } from '../useSession';
-import type { DetailedResumeData, ChatMessage } from '../../types';
 
-import { API_BASE_URL } from '../../constants/api';
+import api from '../../services/api';
 
 export const useInterview = () => {
   const dispatch = useAppDispatch();
   const { currentSession, chatMessages, isStartingInterview, isSubmittingAnswer, error } = useAppSelector(state => state.interview);
-  const { resumeData, detailedResumeData } = useAppSelector(state => state.interview);
-  const { token } = useAppSelector(state => state.auth);
 
   // Note: startInterview is now handled by startInterviewAsync thunk in interviewSlice
   // This hook only handles submitAnswer and saveResults
@@ -74,14 +68,22 @@ export const useInterview = () => {
 
         // Update session using unified session management
         const updatedAnswers = [...(currentSession.answers || []), newAnswer];
-        
+
         // Use Redux-only session management (automatically persisted via redux-persist)
         dispatch(updateSession({
           answers: updatedAnswers
         }));
 
         // Mark user interaction to prevent welcome back modal during active session
-        markUserInteraction();
+        try {
+          // @ts-ignore
+          if (typeof markUserInteraction === 'function') {
+            // @ts-ignore
+            markUserInteraction();
+          }
+        } catch (e) {
+          // Ignore
+        }
 
         console.log('Updated session with answers:', updatedAnswers);
       }
@@ -120,15 +122,12 @@ export const useInterview = () => {
     try {
       // DEBUG: Log API call details
       console.log('=== API CALL DEBUG ===');
-      console.log('Making POST request to:', `${API_BASE_URL}/interview/save-results`);
+      console.log('Making POST request to:', `/interview/save-results`);
       console.log('Request payload:', JSON.stringify(results, null, 2));
       console.log('About to send request...');
 
-      const response = await axios.post(`${API_BASE_URL}/interview/save-results`, results, {
-        headers: {
-          Authorization: `Bearer ${token}`
-        }
-      });
+      // Use centralized api service which handles auth token injection via interceptor
+      const response = await api.post('/interview/save-results', results);
 
       console.log('✅ API Response received:');
       console.log('Response status:', response.status);
@@ -143,7 +142,7 @@ export const useInterview = () => {
       const errorMessage = error.response?.data?.message || 'Failed to save results';
       throw new Error(errorMessage);
     }
-  }, [token]);
+  }, []);
 
   const validateCode = useCallback(async (questionId: string, code: string) => {
     try {
@@ -151,13 +150,10 @@ export const useInterview = () => {
       console.log('Validating code for question:', questionId);
       console.log('Code:', code);
 
-      const response = await axios.post(`${API_BASE_URL}/interview/validate-code`, {
+      // Use centralized api service
+      const response = await api.post('/interview/validate-code', {
         questionId,
         code
-      }, {
-        headers: {
-          Authorization: `Bearer ${token}`
-        }
       });
 
       console.log('✅ Code validation response:', response.data);

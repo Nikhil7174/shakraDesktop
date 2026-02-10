@@ -3,7 +3,7 @@ import { createSlice } from '@reduxjs/toolkit';
 import type { PayloadAction } from '@reduxjs/toolkit';
 import type { UserType } from '../../types';
 
-interface UserState {
+export interface UserState {
   userType: UserType | null;
   preferences: Record<string, any>;
   onboardingStep: number;

@@ -11,18 +11,38 @@ import sessionReducer from './slices/sessionSlice';
 import interviewReducer from './slices/interviewSlice';
 import authReducer from './slices/authSlice';
 import securityReducer from './slices/securitySlice';
+import dashboardReducer from './slices/dashboardSlice';
 
 const authPersistConfig = {
   key: 'auth',
   storage,
-  whitelist: ['user', 'token', 'isAuthenticated'], 
+  whitelist: ['user', 'token', 'isAuthenticated'],
 };
 
 const persistConfig = {
   key: 'root',
   version: 2, // Increment this to invalidate old persisted state
   storage,
-  whitelist: ['user', 'interview'],
+  whitelist: ['user', 'interview', 'dashboard'],
+  transforms: [
+    // Create a transform to whitelist specific fields within the interview slice
+    {
+      in: (state: any, key: string) => {
+        if (key === 'interview') {
+          return {
+            ...state,
+            currentSession: state.currentSession,
+            sessionHistory: state.sessionHistory,
+            resumeData: state.resumeData,
+            detailedResumeData: state.detailedResumeData,
+            resumeUploadTimestamp: state.resumeUploadTimestamp
+          };
+        }
+        return state;
+      },
+      out: (state: any) => state,
+    }
+  ],
   migrate: (state: any) => {
     // Migrate function must return a Promise
     return Promise.resolve(state).then((resolvedState) => {
@@ -54,6 +74,7 @@ const rootReducer = combineReducers({
   interview: interviewReducer,
   auth: persistReducer(authPersistConfig, authReducer),
   security: securityReducer,
+  dashboard: dashboardReducer,
 });
 
 const persistedReducer = persistReducer(persistConfig, rootReducer);

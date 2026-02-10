@@ -403,7 +403,7 @@ export const InterviewChat: React.FC = () => {
       }}>
         <div>
           {currentStep !== 'interview' && (
-            <Button type="text" onClick={handleBack} icon={<LeftOutlined />} style={{ padding: 0 }}>
+            <Button type="text" onClick={handleBack} icon={<LeftOutlined />} style={{ padding: '0 8px' }}>
               Back
             </Button>
           )}

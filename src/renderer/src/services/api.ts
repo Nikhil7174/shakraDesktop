@@ -31,10 +31,7 @@ api.interceptors.request.use(
       }
     }
 
-    // 2. Fallback to localStorage if getter failed or not set
-    if (!token) {
-      token = localStorage.getItem('authToken');
-    }
+
 
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;

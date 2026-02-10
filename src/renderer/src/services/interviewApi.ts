@@ -1,5 +1,5 @@
-import axios from 'axios';
-import { API_BASE_URL } from '../constants/api';
+import api from './api';
+
 
 /**
  * Centralized Interview API Service
@@ -16,14 +16,9 @@ export const interviewApi = {
       linkToken: linkToken.substring(0, 10) + '...'
     });
 
-    const response = await axios.post(
-      `${API_BASE_URL}/interview/start`,
-      { candidateData, linkToken },
-      {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('authToken')}`
-        }
-      }
+    const response = await api.post(
+      '/interview/start',
+      { candidateData, linkToken }
     );
 
     if (!response.data.success) {
@@ -43,6 +38,33 @@ export const interviewApi = {
     });
 
     return session;
+  },
+
+  async uploadResume(file: File) {
+    const formData = new FormData();
+    formData.append('resume', file);
+
+    const response = await api.post('/upload/resume', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      }
+    });
+    return response.data;
+  },
+
+  async submitAnswer(sessionId: string, questionId: string, answer: string, timeTaken: number) {
+    const response = await api.post('/interview/submit-answer', {
+      sessionId,
+      questionId,
+      answer,
+      timeTaken
+    });
+    return response.data;
+  },
+
+  async collectMissingInfo(info: { name: string; email: string; phone: string; resumeData: any }) {
+    const response = await api.post('/upload/collect-info', info);
+    return response.data;
   }
 };
 

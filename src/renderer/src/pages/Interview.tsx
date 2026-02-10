@@ -7,9 +7,8 @@ import { useAppDispatch, useAppSelector } from '../store';
 import { InterviewSession } from '../components/interview/InterviewSession';
 import { ResumeUpload } from '../components/interview/ResumeUpload';
 import { InfoCollection } from '../components/interview/InfoCollection';
-import { addChatMessage, setResumeData, setDetailedResumeData, startInterviewAsync } from '../store/slices/interviewSlice';
-import { API_BASE_URL } from '../constants/api';
-import axios from 'axios';
+import { addChatMessage, setResumeData, setDetailedResumeData, startInterviewAsync, setCurrentSession } from '../store/slices/interviewSlice';
+import { interviewApi } from '../services/interviewApi';
 
 const { Title, Paragraph } = Typography;
 
@@ -20,7 +19,7 @@ export const Interview: React.FC = () => {
   const dispatch = useAppDispatch();
   const { currentSession, resumeData, detailedResumeData, chatMessages } = useAppSelector((state) => state.interview);
   const { user } = useAppSelector((state) => state.auth);
-  
+
   const [currentStep, setCurrentStep] = useState<Step>('upload');
   const [processingResume, setProcessingResume] = useState(false);
   const [collectingInfo, setCollectingInfo] = useState(false);
@@ -43,21 +42,13 @@ export const Interview: React.FC = () => {
   const handleResumeUpload = useCallback(async (file: File) => {
     setProcessingResume(true);
     try {
-      const formData = new FormData();
-      formData.append('resume', file);
+      const data = await interviewApi.uploadResume(file);
 
-      const response = await axios.post(`${API_BASE_URL}/resume/upload`, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-          Authorization: `Bearer ${localStorage.getItem('authToken')}`
-        }
-      });
-
-      if (response.data.success) {
+      if (data.success) {
         // Update Redux state with resume data
-        dispatch(setResumeData(response.data.resumeData));
-        dispatch(setDetailedResumeData(response.data.detailedResumeData));
-        
+        dispatch(setResumeData(data.resumeData));
+        dispatch(setDetailedResumeData(data.detailedResumeData));
+
         message.success('Resume processed successfully!');
         setCurrentStep('info');
       }
@@ -81,17 +72,17 @@ export const Interview: React.FC = () => {
       dispatch(setDetailedResumeData(updatedDetailedData));
 
       // Start the interview session using centralized async thunk
-      if (currentSession) {
+      if (currentSession && currentSession.interviewLinkId) {
         const result = await dispatch(startInterviewAsync({
           candidateData: {
-            id: user?.id,
+            id: String(user?.id),
             email: info.email,
             name: info.name,
             phone: info.phone,
           },
           linkToken: currentSession.interviewLinkId
         })).unwrap();
-        
+
         // Add the first question to chat messages if available
         if (result.questions && result.questions.length > 0) {
           const firstQuestion = result.questions[0];
@@ -104,7 +95,7 @@ export const Interview: React.FC = () => {
           };
           dispatch(addChatMessage(questionMessage));
         }
-        
+
         setCurrentStep('interview');
         message.success('Interview started!');
       }
@@ -120,18 +111,14 @@ export const Interview: React.FC = () => {
 
     setSubmittingAnswer(true);
     try {
-      const response = await axios.post(`${API_BASE_URL}/interview/submit-answer`, {
-        sessionId: currentSession.sessionId,
+      const data = await interviewApi.submitAnswer(
+        currentSession.sessionId,
         questionId,
         answer,
         timeTaken
-      }, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem('authToken')}`
-        }
-      });
+      );
 
-      if (response.data.success) {
+      if (data.success) {
         // Add the user's answer to chat messages
         const userMessage = {
           id: `msg-${Date.now()}`,
@@ -143,23 +130,23 @@ export const Interview: React.FC = () => {
         dispatch(addChatMessage(userMessage));
 
         // Add AI response if available
-        if (response.data.nextQuestion) {
+        if (data.nextQuestion) {
           const aiMessage = {
             id: `msg-${Date.now() + 1}`,
             sessionId: currentSession.sessionId,
             type: 'assistant' as const,
-            content: response.data.nextQuestion.question,
+            content: data.nextQuestion.question,
             timestamp: new Date().toISOString()
           };
           dispatch(addChatMessage(aiMessage));
         }
 
         // Update the current session with new data
-        if (response.data.session) {
-          dispatch(setCurrentSession(response.data.session));
+        if (data.session) {
+          dispatch(setCurrentSession(data.session));
         }
 
-        return response.data;
+        return data;
       }
     } catch (error: any) {
       message.error(error.response?.data?.message || 'Failed to submit answer');
@@ -222,14 +209,15 @@ export const Interview: React.FC = () => {
         <Space direction="vertical" size="large" style={{ width: '100%' }}>
           {/* Header */}
           <div style={{ display: 'flex', alignItems: 'center', gap: spacing.md }}>
-            <Button 
-              icon={<ArrowLeftOutlined />} 
+            <Button
+              icon={<ArrowLeftOutlined />}
               onClick={handleBackToJoin}
               type="text"
+              style={{ padding: '0 8px' }}
             >
               Back
             </Button>
-            <Button 
+            <Button
               danger
               onClick={handleQuitInterview}
               type="primary"
@@ -246,7 +234,7 @@ export const Interview: React.FC = () => {
             <ResumeUpload
               onUpload={handleResumeUpload}
               loading={processingResume}
-              onRemoveFile={() => {}}
+              onRemoveFile={() => { }}
               isProcessing={processingResume}
               resumeData={resumeData}
             />
@@ -263,7 +251,7 @@ export const Interview: React.FC = () => {
 
           {currentStep === 'interview' && (
             <InterviewSession
-              onStartNew={() => {}}
+              onStartNew={() => { }}
               currentSession={currentSession}
               chatMessages={chatMessages}
               onSubmitAnswer={handleAnswerSubmit}

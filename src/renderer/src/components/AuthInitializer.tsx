@@ -22,21 +22,18 @@ export const AuthInitializer: React.FC = () => {
           const token = await getToken();
 
           if (token) {
-            // 1. Update LocalStorage (for axios interceptor)
-            localStorage.setItem('authToken', token);
-
-            // 2. Send token to Electron Main process
+            // 1. Send token to Electron Main process
             if (window.electronAPI?.setAuthToken) {
               window.electronAPI.setAuthToken(token).catch(err => {
                 console.warn('Failed to send token to main process:', err);
               });
             }
 
-            // 3. Fetch backend user details (syncs user to DB if needed)
-            // The api interceptor will pick up the token from localStorage
+            // 2. Fetch backend user details (syncs user to DB if needed)
+            // The api interceptor will pick up the token from getToken
             const response = await api.get('/auth/me');
 
-            // 4. Update Redux State
+            // 3. Update Redux State
             dispatch(loginSuccess({
               user: response.data.user,
               token: token
@@ -52,7 +49,6 @@ export const AuthInitializer: React.FC = () => {
         }
       } else if (isLoaded && !isSignedIn) {
         // Handle Logout
-        localStorage.removeItem('authToken');
         dispatch(logout());
         if (window.electronAPI?.setAuthToken) {
           window.electronAPI.setAuthToken(null).catch(() => { });

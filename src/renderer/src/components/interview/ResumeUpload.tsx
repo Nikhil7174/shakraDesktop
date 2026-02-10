@@ -30,6 +30,15 @@ export const ResumeUpload: React.FC<ResumeUploadProps> = ({
   onUseExistingResume,
   existingFileName
 }) => {
+  console.log('🖼️ [ResumeUpload] Render:', {
+    hasResumeData: !!resumeData,
+    hasExistingData: !!existingResumeData,
+    existingFileName,
+    loading,
+    isProcessing,
+    error
+  });
+
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [showSuccess, setShowSuccess] = useState(false);
 
@@ -180,12 +189,12 @@ export const ResumeUpload: React.FC<ResumeUploadProps> = ({
               You have an existing resume on file
             </Text>
           </div>
-          
+
           {/* Show stored PDF filename */}
           {existingFileName && (
-            <div style={{ 
-              display: 'flex', 
-              alignItems: 'center', 
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
               gap: spacing.sm,
               padding: spacing.sm,
               backgroundColor: colors.neutral[50],
@@ -198,22 +207,22 @@ export const ResumeUpload: React.FC<ResumeUploadProps> = ({
               </Text>
             </div>
           )}
-          
+
           <div style={{ fontSize: 14, color: colors.neutral[600] }}>
             <div><strong>Name:</strong> {existingResumeData?.personalInfo?.name || existingResumeData?.name || 'N/A'}</div>
             <div><strong>Email:</strong> {existingResumeData?.personalInfo?.email || existingResumeData?.email || 'N/A'}</div>
           </div>
-          
+
           <Space>
-            <Button 
-              type="primary" 
+            <Button
+              type="primary"
               onClick={onUseExistingResume}
               style={{ backgroundColor: colors.success.main, borderColor: colors.success.main }}
               size="large"
             >
               Use This Resume
             </Button>
-            <Button 
+            <Button
               onClick={onRemoveFile}
               size="large"
             >
@@ -266,7 +275,7 @@ export const ResumeUpload: React.FC<ResumeUploadProps> = ({
             {existingResumeData ? 'Resume Management' : 'Upload Your Resume'}
           </Title>
           <Paragraph>
-            {existingResumeData 
+            {existingResumeData
               ? 'You have a resume on file. You can use it or upload a new one.'
               : 'Upload your resume (PDF or DOCX) to get started with your AI interview practice.'
             }

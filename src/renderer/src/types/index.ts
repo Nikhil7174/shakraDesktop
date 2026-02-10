@@ -274,3 +274,19 @@ export interface ProcessStatsData {
   scanDuration: number;
 }
 
+export interface InterviewAttempt {
+  id: number;
+  sessionId: string;
+  title: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  score?: number;
+  startTime: string;
+  endTime?: string;
+  duration?: number;
+  totalQuestions: number;
+  answeredQuestions: number;
+  company?: string;
+  companyId?: number;
+  companyLogo?: string;
+}
+

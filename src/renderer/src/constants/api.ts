@@ -12,8 +12,7 @@ export const API_CONFIG = {
 // 1. VITE_API_BASE_URL (if set in .env)
 // 2. API_CONFIG.BASE_URL (if PROD)
 // 3. API_CONFIG.LOCAL_URL (fallback)
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
-    || (import.meta.env.PROD ? API_CONFIG.BASE_URL : API_CONFIG.LOCAL_URL);
+export const API_BASE_URL = API_CONFIG.BASE_URL;
 
 // Export individual configs for specific use cases
 export const { BASE_URL, LOCAL_URL } = API_CONFIG;

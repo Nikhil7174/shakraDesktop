@@ -4,7 +4,7 @@ import type { PayloadAction } from '@reduxjs/toolkit';
 import type { ResumeData, DetailedResumeData, InterviewSession, ChatMessage } from '../../types';
 import { interviewApi } from '../../services/interviewApi';
 
-interface InterviewState {
+export interface InterviewState {
   // Resume Data
   resumeData: ResumeData | null;
   detailedResumeData: DetailedResumeData | null;

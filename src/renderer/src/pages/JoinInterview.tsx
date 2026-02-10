@@ -6,10 +6,8 @@ import { colors, spacing } from '../styles';
 import { useAppDispatch, useAppSelector } from '../store';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { startInterviewAsync } from '../store/slices/interviewSlice';
-import { API_BASE_URL } from '../constants/api';
+import api from '../services/api';
 import { extractToken, extractTokenFromHash, extractTokenFromSearch } from '../utils/tokenExtractor';
-
-import axios from 'axios';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -86,7 +84,7 @@ export const JoinInterview: React.FC = () => {
 
     setValidating(true);
     try {
-      const response = await axios.get(`${API_BASE_URL}/interview/link/${cleanToken}`);
+      const response = await api.get(`/interview/link/${cleanToken}`);
 
       if (response.data.success) {
         // Server returns 'link' not 'linkInfo', and we need to add the token

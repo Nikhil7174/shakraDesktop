@@ -3,7 +3,7 @@ import { createSlice } from '@reduxjs/toolkit';
 import type { PayloadAction } from '@reduxjs/toolkit';
 import type { UserType } from '../../types';
 
-interface UIState {
+export interface UIState {
   activeUserType: UserType | null;
   isLoading: boolean;
   selectedColumn: 'left' | 'right' | null;

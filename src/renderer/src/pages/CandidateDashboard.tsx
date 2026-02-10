@@ -24,8 +24,8 @@ import dayjs from 'dayjs';
 import { useAuth } from '../hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
 import { colors } from '../styles';
-import { useAppSelector } from '../store';
-import api from '../services/api';
+import { useAppSelector, useAppDispatch } from '../store';
+import { fetchDashboardData } from '../store/slices/dashboardSlice';
 
 import './CandidateDashboard.css';
 
@@ -54,12 +54,13 @@ export const CandidateDashboard: React.FC = () => {
 
   console.log('🎯 [CandidateDashboard] Rendering with user:', user?.fullName);
 
-  // State management
-  const [attempts, setAttempts] = useState<InterviewAttempt[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [lastFetched, setLastFetched] = useState<Date | null>(null);
+  // Redux state
+  const { attempts, isLoading: dashboardLoading, error: dashboardError } = useAppSelector((state) => state.dashboard);
+  const dispatch = useAppDispatch();
+  const loading = dashboardLoading; // Alias for backward compatibility
+  const error = dashboardError; // Alias for backward compatibility
 
+  console.log('🎯 [CandidateDashboard] Rendering with user:', user?.fullName);
 
   // Safety check: Redirect if no user data is available
   useEffect(() => {
@@ -69,66 +70,27 @@ export const CandidateDashboard: React.FC = () => {
     }
   }, [user, authLoading, navigate]);
 
-  // Memoized fetch function - React will handle when to call this
-  const fetchAttempts = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError(null);
-
-      if (!isSynced) {
-        console.log('⏳ [CandidateDashboard] Waiting for auth sync...');
-        setLoading(true);
-        return;
-      }
-
-      // api instance handles token from localStorage automatically via interceptor
-      console.log('Fetching interviews via Axios...');
-
-      const response = await api.get('/auth/interviews');
-
-      console.log('Response status:', response.status);
-
-      if (response.data.success) {
-        setAttempts(response.data.interviews || []);
-        setLastFetched(new Date());
-        console.log('Successfully fetched', response.data.interviews?.length || 0, 'interviews');
-      } else {
-        throw new Error(response.data.error || 'Failed to fetch interviews');
-      }
-    } catch (err: any) {
-      console.error('API Error:', err);
-      const errorMessage = err.response?.data?.message || err.message || 'Failed to fetch interviews';
-      setError(errorMessage);
-      // Handle 401 specifically if needed, though interceptor might do it
-      if (err.response?.status === 401) {
-        console.warn('Unauthorized access - token might be invalid/expired');
-      }
-    } finally {
-      setLoading(false);
+  // Fetch dashboard data
+  const loadData = useCallback((force = false) => {
+    if (isSynced) {
+      dispatch(fetchDashboardData(force));
     }
-  }, [isSynced]); // Reduced dependencies as token is handled internally by api interceptor
-
-  // Manual refetch function
-  const refetch = useCallback(() => {
-    return fetchAttempts();
-  }, [fetchAttempts]);
+  }, [isSynced, dispatch]);
 
   // Initial fetch
   useEffect(() => {
-    fetchAttempts();
-  }, [fetchAttempts]);
+    loadData();
+  }, [loadData]);
 
-  // Listen for auth sync completion
-  useEffect(() => {
-    if (isSynced) {
-      console.log('✨ [CandidateDashboard] Auth synced, fetching data...');
-      fetchAttempts();
-    }
-  }, [isSynced, fetchAttempts]);
+  // Manual refetch function
+  const refetch = useCallback(() => {
+    loadData(true);
+  }, [loadData]);
+
   useEffect(() => {
     const handleRefresh = () => {
       console.log('🔄 Dashboard refresh triggered');
-      fetchAttempts();
+      loadData(true);
     };
 
     window.addEventListener('dashboard-refresh', handleRefresh);
@@ -136,7 +98,7 @@ export const CandidateDashboard: React.FC = () => {
     // Listen for storage event (for cross-tab updates)
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key === 'dashboard-needs-refresh') {
-        fetchAttempts();
+        loadData(true);
         localStorage.removeItem('dashboard-needs-refresh');
       }
     };
@@ -146,7 +108,7 @@ export const CandidateDashboard: React.FC = () => {
       window.removeEventListener('dashboard-refresh', handleRefresh);
       window.removeEventListener('storage', handleStorageChange);
     };
-  }, [fetchAttempts]);
+  }, [loadData]);
 
   // Memoized computed values
   const completedAttempts = useMemo(() =>

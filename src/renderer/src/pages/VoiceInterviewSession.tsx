@@ -436,8 +436,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
             // Send vision security warnings to backend (conversation history is sent by agent)
             const sendVisionWarnings = async () => {
               try {
-                const { API_BASE_URL } = await import('../constants/api')
-                const authToken = tokenRef.current || localStorage.getItem('authToken')
+                const { default: api } = await import('../services/api')
 
                 // End all active warnings before collecting stats
                 endAllActiveWarnings()
@@ -450,20 +449,14 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
                 }
 
                 console.log('📤 [LiveKit] Sending vision security warnings to backend')
-                const response = await fetch(`${API_BASE_URL}/interview/${interviewId}/vision-security`, {
-                  method: 'PUT',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${authToken}`
-                  },
-                  body: JSON.stringify({ suspiciousEvents: Object.values(visionWarnings) })
+                const response = await api.put(`/interview/${interviewId}/vision-security`, {
+                  suspiciousEvents: Object.values(visionWarnings)
                 })
 
-                const data = await response.json()
-                if (response.ok && data.success) {
+                if (response.data.success) {
                   console.log('✅ [LiveKit] Vision warnings sent successfully')
                 } else {
-                  console.error('❌ [LiveKit] Vision warnings submission failed:', data.error)
+                  console.error('❌ [LiveKit] Vision warnings submission failed:', response.data.error)
                 }
               } catch (error: any) {
                 console.error('❌ [LiveKit] Failed to send vision warnings:', error.message)
@@ -790,10 +783,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         setSaveStatus('error')
         setSaveRetryCount(retryCount + 1)
 
-        // Still show feedback modal even if save failed
-        setTimeout(() => {
-          setShowFeedbackModal(true)
-        }, 2000)
       }
     }
   }, [])

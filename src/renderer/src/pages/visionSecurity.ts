@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useVisionSecurity } from '../hooks/useVisionSecurity'
+import api from '../services/api'
 
 type VisionSecurityArgs = {
   interviewId?: string
@@ -73,9 +74,6 @@ export const useVoiceInterviewVisionSecurity = ({
     }
 
     try {
-      const token = localStorage.getItem('authToken') // Fix: use 'authToken' instead of 'token'
-      const { API_BASE_URL } = await import('../constants/api')
-
       // Convert warning stats to events array format for API
       const eventsArray = Object.entries(stats).flatMap(([type, data]: [string, any]) =>
         data.events.map((event: any) => ({
@@ -97,18 +95,11 @@ export const useVoiceInterviewVisionSecurity = ({
       console.log('📤 [Vision Security] Events array:', JSON.stringify(eventsArray, null, 2))
       console.log('📤 [Vision Security] ===== END BATCH =====')
 
-      const response = await fetch(`${API_BASE_URL}/interview/${interviewId}/vision-security`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token && { Authorization: `Bearer ${token}` })
-        },
-        body: JSON.stringify({
-          suspiciousEvents: eventsArray
-        })
+      const response = await api.put(`/interview/${interviewId}/vision-security`, {
+        suspiciousEvents: eventsArray
       })
 
-      if (!response.ok) {
+      if (!response.data.success) {
         console.error('Failed to send vision security data to server')
       } else {
         visionSecurityDataSent.current = true

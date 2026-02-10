@@ -1,39 +1,57 @@
+// src/hooks/useResumeData.ts
 import { useState, useEffect, useCallback } from 'react';
 import api from '../services/api';
 import { useAuth } from './useAuth';
-import { useAppDispatch } from '../store';
+import { useAppDispatch, useAppSelector } from '../store';
 import { setResumeData as setReduxResumeData, setDetailedResumeData as setReduxDetailedResumeData } from '../store/slices/interviewSlice';
 import { logout as logoutAction } from '../store/slices/authSlice';
 
 export const useResumeData = () => {
-  const { token, isAuthenticated } = useAuth();
+  const { isAuthenticated } = useAuth();
   const dispatch = useAppDispatch();
   const [resumeData, setResumeData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchResumeData = useCallback(async () => {
-    if (!isAuthenticated || !token) {
+  const { resumeData: reduxResumeData } = useAppSelector(state => state.interview);
+
+  const fetchResumeData = useCallback(async (force = false) => {
+    if (!isAuthenticated) {
       setResumeData(null);
+      return;
+    }
+
+    // Cache-first strategy: If we have data in Redux and not forcing refresh, use it
+    if (!force && reduxResumeData) {
+      console.log('📦 [useResumeData] Using cached resume data from Redux');
+      // No need to set local state, we return reduxResumeData directly
       return;
     }
 
     try {
       setLoading(true);
       setError(null);
-      
+      console.log('⬇️ [useResumeData] Fetching resume data from API...');
+
       const response = await api.get('/auth/resume');
 
       if (response.data.success) {
         const fetchedResumeData = response.data.resumeData;
-        setResumeData(fetchedResumeData);
-        // Also update Redux state so InterviewChat can access it
-        if (fetchedResumeData) {
-          dispatch(setReduxResumeData(fetchedResumeData));
-          // If we have detailed resume data, set that too
-          if (fetchedResumeData.detailedResumeData) {
-            dispatch(setReduxDetailedResumeData(fetchedResumeData.detailedResumeData));
+
+        // Only update if different or new
+        if (JSON.stringify(fetchedResumeData) !== JSON.stringify(reduxResumeData)) {
+          setResumeData(fetchedResumeData);
+          // Also update Redux state so InterviewChat can access it
+          if (fetchedResumeData) {
+            dispatch(setReduxResumeData(fetchedResumeData));
+            // If we have detailed resume data, set that too
+            if (fetchedResumeData.detailedResumeData) {
+              dispatch(setReduxDetailedResumeData(fetchedResumeData.detailedResumeData));
+            }
           }
+        } else {
+          console.log('📦 [useResumeData] API data matches cache, no update needed');
+          setResumeData(fetchedResumeData);
         }
       } else {
         setResumeData(null);
@@ -49,17 +67,17 @@ export const useResumeData = () => {
     } finally {
       setLoading(false);
     }
-  }, [isAuthenticated, token, dispatch]);
+  }, [isAuthenticated, dispatch, reduxResumeData]);
 
   const updateResumeData = useCallback(async (newResumeData: any) => {
-    if (!isAuthenticated || !token) {
+    if (!isAuthenticated) {
       throw new Error('User not authenticated');
     }
 
     try {
       setLoading(true);
       setError(null);
-      
+
       const response = await api.post('/auth/resume', {
         resumeData: newResumeData
       });
@@ -86,19 +104,19 @@ export const useResumeData = () => {
     } finally {
       setLoading(false);
     }
-  }, [isAuthenticated, token, dispatch]);
+  }, [isAuthenticated, dispatch]);
 
   useEffect(() => {
     fetchResumeData();
   }, [fetchResumeData]);
 
   return {
-    resumeData,
+    resumeData: reduxResumeData || resumeData,
     loading,
     error,
     fetchResumeData,
     updateResumeData,
-    hasResume: !!resumeData
+    hasResume: !!(reduxResumeData || resumeData)
   };
 };
 

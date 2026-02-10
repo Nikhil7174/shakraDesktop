@@ -16,17 +16,17 @@ interface SecurityStatus {
   timestamp: number;
 }
 
-interface SecurityState {
+export interface SecurityState {
   // Connection status
   isSecurityAgentConnected: boolean;
-  
+
   // Cheating detection
   cheatingDetected: boolean;
   cheatingIncidents: CheatingIncident[];
-  
+
   // Security status
   securityStatus: SecurityStatus | null;
-  
+
   // UI state
   showWarning: boolean;
   warningMessage: string;
@@ -51,7 +51,7 @@ const securitySlice = createSlice({
 
     setCheatingDetected: (state, action: PayloadAction<boolean>) => {
       state.cheatingDetected = action.payload;
-      
+
       // Show warning when cheating is detected
       if (action.payload) {
         state.showWarning = true;
