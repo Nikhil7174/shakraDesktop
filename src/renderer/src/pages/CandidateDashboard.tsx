@@ -183,7 +183,7 @@ export const CandidateDashboard: React.FC = () => {
   const columns = useMemo(() => [
     {
       title: (
-        <div style={{ height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ height: 32, display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
           {companySearchVisible ? (
             <Input
               placeholder="Search company..."
@@ -195,7 +195,7 @@ export const CandidateDashboard: React.FC = () => {
               autoFocus
               prefix={<SearchOutlined style={{ color: '#9CA3AF' }} />}
               onClick={(e) => e.stopPropagation()}
-              style={{ width: '100%', fontSize: 13 }}
+              style={{ width: '70%', fontSize: 13 }}
             />
           ) : (
             <div
@@ -235,7 +235,7 @@ export const CandidateDashboard: React.FC = () => {
     },
     {
       title: (
-        <div style={{ height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ height: 32, display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
           {titleSearchVisible ? (
             <Input
               placeholder="Search interview..."
@@ -247,7 +247,7 @@ export const CandidateDashboard: React.FC = () => {
               autoFocus
               prefix={<SearchOutlined style={{ color: '#9CA3AF' }} />}
               onClick={(e) => e.stopPropagation()}
-              style={{ width: '100%', fontSize: 13 }}
+              style={{ width: '70%', fontSize: 13 }}
             />
           ) : (
             <div
