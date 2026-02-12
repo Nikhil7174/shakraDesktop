@@ -625,7 +625,20 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     }
   }, [])
 
+  // Handle security warnings by sending them to the agent via data channel
+  const handleSecurityWarning = useCallback((message: string) => {
+    if (broadcastDataRef.current) {
+      broadcastDataRef.current({
+        type: 'security_warning',
+        message,
+        timestamp: Date.now()
+      })
+      console.log('📤 [Vision Security] Sent security warning to agent:', message)
+    }
+  }, [])
+
   const {
+
     visionSecurityStatus,
     warningStats,
     warningStatsRef,
@@ -638,7 +651,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     isSpeaking,
     isEvaluating,
     isListening,
-    currentCodingProblem
+    currentCodingProblem,
+    onWarning: handleSecurityWarning
   })
 
   // Keep evaluations ref updated

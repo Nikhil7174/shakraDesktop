@@ -22,17 +22,16 @@ export class VisionSecurityService {
   private capturedScreenshot: string | null = null
   private isCodingSection: boolean = false
 
+
   // Thresholds
   private readonly GAZE_AWAY_THRESHOLD = 3000 // 3 seconds
   private readonly FACE_ABSENT_THRESHOLD = 5000 // 5 seconds
   private readonly BLINK_EAR_THRESHOLD = 0.25
-  private readonly MOBILE_DEVICE_DURATION = 3000 // 3 seconds - gaze down must persist
 
   constructor(onWarningComplete?: (warning: any) => void) {
     const thresholds = {
       gaze_away: this.GAZE_AWAY_THRESHOLD,
       face_absent: this.FACE_ABSENT_THRESHOLD,
-      mobile_device_usage: this.MOBILE_DEVICE_DURATION,
       multiple_faces: 0
     }
     this.warningManager = new WarningStateManager(thresholds, onWarningComplete)
@@ -43,11 +42,11 @@ export class VisionSecurityService {
 
     try {
       console.log('🔧 Initializing MediaPipe Vision Security Service...')
-      
+
       const vision = await FilesetResolver.forVisionTasks(
         'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm'
       )
-      
+
       console.log('✅ MediaPipe FilesetResolver loaded successfully')
 
       // Initialize Face Landmarker
@@ -74,15 +73,15 @@ export class VisionSecurityService {
       console.log('✅ Vision Security Service initialized successfully')
     } catch (error: any) {
       console.error('❌ Failed to initialize Vision Security Service:', error)
-      
+
       // Check if it's a CSP error
-      if (error?.message?.includes('Content Security Policy') || 
-          error?.message?.includes('CSP') ||
-          error?.type === 'error') {
+      if (error?.message?.includes('Content Security Policy') ||
+        error?.message?.includes('CSP') ||
+        error?.type === 'error') {
         console.error('⚠️ CSP Error: MediaPipe WASM files are being blocked by Content Security Policy')
         console.error('⚠️ Please check that CSP allows: script-src-elem, worker-src, and wasm-unsafe-eval')
       }
-      
+
       throw error
     }
   }
@@ -139,7 +138,7 @@ export class VisionSecurityService {
     // Multiple faces warning management
     if (multipleFacesDetected) {
       this.warningManager.startWarning('multiple_faces')
-      
+
       // Capture screenshot if not already captured
       if (!this.capturedScreenshot && getScreenshot) {
         this.capturedScreenshot = getScreenshot()
@@ -166,20 +165,15 @@ export class VisionSecurityService {
       blinkRate = this.detectBlink(landmarks, now)
     }
 
-    // Mobile device detection: Gaze down pattern
-    // Skip mobile device detection during coding section (users look down at keyboard naturally)
-    const mobileDeviceUsageDetected = faceDetected && gazeDirection === 'down' && !this.isCodingSection
-    if (mobileDeviceUsageDetected) {
-      this.warningManager.startWarning('mobile_device_usage')
-    } else {
-      this.warningManager.endWarning('mobile_device_usage')
-    }
+
+
 
     // Gaze away detection (only when face is detected, excluding down which is mobile device)
-    const gazeAway = faceDetected && 
-                     gazeDirection !== 'center' && 
-                     gazeDirection !== 'away' && 
-                     (!this.isCodingSection || gazeDirection !== 'down')
+    const gazeAway = faceDetected &&
+      gazeDirection !== 'center' &&
+      gazeDirection !== 'away' &&
+      (!this.isCodingSection || gazeDirection !== 'down')
+
     if (gazeAway) {
       this.warningManager.startWarning('gaze_away')
     } else {
@@ -197,7 +191,7 @@ export class VisionSecurityService {
       handCount: 0,
       suspiciousHandPatterns: [],
       handMovementIntensity: 0,
-      mobileDeviceUsageDetected,
+
       suspiciousEvents: [],
       timestamp: now
     }
@@ -228,14 +222,14 @@ export class VisionSecurityService {
     const rightEyeWidth = Math.abs(rightEyeRight.x - rightEyeLeft.x)
 
     // Calculate offset from eye center (normalized by eye width)
-    const leftOffsetX = leftEyeCenter 
+    const leftOffsetX = leftEyeCenter
       ? (leftEyeCenter.x - (leftEyeLeft.x + leftEyeRight.x) / 2) / leftEyeWidth
       : 0
     const leftOffsetY = leftEyeCenter && leftEyeTop && leftEyeBottom
       ? (leftEyeCenter.y - (leftEyeTop.y + leftEyeBottom.y) / 2) / Math.abs(leftEyeTop.y - leftEyeBottom.y)
       : 0
-    
-    const rightOffsetX = rightEyeCenter 
+
+    const rightOffsetX = rightEyeCenter
       ? (rightEyeCenter.x - (rightEyeLeft.x + rightEyeRight.x) / 2) / rightEyeWidth
       : 0
     const rightOffsetY = rightEyeCenter && rightEyeTop && rightEyeBottom
@@ -316,16 +310,16 @@ export class VisionSecurityService {
 
   getWarningStats(): any {
     const stats = this.warningManager.getWarningStats()
-    
-      // Attach screenshot to multiple_faces stats if available
+
+    // Attach screenshot to multiple_faces stats if available
     if (this.capturedScreenshot) {
       if (!stats['multiple_faces']) {
-         // Create placeholder if no completed events yet
-         stats['multiple_faces'] = { count: 0, totalDuration: 0, events: [] }
+        // Create placeholder if no completed events yet
+        stats['multiple_faces'] = { count: 0, totalDuration: 0, events: [] }
       }
       (stats['multiple_faces'] as any).screenshot = this.capturedScreenshot
     }
-    
+
     return stats
   }
 
@@ -345,7 +339,6 @@ export class VisionSecurityService {
     this.isCodingSection = isCodingSection
     // End any active gaze down warnings when entering/exiting coding section
     if (isCodingSection) {
-      this.warningManager.endWarning('mobile_device_usage')
       this.warningManager.endWarning('gaze_away')
     }
   }

@@ -10,6 +10,7 @@ type VisionSecurityArgs = {
   isEvaluating: boolean
   isListening: boolean
   currentCodingProblem: unknown | null
+  onWarning?: (message: string) => void
 }
 
 export const useVoiceInterviewVisionSecurity = ({
@@ -19,7 +20,8 @@ export const useVoiceInterviewVisionSecurity = ({
   isSpeaking,
   isEvaluating,
   isListening,
-  currentCodingProblem
+  currentCodingProblem,
+  onWarning
 }: VisionSecurityArgs) => {
   const [visionSecurityStatus, setVisionSecurityStatus] = useState<any>(null)
 
@@ -34,9 +36,10 @@ export const useVoiceInterviewVisionSecurity = ({
     isListening,
     isCodingSection: !!currentCodingProblem,
     onSecurityAlert: (status) => {
-      // Just update UI status - TTS is handled in useVisionSecurity hook
+      // Just update UI status - TTS is handled in useVisionSecurity hook via onWarning
       setVisionSecurityStatus(status)
-    }
+    },
+    onWarning
   })
 
   // Keep warningStats ref for final evaluation (logging stays in renderer)

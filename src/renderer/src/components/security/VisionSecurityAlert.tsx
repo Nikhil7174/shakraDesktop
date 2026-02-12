@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useRef } from 'react'
-import { Alert, Space, Button, Collapse } from 'antd'
-import { WarningOutlined, EyeOutlined, MobileOutlined, UserDeleteOutlined, BarChartOutlined } from '@ant-design/icons'
+import React, { useEffect, useState } from 'react'
+import { Alert, Space, Button } from 'antd'
+import { WarningOutlined, EyeOutlined, UserDeleteOutlined, BarChartOutlined } from '@ant-design/icons'
 import type { VisionSecurityStatus, SuspiciousEvent } from '../../../../shared/types'
 import { WarningDashboard } from '../WarningDashboard'
 
@@ -47,7 +47,7 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
   //         description: e.description
   //       })) || []
   //     })
-      
+
   //     if (eventsCount > 0) {
   //       console.log('🔔 [VisionSecurityAlert] Will render alerts for', eventsCount, 'events')
   //     } else {
@@ -73,16 +73,16 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
   // This prevents duplicate alerts for the same event type
   const now = Date.now()
   const eventsByType = new Map<string, SuspiciousEvent>()
-  
+
   // Collect most recent event of each type
   status.suspiciousEvents.forEach(event => {
     const eventKey = `${event.type}-${event.timestamp}`
     const isDismissed = dismissedEvents.has(eventKey)
-    
+
     // Events stay visible for 60 seconds
     const staleThreshold = 60000
     const isRecent = (now - event.timestamp) < staleThreshold
-    
+
     if (!isDismissed && isRecent) {
       const existing = eventsByType.get(event.type)
       // Keep the most recent event of each type
@@ -91,7 +91,7 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
       }
     }
   })
-  
+
   const activeEvents = Array.from(eventsByType.values())
 
   // console.log('🔔 [VisionSecurityAlert] Active events after filtering:', activeEvents.length, 'out of', status.suspiciousEvents.length, {
@@ -118,10 +118,10 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
         return <EyeOutlined />
       case 'multiple_faces':
         return <UserDeleteOutlined />
-      case 'mobile_device_usage':
-        return <MobileOutlined />
       default:
         return <WarningOutlined />
+
+
     }
   }
 
@@ -134,10 +134,10 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
         return 'Multiple faces detected in frame'
       case 'face_absent':
         return `Face not detected (${Math.round((event.duration || 0) / 1000)}s)`
-      case 'mobile_device_usage':
-        return 'Possible mobile device usage detected (looking down)'
       default:
         return event.description
+
+
     }
   }
 
@@ -179,7 +179,7 @@ export const VisionSecurityAlert: React.FC<VisionSecurityAlertProps> = ({
           const severity = events[0].severity
           const message = getEventMessage(type as SuspiciousEvent['type'], events)
           // console.log('🔔 [VisionSecurityAlert] Rendering alert:', { type, severity, message })
-          
+
           return (
             <Alert
               key={type}

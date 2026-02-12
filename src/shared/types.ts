@@ -255,11 +255,11 @@ export interface FinalEvaluationPayload {
   startTime: string  // ISO string for JSON serialization
   endTime: string    // ISO string for JSON serialization
   duration: number   // milliseconds
-  
+
   // Full chronological conversation (all sections)
   // This is the complete interview transcript in order
   fullConversationHistory: ConversationMessage[]
-  
+
   // Structured breakdowns for easy analysis
   theoreticalSection: {
     questions: Question[]
@@ -273,7 +273,7 @@ export interface FinalEvaluationPayload {
     overallScore: number
     totalQuestions: number
   }
-  
+
   codingSection: {
     problems: CodingProblem[]
     conversations: {
@@ -299,13 +299,13 @@ export interface FinalEvaluationPayload {
     overallScore: number
     totalProblems: number
   }
-  
+
   // Summary metrics
   totalScore: number
   strengths: string[]
   areasForImprovement: string[]
   overallFeedback: string
-  
+
   // Additional metadata
   hintRequestCount: number
   clarificationRequestCount: number
@@ -333,8 +333,8 @@ export type GazeDirection = 'center' | 'left' | 'right' | 'up' | 'down' | 'away'
 
 export type SuspiciousHandPattern = 'phone_usage' | 'typing' | 'hand_near_face' | 'hand_near_ear' | 'rapid_movement'
 
-export interface SuspiciousEvent {
-  type: 'gaze_away' | 'multiple_faces' | 'face_absent' | 'abnormal_blink' | 'suspicious_hand_pattern' | 'mobile_device_usage'
+export type SuspiciousEvent = {
+  type: 'gaze_away' | 'multiple_faces' | 'face_absent' | 'abnormal_blink' | 'suspicious_hand_pattern'
   timestamp: number
   severity: 'low' | 'medium' | 'high'
   description: string
@@ -351,7 +351,6 @@ export interface VisionSecurityStatus {
   handsDetected: boolean
   handCount: number
   suspiciousHandPatterns: SuspiciousHandPattern[]
-  mobileDeviceUsageDetected: boolean
   handMovementIntensity: number // 0-1, indicating rapid hand movements
   suspiciousEvents: SuspiciousEvent[]
   timestamp: number
