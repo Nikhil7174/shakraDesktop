@@ -358,8 +358,6 @@ export const InterviewChat: React.FC = () => {
               roomName={(currentSession as any)?.roomName}
               onComplete={handleInterviewComplete}
               onSaveResults={saveResults}
-
-              onQuitInterview={() => setShowQuitConfirm(true)}
             />
           );
         }

@@ -142,34 +142,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     }
   }, [isMicMuted])
 
-  // Handle end call
-  const handleEndCall = useCallback(async () => {
-    // Use the provided quit handler if available, otherwise use default behavior
-    if (onQuitInterview) {
-      onQuitInterview()
-    } else {
-      const confirmEnd = window.confirm('Are you sure you want to end the interview?')
-      if (confirmEnd) {
-        try {
-          // Disconnect from LiveKit room
-          if (livekitRoomRef.current) {
-            await livekitRoomRef.current.disconnect()
-            livekitRoomRef.current = null
-          }
 
-          // Clear any unfinished interview data
-          await window.electronAPI?.clearUnfinishedInterview?.()
-
-          // Call the onComplete callback to end the interview
-          onComplete?.({ userEnded: true })
-        } catch (error) {
-          console.error('Error ending interview:', error)
-          // Still call onComplete even if cleanup fails
-          onComplete?.({ userEnded: true })
-        }
-      }
-    }
-  }, [onQuitInterview, onComplete])
 
   const LiveKitRoomEventBridge: React.FC = () => {
     const room = useRoomContext()
@@ -383,139 +356,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           // Handle interview completion from agent
           if (messageData.type === 'interview_completed') {
             console.log('🎉 [LiveKit] Interview completed via data channel', messageData)
-            hasCompletedRef.current = true
-
-            // Mark that an interview has been completed in this app session
-            sessionStorage.setItem('interviewCompletedInSession', 'true')
-
-            // Update state to completed
-            setCurrentState('completed')
-            onStateChange?.('completed')
-
-            // Build session object for modals from agent data
-            const agentState = messageData.state || {}
-            const agentEvaluations = messageData.evaluations || []
-            const currentEvaluations = evaluationsRef.current
-
-            const sessionObject: InterviewSession = {
-              sessionId: interviewId,
-              interviewLinkId: interviewLinkId,
-              candidateId: agentState.candidateId || 'unknown',
-              status: 'completed',
-              questions: questions.map((q, idx) => ({
-                id: q.id || `q-${idx}`,
-                question: q.question || '',
-                type: 'technical' as const,
-                difficulty: (q as any).difficulty || 'medium',
-                timeLimit: 300,
-                options: [],
-                answeredAt: (q as any).answeredAt,
-                correctAnswerId: (q as any).correctAnswerId,
-              })),
-              answers: (agentEvaluations.length > 0 ? agentEvaluations : currentEvaluations).map((ev: any) => ({
-                questionId: ev.questionId || '',
-                answer: ev.answer || '',
-                answeredAt: new Date(ev.timestamp || Date.now()),
-                timeTaken: ev.timeTaken || 0,
-                score: ev.score,
-                feedback: ev.feedback,
-                code: ev.code
-              })),
-              startTime: new Date(agentState.startTime || Date.now()),
-              endTime: new Date(agentState.endTime || Date.now()),
-              duration: 0
-            }
-
-            // Calculate duration
-            if (sessionObject.startTime && sessionObject.endTime) {
-              sessionObject.duration = Math.floor((sessionObject.endTime.getTime() - sessionObject.startTime.getTime()) / 1000)
-            }
-
-            setSessionForModals(sessionObject)
-
-            // Send vision security warnings to backend (conversation history is sent by agent)
-            const sendVisionWarnings = async () => {
-              try {
-                const { default: api } = await import('../services/api')
-
-                // End all active warnings before collecting stats
-                endAllActiveWarnings()
-                const visionWarnings = warningStatsRef.current
-
-                // Only send if there are warnings to report
-                if (!visionWarnings || Object.keys(visionWarnings).length === 0) {
-                  console.log('📋 [LiveKit] No vision warnings to send')
-                  return
-                }
-
-                console.log('📤 [LiveKit] Sending vision security warnings to backend')
-                const response = await api.put(`/interview/${interviewId}/vision-security`, {
-                  suspiciousEvents: Object.values(visionWarnings)
-                })
-
-                if (response.data.success) {
-                  console.log('✅ [LiveKit] Vision warnings sent successfully')
-                } else {
-                  console.error('❌ [LiveKit] Vision warnings submission failed:', response.data.error)
-                }
-              } catch (error: any) {
-                console.error('❌ [LiveKit] Failed to send vision warnings:', error.message)
-              }
-            }
-
-            // Run async operations without blocking
-            (async () => {
-              await sendVisionWarnings()
-
-              // Save results if needed
-              if (onSaveResultsRef.current && interviewLinkId) {
-                const totalQuestions = questions.length + codingProblems.length
-                const allEvaluations = agentEvaluations.length > 0 ? agentEvaluations : currentEvaluations
-                const theoreticalScore = allEvaluations.length > 0
-                  ? allEvaluations.reduce((sum: number, ev: any) => sum + (ev.score || 0), 0) / allEvaluations.length
-                  : 0
-
-                const summary = {
-                  sessionId: interviewId,
-                  interviewLinkId: interviewLinkId,
-                  candidateId: agentState.candidateId || 'unknown',
-                  candidateName: resumeData?.name || user?.fullName || 'Unknown',
-                  candidateEmail: user?.email || resumeData?.email || 'unknown@example.com',
-                  candidatePhone: resumeData?.phone || '',
-                  completedAt: new Date().toISOString(),
-                  startTime: agentState.startTime || new Date().toISOString(),
-                  endTime: agentState.endTime || new Date().toISOString(),
-                  duration: sessionObject.duration,
-                  score: Math.round(theoreticalScore),
-                  totalQuestions: totalQuestions,
-                  correctAnswers: allEvaluations.filter((ev: any) => ev.score >= 70).length,
-                  timeSpent: sessionObject.duration,
-                  strengths: theoreticalScore >= 80 ? ['Excellent technical knowledge'] : ['Good understanding'],
-                  areasForImprovement: theoreticalScore < 60 ? ['Review fundamentals'] : ['Continue practicing'],
-                  overallFeedback: `Interview completed with ${Math.round(theoreticalScore)}% average score.`,
-                  detailedAnswers: allEvaluations.map((ev: any) => ({
-                    questionId: ev.questionId || '',
-                    question: ev.question || '',
-                    userAnswer: ev.answer || '',
-                    correctAnswer: '',
-                    isCorrect: ev.score >= 70,
-                    timeTaken: ev.timeTaken || 0
-                  })),
-                  questionAnalysis: {
-                    easyQuestions: questions.filter(q => (q as any).difficulty === 'easy').length,
-                    mediumQuestions: questions.filter(q => (q as any).difficulty === 'medium').length,
-                    hardQuestions: questions.filter(q => (q as any).difficulty === 'hard').length,
-                    correctByDifficulty: { easy: 0, medium: 0, hard: 0 }
-                  }
-                }
-
-                saveSummaryRef.current = summary
-                saveResultsWithRetry(summary, 0)
-              } else {
-                // No save needed, go directly to feedback
-                setShowFeedbackModal(true)
-              }
-            })()
+            saveAndEndInterview(messageData.state, messageData.evaluations)
           }
         } catch (error) {
           console.error('❌ [LiveKit] Failed to parse data channel message:', error)
@@ -877,6 +718,211 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
   // When STT is listening and mic stream is ready, proceed from connecting → intro
   // (Logic moved to LiveKitRoomEventBridge)
+
+  // Centralized save and end logic
+  // Function to determine if we should send a quit message to the agent
+  // We only send it if the USER initiated the end (quit), not if the agent finished it
+  const sendUserQuitToAgent = useCallback(async () => {
+    if (livekitRoomRef.current && livekitRoomRef.current.localParticipant) {
+      try {
+        console.log('📤 [VoiceInterview] Sending user_quit to agent...')
+        const encoder = new TextEncoder()
+        const data = encoder.encode(JSON.stringify({
+          type: 'user_quit',
+          timestamp: Date.now()
+        }))
+        await livekitRoomRef.current.localParticipant.publishData(data, { reliable: true })
+        console.log('✅ [VoiceInterview] user_quit sent')
+        // Give a brief moment for the message to flush
+        await new Promise(resolve => setTimeout(resolve, 500))
+      } catch (error) {
+        console.error('❌ [VoiceInterview] Failed to send user_quit:', error)
+      }
+    } else {
+      console.warn('⚠️ [VoiceInterview] Cannot send user_quit - room/participant not ready')
+    }
+  }, [])
+
+  const saveAndEndInterview = useCallback(async (stateData?: any, evaluationData?: any, isUserQuit: boolean = false) => {
+    if (hasCompletedRef.current) return
+    hasCompletedRef.current = true
+
+    console.log('🏁 Ending interview and saving data...')
+
+    // If user quit, notify agent FIRST so it can save history on its side too
+    if (isUserQuit) {
+      await sendUserQuitToAgent()
+    }
+
+    // Mark that an interview has been completed in this app session
+    sessionStorage.setItem('interviewCompletedInSession', 'true')
+
+    // Update state to completed
+    setCurrentState('completed')
+    onStateChange?.('completed')
+
+    // Build session object for modals from data
+    const agentState = stateData || {}
+    const agentEvaluations = evaluationData || []
+    const currentEvaluations = evaluationsRef.current
+
+    const sessionObject: InterviewSession = {
+      sessionId: interviewId,
+      interviewLinkId: interviewLinkId,
+      candidateId: agentState.candidateId || 'unknown',
+      status: 'completed',
+      questions: questions.map((q, idx) => ({
+        id: q.id || `q-${idx}`,
+        question: q.question || '',
+        type: 'technical' as const,
+        difficulty: (q as any).difficulty || 'medium',
+        timeLimit: 300,
+        options: [],
+        answeredAt: (q as any).answeredAt,
+        correctAnswerId: (q as any).correctAnswerId,
+      })),
+      answers: (agentEvaluations.length > 0 ? agentEvaluations : currentEvaluations).map((ev: any) => ({
+        questionId: ev.questionId || '',
+        answer: ev.answer || '',
+        answeredAt: new Date(ev.timestamp || Date.now()),
+        timeTaken: ev.timeTaken || 0,
+        score: ev.score,
+        feedback: ev.feedback,
+        code: ev.code
+      })),
+      startTime: new Date(agentState.startTime || Date.now()),
+      endTime: new Date(agentState.endTime || Date.now()),
+      duration: 0
+    }
+
+    // Calculate duration
+    if (sessionObject.startTime && sessionObject.endTime) {
+      sessionObject.duration = Math.floor((sessionObject.endTime.getTime() - sessionObject.startTime.getTime()) / 1000)
+    }
+
+    setSessionForModals(sessionObject)
+
+    // Send vision security warnings to backend (conversation history is sent by agent)
+    const sendVisionWarnings = async () => {
+      try {
+        const { default: api } = await import('../services/api')
+
+        // End all active warnings before collecting stats
+        endAllActiveWarnings()
+        const visionWarnings = warningStatsRef.current
+
+        // Only send if there are warnings to report
+        if (!visionWarnings || Object.keys(visionWarnings).length === 0) {
+          console.log('📋 [LiveKit] No vision warnings to send')
+          return
+        }
+
+        console.log('📤 [LiveKit] Sending vision security warnings to backend')
+        const response = await api.put(`/interview/${interviewId}/vision-security`, {
+          suspiciousEvents: Object.values(visionWarnings)
+        })
+
+        if (response.data.success) {
+          console.log('✅ [LiveKit] Vision warnings sent successfully')
+        } else {
+          console.error('❌ [LiveKit] Vision warnings submission failed:', response.data.error)
+        }
+      } catch (error: any) {
+        console.error('❌ [LiveKit] Failed to send vision warnings:', error.message)
+      }
+    }
+
+    // Run async operations
+    await sendVisionWarnings()
+
+    // Save results if needed
+    if (onSaveResultsRef.current && interviewLinkId) {
+      const totalQuestions = questions.length + codingProblems.length
+      const allEvaluations = agentEvaluations.length > 0 ? agentEvaluations : currentEvaluations
+      const theoreticalScore = allEvaluations.length > 0
+        ? allEvaluations.reduce((sum: number, ev: any) => sum + (ev.score || 0), 0) / allEvaluations.length
+        : 0
+
+      const summary = {
+        sessionId: interviewId,
+        interviewLinkId: interviewLinkId,
+        candidateId: agentState.candidateId || 'unknown',
+        candidateName: resumeData?.name || user?.fullName || 'Unknown',
+        candidateEmail: user?.email || resumeData?.email || 'unknown@example.com',
+        candidatePhone: resumeData?.phone || '',
+        completedAt: new Date().toISOString(),
+        startTime: agentState.startTime || new Date().toISOString(),
+        endTime: agentState.endTime || new Date().toISOString(),
+        duration: sessionObject.duration,
+        score: Math.round(theoreticalScore),
+        totalQuestions: totalQuestions,
+        correctAnswers: allEvaluations.filter((ev: any) => ev.score >= 70).length,
+        timeSpent: sessionObject.duration,
+        strengths: theoreticalScore >= 80 ? ['Excellent technical knowledge'] : ['Good understanding'],
+        areasForImprovement: theoreticalScore < 60 ? ['Review fundamentals'] : ['Continue practicing'],
+        overallFeedback: `Interview completed with ${Math.round(theoreticalScore)}% average score.`,
+        detailedAnswers: allEvaluations.map((ev: any) => ({
+          questionId: ev.questionId || '',
+          question: ev.question || '',
+          userAnswer: ev.answer || '',
+          correctAnswer: '',
+          isCorrect: ev.score >= 70,
+          timeTaken: ev.timeTaken || 0
+        })),
+        questionAnalysis: {
+          easyQuestions: questions.filter(q => (q as any).difficulty === 'easy').length,
+          mediumQuestions: questions.filter(q => (q as any).difficulty === 'medium').length,
+          hardQuestions: questions.filter(q => (q as any).difficulty === 'hard').length,
+          correctByDifficulty: { easy: 0, medium: 0, hard: 0 }
+        }
+      }
+
+      saveSummaryRef.current = summary
+      await saveResultsWithRetry(summary, 0)
+    } else {
+      // No save needed, go directly to feedback
+      setShowFeedbackModal(true)
+    }
+  }, [interviewId, interviewLinkId, questions, codingProblems, resumeData, user, endAllActiveWarnings, saveResultsWithRetry, sendUserQuitToAgent])
+
+  // Handle end call
+  const handleEndCall = useCallback(async () => {
+    // Use ConfirmationModal instead of window.confirm
+    setConfirmationModalConfig({
+      message: 'Are you sure you want to quit the interview? All progress will be saved.',
+      okText: 'Quit Interview',
+      okButtonProps: { danger: true },
+      onConfirm: async () => {
+        try {
+          console.log('🛑 User initiated interview end')
+          setShowConfirmationModal(false)
+
+          // Save data FIRST before disconnecting
+          // Pass empty state/evals so it uses current refs
+          // Pass true for isUserQuit to trigger agent notification
+          await saveAndEndInterview({}, [], true)
+
+          // Disconnect from LiveKit room
+          if (livekitRoomRef.current) {
+            await livekitRoomRef.current.disconnect()
+            livekitRoomRef.current = null
+          }
+
+          // Clear any unfinished interview data
+          await window.electronAPI?.clearUnfinishedInterview?.()
+
+          // Call the onComplete callback to end the interview (navigation)
+          onComplete?.({ userEnded: true })
+        } catch (error) {
+          console.error('Error ending interview:', error)
+          // Still call onComplete even if cleanup fails
+          onComplete?.({ userEnded: true })
+        }
+      },
+      onCancel: () => setShowConfirmationModal(false)
+    })
+    setShowConfirmationModal(true)
+  }, [onComplete, saveAndEndInterview])
 
   const handleCodeChange = useCallback((code: string) => {
     // Track current code for timer expiration
