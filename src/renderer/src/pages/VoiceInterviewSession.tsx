@@ -169,13 +169,17 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       // Broadcast code changes to agent (debounced)
       // Notepad is bundled with code sync; also synced immediately when user speaks
       const isCodingState = currentState === 'coding_problem' || currentState === 'coding'
-      if (isCodingState && currentCode) {
+      if (isCodingState && (currentCode || currentComplexity.time || currentComplexity.space)) {
         const timeoutId = setTimeout(() => {
           if (room.localParticipant) {
             const data = new TextEncoder().encode(JSON.stringify({
               type: 'code_snapshot',
               code: currentCode,
               notepad: currentNotepadRef.current || '',
+              complexity: {
+                time: currentComplexity.time,
+                space: currentComplexity.space
+              },
               timestamp: Date.now()
             }))
             room.localParticipant.publishData(data, { reliable: true })
@@ -185,7 +189,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         return () => clearTimeout(timeoutId)
       }
       return
-    }, [currentCode, room, currentState])
+    }, [currentCode, currentComplexity.time, currentComplexity.space, room, currentState])
 
     // Keep currentCodeRef and currentNotepadRef in sync with state
     useEffect(() => {
@@ -716,10 +720,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     animate()
   }
 
-  // When STT is listening and mic stream is ready, proceed from connecting → intro
-  // (Logic moved to LiveKitRoomEventBridge)
-
-  // Centralized save and end logic
   // Function to determine if we should send a quit message to the agent
   // We only send it if the USER initiated the end (quit), not if the agent finished it
   const sendUserQuitToAgent = useCallback(async () => {
@@ -743,6 +743,44 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     }
   }, [])
 
+  // Function to send vision security warnings to backend
+  const sendVisionSecurityWarnings = useCallback(async () => {
+    try {
+      const { default: api } = await import('../services/api')
+
+      // End all active warnings before collecting stats
+      endAllActiveWarnings()
+      const visionWarnings = warningStatsRef.current
+
+      // Only send if there are warnings to report
+      if (visionWarnings && Object.keys(visionWarnings).length > 0) {
+        console.log('📤 [VoiceInterview] Sending vision security warnings to backend')
+
+        // Convert stats object to array and ensure type is included
+        const suspiciousEvents = Object.entries(visionWarnings).map(([type, stats]: [string, any]) => ({
+          type,
+          ...stats,
+          description: `Detected ${type.replace(/_/g, ' ')}`,
+          severity: 'medium' // Default severity
+        }))
+
+        const response = await api.put(`/interview/${interviewId}/vision-security`, {
+          suspiciousEvents
+        })
+
+        if (response.data.success) {
+          console.log('✅ [VoiceInterview] Vision warnings sent successfully')
+        } else {
+          console.error('❌ [VoiceInterview] Vision warnings submission failed:', response.data.error)
+        }
+      } else {
+        console.log('📋 [VoiceInterview] No vision warnings to send')
+      }
+    } catch (error: any) {
+      console.error('❌ [VoiceInterview] Failed to send vision warnings:', error.message)
+    }
+  }, [interviewId, endAllActiveWarnings])
+
   const saveAndEndInterview = useCallback(async (stateData?: any, evaluationData?: any, isUserQuit: boolean = false) => {
     if (hasCompletedRef.current) return
     hasCompletedRef.current = true
@@ -753,6 +791,8 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
     if (isUserQuit) {
       await sendUserQuitToAgent()
     }
+
+    await sendVisionSecurityWarnings()
 
     // Mark that an interview has been completed in this app session
     sessionStorage.setItem('interviewCompletedInSession', 'true')
@@ -802,39 +842,6 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 
     setSessionForModals(sessionObject)
 
-    // Send vision security warnings to backend (conversation history is sent by agent)
-    const sendVisionWarnings = async () => {
-      try {
-        const { default: api } = await import('../services/api')
-
-        // End all active warnings before collecting stats
-        endAllActiveWarnings()
-        const visionWarnings = warningStatsRef.current
-
-        // Only send if there are warnings to report
-        if (!visionWarnings || Object.keys(visionWarnings).length === 0) {
-          console.log('📋 [LiveKit] No vision warnings to send')
-          return
-        }
-
-        console.log('📤 [LiveKit] Sending vision security warnings to backend')
-        const response = await api.put(`/interview/${interviewId}/vision-security`, {
-          suspiciousEvents: Object.values(visionWarnings)
-        })
-
-        if (response.data.success) {
-          console.log('✅ [LiveKit] Vision warnings sent successfully')
-        } else {
-          console.error('❌ [LiveKit] Vision warnings submission failed:', response.data.error)
-        }
-      } catch (error: any) {
-        console.error('❌ [LiveKit] Failed to send vision warnings:', error.message)
-      }
-    }
-
-    // Run async operations
-    await sendVisionWarnings()
-
     // Save results if needed
     if (onSaveResultsRef.current && interviewLinkId) {
       const totalQuestions = questions.length + codingProblems.length
@@ -883,7 +890,7 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       // No save needed, go directly to feedback
       setShowFeedbackModal(true)
     }
-  }, [interviewId, interviewLinkId, questions, codingProblems, resumeData, user, endAllActiveWarnings, saveResultsWithRetry, sendUserQuitToAgent])
+  }, [interviewId, interviewLinkId, questions, codingProblems, resumeData, user, saveResultsWithRetry, sendUserQuitToAgent, sendVisionSecurityWarnings])
 
   // Handle end call
   const handleEndCall = useCallback(async () => {
@@ -938,6 +945,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
           type: 'code_snapshot',
           code: code,
           problemId: problemId,
+          complexity: {
+            time: currentComplexity.time,
+            space: currentComplexity.space
+          },
           timestamp: Date.now()
         })
       }
@@ -976,6 +987,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
       broadcastDataRef.current({
         type: 'code_snapshot',
         code: code,
+        complexity: {
+          time: timeComplexity,
+          space: spaceComplexity
+        },
         timestamp: Date.now()
       })
 
@@ -1012,6 +1027,10 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
         broadcastDataRef.current({
           type: 'code_snapshot',
           code: code,
+          complexity: {
+            time: timeComplexity,
+            space: spaceComplexity
+          },
           timestamp: Date.now()
         })
 
