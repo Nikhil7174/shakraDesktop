@@ -623,14 +623,28 @@ export class ProcessMonitor {
   private async getProcessesFallback(): Promise<any[]> {
     try {
       // Use ps command as fallback with better formatting
-      const { stdout } = await execAsync('ps -eo pid,ppid,comm,%cpu,%mem --no-headers')
+      // Note: ps flags differ between Linux (procps) and macOS/BSD
+      const platform = os.platform()
+      let command: string
+
+      if (platform === 'darwin') {
+        // macOS / BSD ps: use -axo and filter out the header line in parsing
+        command = 'ps -axo pid,ppid,comm,%cpu,%mem'
+      } else {
+        // Linux / others: GNU ps usually supports --no-headers
+        command = 'ps -eo pid,ppid,comm,%cpu,%mem --no-headers'
+      }
+
+      const { stdout } = await execAsync(command)
       const lines = stdout.trim().split('\n')
 
       return lines.map((line) => {
         const parts = line.trim().split(/\s+/)
-        if (parts.length < 5) return null
 
-        const pid = parseInt(parts[0]) || 0
+        // Skip header or malformed lines
+        const pid = parseInt(parts[0], 10)
+        if (!Number.isFinite(pid) || parts.length < 5) return null
+
         const comm = parts[2] || 'Unknown'  // Command name
         const cpu = parseFloat(parts[3]) || 0
         const mem = parseFloat(parts[4]) || 0
