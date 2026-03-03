@@ -7,6 +7,7 @@ import { WindowService } from './services/window-service'
 import { TrayService } from './services/tray-service'
 import { SecurityService } from './services/security-service'
 import { InterviewService } from './services/interview-service'
+import { UpdateService } from './services/update-service'
 
 // Load environment variables
 dotenv.config()
@@ -57,12 +58,14 @@ const windowService = new WindowService()
 const trayService = new TrayService(windowService)
 const securityService = new SecurityService()
 const interviewService = new InterviewService(windowService)
+const updateService = new UpdateService()
 
 // Register services in dependency order
 lifecycle.register(windowService)     // 1. Create window (hidden)
 lifecycle.register(trayService)       // 2. Create tray
 lifecycle.register(securityService)   // 3. Start security monitoring
 lifecycle.register(interviewService)  // 4. Initialize interview system
+lifecycle.register(updateService)     // 5. Initialize update system
 
 // Deep Link Event Handlers (must be after services init)
 app.on('second-instance', (event, commandLine) => {

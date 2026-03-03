@@ -30,6 +30,21 @@ export const InterviewChat: React.FC = () => {
 
   const [showQuitConfirm, setShowQuitConfirm] = useState(false); // Confirm before quitting interview
 
+  // Enable strict app blocking only while the structured interview step is active
+  useEffect(() => {
+    const api = (window as any)?.electronAPI
+    if (!api?.setAppBlockingEnabled) {
+      return
+    }
+
+    const shouldEnableBlocking = currentStep === 'interview'
+    api.setAppBlockingEnabled(shouldEnableBlocking).catch(() => { })
+
+    return () => {
+      api.setAppBlockingEnabled(false).catch(() => { })
+    }
+  }, [currentStep])
+
   const handleBack = () => {
     const from = (location.state as any)?.from;
     if (from) {

@@ -10,6 +10,8 @@ const interviewAPI = {
   pauseInterview: () => ipcRenderer.invoke('pause-interview'),
   resumeInterview: () => ipcRenderer.invoke('resume-interview'),
   stopInterview: () => ipcRenderer.invoke('stop-interview'),
+  // App blocking / security control
+  setAppBlockingEnabled: (enabled: boolean) => ipcRenderer.invoke('set-app-blocking-enabled', enabled),
   // Audio streaming (renderer -> main)
   sendAudioChunk: (data: Uint8Array) => ipcRenderer.send('audio-chunk', data),
 

@@ -25,6 +25,21 @@ export const Interview: React.FC = () => {
   const [collectingInfo, setCollectingInfo] = useState(false);
   const [, setSubmittingAnswer] = useState(false);
 
+  // Enable strict app blocking only while the structured interview step is active
+  useEffect(() => {
+    const api = (window as any)?.electronAPI
+    if (!api?.setAppBlockingEnabled) {
+      return
+    }
+
+    const shouldEnableBlocking = currentStep === 'interview'
+    api.setAppBlockingEnabled(shouldEnableBlocking).catch(() => { })
+
+    return () => {
+      api.setAppBlockingEnabled(false).catch(() => { })
+    }
+  }, [currentStep])
+
   // Check if we have an active session
   useEffect(() => {
     if (currentSession) {

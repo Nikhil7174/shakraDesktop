@@ -49,6 +49,18 @@ export const VoiceInterviewSession: React.FC<VoiceInterviewSessionProps> = ({
 }) => {
   useEffect(() => {
     setLogLevel(LogLevel.error)
+
+    // Enable strict app blocking for the entire duration of the voice interview session
+    const api = (window as any)?.electronAPI
+    if (api?.setAppBlockingEnabled) {
+      api.setAppBlockingEnabled(true).catch(() => { })
+    }
+
+    return () => {
+      if (api?.setAppBlockingEnabled) {
+        api.setAppBlockingEnabled(false).catch(() => { })
+      }
+    }
   }, [])
   const [currentState, setCurrentState] = useState<string>('connecting')
   const [currentQuestion, setCurrentQuestion] = useState<Question | null>(null)
